@@ -102,6 +102,11 @@ var _trigger_fires := {}
 ## this gates the EVENT triggers, which previously had no rate limit at all —
 ## ON_KILL fired once per adjudicated death, so in a swarm it ran continuously
 ## and was bounded only by the per-tick fire budget.
+## One float per exploit. A fire arms it; _step2_integrate decays it. While it is
+## live, that exploit's ward_* values count toward the player's effective stats —
+## as a MAX across exploits, never a sum, because the same module is legal in
+## several slots and summing would buy magnitude at no uptime cost.
+var _ward_left: PackedFloat32Array
 var _fire_cd: PackedFloat32Array
 ## Transient shot visuals. BROADCAST, BEAM and CHAIN resolve straight through
 ## the hit queue and drew nothing at all — you saw enemies die with no sign of
@@ -167,6 +172,7 @@ func _ready() -> void:
 	_pos_arrays = [null, null, null, null]
 	_fire_acc = PackedFloat32Array(); _fire_acc.resize(Loadout.MAX_EXPLOITS)
 	_fire_cd = PackedFloat32Array(); _fire_cd.resize(Loadout.MAX_EXPLOITS)
+	_ward_left = PackedFloat32Array(); _ward_left.resize(Loadout.MAX_EXPLOITS)
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
@@ -202,6 +208,28 @@ func _ready() -> void:
 
 func _eff_integrity() -> float:
 	return _sheet[&"integrity"]
+
+## Max over live wards, never a sum. Loadout has no module-uniqueness rule, so
+## all six payload slots can hold the same ward; summing turns that into a
+## build the design explicitly rejects.
+func _ward_max(key: StringName) -> float:
+	var best := 0.0
+	for ei in mini(_ward_left.size(), resolved.size()):
+		if _ward_left[ei] > 0.0:
+			best = maxf(best, float(resolved[ei].get(key)))
+	return best
+
+func _eff_armor() -> float:
+	return _sheet[&"armor"] + _ward_max(&"ward_armor")
+
+func _eff_defense() -> float:
+	return _sheet[&"defense"] + _ward_max(&"ward_defense")
+
+func _eff_clock_speed() -> float:
+	return _sheet[&"clock_speed"] + _ward_max(&"ward_clock_speed")
+
+func _mitigated(amount: float) -> float:
+	return PlayerStats.mitigate(amount, _eff_armor(), _eff_defense())
 
 func _recompile() -> void:
 	resolved = loadout.compile_all()
@@ -333,11 +361,14 @@ func _step2_integrate(dt: float) -> void:
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
-		player_pos += world_dir * _sheet[&"clock_speed"] * dt
+		player_pos += world_dir * _eff_clock_speed() * dt
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
 	if player_iframe > 0.0:
 		player_iframe -= dt
+	for wi in _ward_left.size():
+		if _ward_left[wi] > 0.0:
+			_ward_left[wi] -= dt
 
 	# Heads and ordinary enemies move first so the trail is current before the
 	# segments sample it this same tick.
@@ -466,6 +497,12 @@ func _step5_fire(dt: float) -> void:
 
 func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
+	# Before the match, deliberately. BEAM and CHAIN return early when they have
+	# no target, and a defensive build on those vectors must still ward — it has
+	# already spent its cooldown by the time it reaches here, because
+	# _try_event_fire sets _fire_cd before calling this.
+	if r.ward_duration > 0.0:
+		_ward_left[ei] = r.ward_duration
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
 			_fx_ring.append([player_pos, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
@@ -591,15 +628,19 @@ func _step6_detect(dt: float) -> void:
 		_gain_xp(1)
 
 func _damage_player(amount: float) -> void:
-	player_health -= amount
-	player_iframe = IFRAMES
-	# ON_DAMAGE_TAKEN fires per damage instance the player actually takes — not
-	# from a loop over terminally-marked entities, which would fire it once per
-	# run, at game over.
+	# Triggers BEFORE the subtraction, so an on_damage_taken ward is up for the
+	# hit that summoned it rather than the next one. ON_DAMAGE_TAKEN fires per
+	# damage instance the player actually takes — not from a loop over
+	# terminally-marked entities, which would fire it once per run, at game over.
+	#
+	# No recursion: the path is _try_event_fire -> _emit_vector -> _hit ->
+	# queue.append, and nothing re-enters here.
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
 			_try_event_fire(ei, r)
+	player_health -= _mitigated(amount)
+	player_iframe = IFRAMES
 	if player_health <= 0.0 and alive and not won:
 		player_health = 0.0
 		alive = false
