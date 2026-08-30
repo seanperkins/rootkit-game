@@ -13,10 +13,18 @@ const MAX_PROJECTILE_SPEED := 960.0
 ##   - projectile_speed is excluded because its cap prevents tunnelling through
 ##     the smallest combined radius; a multiplier applied before the cap would
 ##     silently do nothing at high values.
+## Defensive magnitudes accumulate by MAX, not by +. The same module is legal in
+## both payload slots of one exploit, so summing would buy double magnitude at
+## zero uptime cost — the opposite of what a second copy should be worth.
+const MAX_FOLD_KEYS := [
+	&"ward_armor", &"ward_defense", &"ward_clock_speed", &"ward_duration",
+	&"lifesteal",
+]
+
 const MULT_KEYS := {
 	&"attack": [&"damage", &"corruption"],
 	&"haste":  [&"cooldown"],
-	&"reach":  [&"radius"],
+	&"reach":  [&"radius", &"travel"],
 }
 
 ## Both clamps guard the same bug class: an unbounded additive stat. Cooldown
@@ -86,8 +94,20 @@ static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 		# weapon fired three times slower for three times the damage, which is
 		# flat DPS, bad feel, and made MIN_COOLDOWN unreachable from the vector
 		# side. Reductions from payloads and triggers still scale with rank.
-		var scale: int = 1 if (is_vector and key == &"cooldown") else em.rank
-		r.set(key, r.get(key) + float(m.stats[key]) * scale)
+		var scale: int = em.rank
+		if is_vector and (key == &"cooldown" or key == &"travel"):
+			# A vector's cadence and its range are base properties, not scaling
+			# stats. travel especially: at em.rank a rank-3 packet would fly
+			# 1920px and outrun every bound the design has.
+			scale = 1
+		elif key == &"ward_duration":
+			# Rank buys ward magnitude, never uptime.
+			scale = 1
+		var v := float(m.stats[key]) * scale
+		if key in MAX_FOLD_KEYS:
+			r.set(key, maxf(r.get(key), v))
+		else:
+			r.set(key, r.get(key) + v)
 	for t in m.tags:
 		r.tags[t] = true
 

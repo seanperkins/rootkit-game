@@ -19,6 +19,10 @@ func _init() -> void:
 	rule_replace_lowest_rank()
 	rule_zero_no_legal_placement()
 	inert_only_transient()
+	ward_folds_by_max()
+	rank_carve_outs()
+	ward_equality()
+	defensive_share()
 	print("")
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
@@ -44,8 +48,8 @@ func data_sweep() -> void:
 	var errs := []
 	for m in ModuleTable.all():
 		errs.append_array(Compiler.validate(m))
-	_check("data sweep: 15 modules, 0 errors", errs.size(), 0)
-	_check("data sweep: module count", ModuleTable.all().size(), 15)
+	_check("data sweep: 18 modules, 0 errors", errs.size(), 0)
+	_check("data sweep: module count", ModuleTable.all().size(), 18)
 
 ## A 3-exploit board needs 3 distinct VECTORs and 3 distinct TRIGGERs. Fewer
 ## unlocked and the advertised cap is unreachable, permanently, for a new player.
@@ -183,3 +187,74 @@ func inert_only_transient() -> void:
 	_check("founded from VECTOR: inert until a trigger lands", ex.is_inert(), true)
 	ex.place(T[&"interval"])
 	_check("no longer inert", ex.is_inert(), false)
+
+## Ward magnitudes are MAX, never sum — including within a single exploit.
+## Compiler._fold accumulates with +, and legal_targets offers an EMPTY_SLOT for
+## payload slot 1 regardless of what slot 0 holds (loadout.gd), with ranks kept
+## per SLOT rather than per module. So the same ward module in both payload slots
+## of one exploit is a legal build, and summing it would buy double magnitude at
+## zero uptime cost — the opposite of what a second copy should be worth.
+func ward_folds_by_max() -> void:
+	var mag: float = T[&"sandbox"].stats[&"ward_defense"]
+	_check("one sandbox folds to its magnitude",
+		Compiler.build(_mk(&"broadcast", &"interval", [&"sandbox"])).ward_defense, mag)
+	_check("two sandbox in one exploit take the max",
+		Compiler.build(_mk(&"broadcast", &"interval", [&"sandbox", &"sandbox"])).ward_defense, mag)
+
+	# Two DIFFERENT wards in one exploit keep both magnitudes but share the
+	# longer duration, because ward_duration is maxf-folded and the timer is
+	# per-exploit. Pairing a long ward with a short one upgrades the short one's
+	# uptime for free; that is priced, not accidental.
+	var r := Compiler.build(_mk(&"broadcast", &"interval", [&"harden", &"sandbox"]))
+	_check("mixed wards keep both magnitudes",
+		r.ward_armor > 0.0 and r.ward_defense > 0.0, true)
+	_check("mixed wards share the longer duration", r.ward_duration,
+		maxf(T[&"harden"].stats[&"ward_duration"], T[&"sandbox"].stats[&"ward_duration"]))
+
+	# lifesteal joins the same rule: keylog is the fifth defensive module.
+	_check("two keylog take the max",
+		Compiler.build(_mk(&"broadcast", &"interval", [&"keylog", &"keylog"])).lifesteal,
+		float(T[&"keylog"].stats[&"lifesteal"]))
+
+## Rank buys ward MAGNITUDE, never uptime, and never packet range. A vector's
+## cadence already has this carve-out on the same principle.
+func rank_carve_outs() -> void:
+	var ex := _mk(&"broadcast", &"interval", [&"sandbox"])
+	ex.payloads[0].rank = 5
+	var r := Compiler.build(ex)
+	_check("ward magnitude rank-scales", r.ward_defense,
+		float(T[&"sandbox"].stats[&"ward_defense"]) * 5.0)
+	_check("ward_duration does NOT rank-scale", r.ward_duration,
+		float(T[&"sandbox"].stats[&"ward_duration"]))
+
+	# travel held flat is what keeps reach meaningful: at em.rank a rank-3 packet
+	# would fly 1920px and outrun every bound the design has.
+	var pk := _mk(&"packet", &"interval")
+	pk.vector.rank = 5
+	_check("vector travel does NOT rank-scale", Compiler.build(pk).travel,
+		float(T[&"packet"].stats[&"travel"]))
+	_check("reach scales travel", Compiler.build(pk, {&"reach": 1.30}).travel,
+		float(T[&"packet"].stats[&"travel"]) * 1.30)
+
+## equals must cover the new fields or the permutation test passes on builds that
+## differ only in a ward.
+func ward_equality() -> void:
+	var a := Compiler.build(_mk(&"broadcast", &"interval", [&"harden"]))
+	var b := Compiler.build(_mk(&"broadcast", &"interval", [&"sandbox"]))
+	_check("equals distinguishes ward-only differences", a.equals(b), false)
+
+## Four of the fifteen unlocked modules are defensive — the three new wards plus
+## keylog, which was always defensive and merely read as an anomaly.
+##
+## The offer pool IS the unlocked list, so 4/15 is the real dilution figure.
+## legal_targets offers REPLACE for any occupied slot whose occupant is not the
+## last INTERVAL trigger, so a vector is always displaceable and _offer_cards
+## filters nothing out. An earlier draft claimed vectors "need a free exploit"
+## and derived a much higher share from it; that claim was false.
+func defensive_share() -> void:
+	var defensive := 0
+	for m in ModuleTable.starting_unlocked():
+		if m.id in [&"harden", &"sandbox", &"nice", &"keylog"]:
+			defensive += 1
+	_check("four defensive modules unlocked", defensive, 4)
+	_check("unlocked total", ModuleTable.starting_unlocked().size(), 15)
