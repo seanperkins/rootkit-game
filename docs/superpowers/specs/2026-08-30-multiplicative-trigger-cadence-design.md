@@ -1,7 +1,7 @@
 # ROOTKIT — Multiplicative Trigger Cadence
 
 **Date:** 2026-08-30
-**Status:** revision 3 — after two six-reviewer rounds. See §10.
+**Status:** revision 4 — after three six-reviewer rounds. See §10.
 **Builds on:** `2026-08-30-player-stats-and-defense-design.md`
 **Blocks:** healing / the health economy — see §8
 
@@ -65,9 +65,18 @@ resolved = base × max(MIN_CADENCE_FRACTION, Π(cadence_mult) × haste)
 
 and the ratio between any two vectors is their base ratio *whether or not the
 floor binds* — not merely at the extreme. A reviewer confirmed this over an
-exhaustive 624,240-build sweep: worst relative ratio error **exactly 0.0**, and
-every one of the 221 flooring configurations floors all four vectors, never
-some. (Its one precondition is §5.4's vector-base rule.)
+exhaustive 624,240-build sweep: worst relative ratio error **below 1e-15**
+(measured 3.33e-16, which a `%.15f` render prints as zeros — the printed form is
+not the same claim as "exactly 0"), and every one of the 221 flooring
+configurations floors all four vectors, never some.
+
+**It has two preconditions, both enforced in §5.4:** no non-VECTOR may carry
+`cooldown` (or `vector_base` is not the vector's base), and no VECTOR may carry
+`cadence_mult` (or the product stops being vector-independent). Revision 3
+enforced only the first and called it "its one precondition"; a reviewer built
+the second case and reproduced revision 1's disease through it — a SOME-floored
+configuration with the ratio sliding 2.83 → 2.43 → 1.99 → 1.70 as the build
+matured.
 
 Revision 1 got this wrong: it used an absolute floor and claimed no legal build
 would reach it. A panel swept the space through the real `Loadout` API and found **71 legal
@@ -97,8 +106,9 @@ vectors, rounded to two decimals:
 while the other three rows rounded faithfully, in a column whose whole authority
 is that the values are derived.
 
-**Rank-1 feel moves by up to −10.6%,** not "barely". The full 16-cell grid
-(vector × cadence module, `interval` / `on_hit` / `on_kill` / `overclock`):
+**Rank-1 feel moves by up to −10.6%,** not "barely". The full 16-cell grid —
+**% change in resolved cooldown**, so negative is *faster* (§3.1's table below is
+DPS, where every sign means the opposite):
 
 | | interval | on_hit | on_kill | overclock |
 |---|---|---|---|---|
@@ -248,9 +258,12 @@ static func _rank_factor(f: float, rank: int) -> float:
 	return pow(f, rank) if f < 1.0 else 1.0 + (f - 1.0) * rank
 ```
 
-In `_fold`, branching before `v` is computed:
+In `_fold`. Note `v` is still computed first — an earlier draft said "branching
+before `v` is computed", which does not compile (`Identifier "v" not declared`);
+the MUL branch simply ignores it:
 
 ```gdscript
+		var v := float(m.stats[key]) * scale
 		if key in MUL_FOLD_KEYS:
 			# The RAW stat, never `v`: `v` is already rank-scaled, so
 			# pow(v, rank) raises (value x rank) to the power rank —
@@ -267,11 +280,15 @@ In `_fold`, branching before `v` is computed:
 			r.set(key, r.get(key) + v)
 ```
 
-The vector rank carve-out gains `cadence_mult` **and the MUL branch reads
-`scale`**, so a VECTOR carrying it cannot rank-scale. Revision 2 added the
-carve-out but had the branch read `em.rank`, which made the whole edit dead code
-— the invariant was asserted in prose and enforced nowhere, which is the exact
-shape of the `base_cooldown` contradiction the round before it.
+The MUL branch reads **`scale`, not `em.rank`** — correct for every key, and it
+costs nothing. Revision 2 had it read `em.rank`, which made the carve-out it was
+paired with dead code: the invariant was asserted in prose and enforced nowhere,
+the same shape as the `base_cooldown` contradiction the round before it.
+
+`cadence_mult` is **not** added to the carve-out's key list. §5.4 rule 4 makes a
+VECTOR carrying it invalid, so a carve-out for that case would be machinery
+guarding a configuration that cannot exist — by §5.2's own maxim, worse than
+nothing.
 
 `MIN_CADENCE_FRACTION` is declared in `compiler.gd` beside `MIN_COOLDOWN`.
 
@@ -322,21 +339,41 @@ measured passing `validate()` and `data_sweep` while breaking something:
 	if m.slot != Module.Slot.VECTOR and m.stats.has(&"cooldown"):
 		errs.append("module '%s': only a VECTOR may carry cooldown" % m.id)
 
-	# The ratio guarantee's precondition. Below this the ABSOLUTE floor binds for
-	# some vectors and not others, and the ratio collapses — revision 1's disease
-	# relocated from the build space into the data table. A 0.20-base vector was
-	# measured collapsing a 4.25 base ratio to 2.04.
-	if m.slot == Module.Slot.VECTOR and m.stats.has(&"cooldown") \
-			and float(m.stats[&"cooldown"]) < MIN_COOLDOWN / MIN_CADENCE_FRACTION:
+	# The SECOND precondition of §2's guarantee, and the mirror of the rule above.
+	# A VECTOR carrying cadence_mult makes the product vector-DEPENDENT: measured,
+	# a packet variant with cadence_mult 0.60 produced a SOME-floored state and a
+	# ratio sliding 2.83 -> 2.43 -> 1.99 -> 1.70 across overclock ranks, which is
+	# revision 1's disease exactly. The configuration also has no expressive
+	# power: applied once and unranked, it is identical to editing the vector's
+	# base, EXCEPT in the floor term, which reads the raw base — so its only
+	# distinct observable behaviour IS the broken-ratio region.
+	if m.slot == Module.Slot.VECTOR and m.stats.has(&"cadence_mult"):
+		errs.append("module '%s': a VECTOR may not carry cadence_mult" % m.id)
+
+	# The ratio guarantee's other precondition. Below this the ABSOLUTE floor
+	# binds for some vectors and not others and the ratio collapses — revision 1's
+	# disease relocated from the build space into the data table. A 0.20-base
+	# vector was measured collapsing a 4.25 base ratio to 2.04.
+	#
+	# It requires the KEY, not merely a value when present: a VECTOR omitting
+	# cooldown has vector_base 0.0, passes a has()-gated check, and fires at a
+	# permanent 20/s. §4's inert-path argument does NOT cover it — an exploit with
+	# a cooldown-less VECTOR and a trigger is not inert.
+	if m.slot == Module.Slot.VECTOR and (not m.stats.has(&"cooldown") \
+			or float(m.stats[&"cooldown"]) < MIN_COOLDOWN / MIN_CADENCE_FRACTION):
 		errs.append("module '%s': VECTOR cooldown must be >= %.4f or the "
 			% [m.id, MIN_COOLDOWN / MIN_CADENCE_FRACTION]
 			+ "proportional floor stops preserving ratios")
 ```
 
-The threshold is `0.05 / 0.12 = 0.4167`. **Packet, the fastest shipped vector at
-0.50, clears it by only 20%** — so this is a live constraint on future tuning,
-not a theoretical one, and it is the reason §2's guarantee can be stated
-unconditionally.
+The threshold is `0.05 / 0.12 = 0.4167`. Measured margins: **packet +20.0%**,
+beam +44.0%, broadcast +104.0%, chain +116.0% — so this is a live constraint on
+future tuning, not a theoretical one, and together with rule 4 it is what lets
+§2's guarantee be stated unconditionally.
+
+All four rules were run against the converted 18-module table: `data_sweep`
+reports zero errors, and each rule was confirmed to fire on a synthetic
+violation.
 
 ### 5.5 `module_table.gd`
 
@@ -379,11 +416,17 @@ float and none assumes additivity.
   0.80 × its rank-1 DPS** on every vector, against compounding's measured
   −53%..−63%.
 
+  **Scope this to the bare vector + trigger build, and say so in the test name.**
+  −15.6% is the worst case for `vector + on_kill` alone. Across *all* legal
+  `on_kill` builds the worst measured r5/r1 DPS ratio is **0.484** (packet with
+  two rank-5 `buffer_overflow`), because a flat-damage payload compresses the
+  damage ratio while the cadence ratio is unchanged. Today's model gives 0.433 on
+  that same build, so the new model is still an improvement — but a test bounded
+  at 0.80 across all builds would fail.
+
   Revision 2 specified "never *reduces* DPS", which its own §3.1 table refutes
-  four lines earlier (packet −15.6%, chain −7.1%) and §9 risk 1 contradicts
-  outright. The property worth pinning is that ranking a cost is a **bounded**
-  cost, not a free one — the 0.80 bound is set against the measured worst case of
-  −15.6%.
+  four lines earlier. Revision 3 fixed the bound and left it unscoped, which is
+  the same scoping error §6 calls out about revision 1's ratio test.
 - **`_rank_factor` boundaries**: `f` exactly 1.0, rank 1, and a reduction at
   rank 10 (above `max_rank`, to pin that it stays positive).
 - **`validate()` rejects** `cadence_mult` of 0.0 and of −1.0.
@@ -394,7 +437,8 @@ float and none assumes additivity.
   clamps. It now resolves to 0.1398 and does not. Rewrite it against the
   proportional floor.
 - `vector_cadence_does_not_scale` (`:79-88`) reads
-  `T[&"interval"].stats[&"cooldown"]` at `:87`. That key is removed, so it
+  `T[&"interval"].stats[&"cooldown"]`. The statement spans `:86-87` and Godot
+  reports the throw at `:86`. That key is removed, so it
   **throws**, aborts the function, and silently swallows the assertion at `:88`
   while the suite still reports one failure instead of two. Rewrite to
   `base × T[&"interval"].stats[&"cadence_mult"]`.
@@ -420,9 +464,15 @@ in §7.
 **Also stale:** `test_build.gd:77-78` ("reductions from payloads and triggers
 still scale with rank" → "factors", and the rank rule now differs by direction).
 
-**New `validate()` cases** for all three §5.4 rules: a PAYLOAD carrying
-`cooldown`, a VECTOR with `cooldown` below 0.4167, and `cadence_mult` at 0.0,
-−1.0 and 1e-9.
+**New `validate()` cases** for all four §5.4 rules: a PAYLOAD carrying
+`cooldown`; a VECTOR with `cooldown` below 0.4167; a VECTOR **omitting**
+`cooldown` entirely; a VECTOR carrying `cadence_mult`; and `cadence_mult` at 0.0,
+−1.0 and 1e-9. All five were confirmed to produce their intended error.
+
+**A ratio test that includes a rule-4 violation** — build the invalid
+`{cooldown: 0.5, cadence_mult: 0.60}` vector directly (bypassing `validate`) and
+assert the ratio *does* drift, so the rule's necessity is pinned by a test rather
+than by a comment.
 
 **Perf:** no tick change, but fire rate moved; `perf_milestone0.gd` is the gate.
 
@@ -454,7 +504,11 @@ module-stat renderer in the repo.
 |---|---|
 | `test_build.gd` | FAIL — `cooldown_clamp` gets 0.1398; `:86` throws on the removed key |
 | `test_multipliers.gd` | FAIL — `:117-118` gets 0.06, wants 0.05 |
-| the other 14, incl. `perf_milestone0` | PASS (p95 1.973 ms / 10.185 ms budget) |
+| the other 14, incl. `perf_milestone0` | PASS (p95 ~2.0 ms against a ~10 ms budget) |
+
+The perf figures are load-relative — the gate times a fixed workload first and
+scales its own budget — so quote them as approximate. Two runs on different
+machines gave 1.973/10.185 and 2.006/9.968.
 
 Revision 2 had a section here claiming "of the 15 test files, only
 `test_build.gd` fails" — wrong on both halves, because it transcribed a **round-1**
@@ -479,12 +533,17 @@ floor the design guarantees rather than a claim about which builds are legal.
 
 ## 9. Risk
 
-1. **Ranking a cost trigger changes character.** `on_kill` goes from roughly
-   DPS-neutral to −16%..+6% depending on vector (§3.1). Smaller than the −57%
-   trap compounding would have produced, but it is a real change to how a shipped
-   trigger ranks, and the direction differs by vector.
-2. **Every existing ranked build gets slower.** Anything into `interval` or
-   `overclock` loses the clamp's free speed.
+1. **Ranking a cost trigger changes character.** For the bare `vector + on_kill`
+   build, ranking goes from roughly DPS-neutral to **−16%..+6%** depending on
+   vector (§3.1). Add a flat-damage payload and the worst case deepens to
+   **−52%** — though today's model gives −57% on the same build, so the new model
+   is still the better of the two. Compounding would have given −53%..−63% on the
+   bare build alone. This is a real change to how a shipped trigger ranks and the
+   direction differs by vector, so it wants play-testing.
+2. **Most existing ranked builds get slower**, not all — §3's grid refutes the
+   stronger claim: `broadcast + interval` is 3.7% *faster* at rank 1, and any
+   build with no ranked cadence module is unchanged. What loses is specifically
+   what was riding the clamp's free speed.
 3. **`MIN_CADENCE_FRACTION` 0.12 is the one number here chosen by judgement**
    rather than derived. It sets every vector's ceiling simultaneously. Measured,
    it already binds on 160 of the packet configurations at maxed `cooling`, 40 at
@@ -510,7 +569,9 @@ Two findings were proved by **running code** rather than argued:
   1.0368 — revision 1's headline property, false in exactly the region its own
   test was not scoped to reach.
 - **Cost multipliers diverge under rank.** Chain + `on_kill` r5 measured at
-  6.83s and −57% DPS, on the option the level-up screen scores highest.
+  6.83s and −57% DPS, on the option the level-up screen scores highest. (Those
+  are round-1 figures, computed at the then-current `on_kill` 1.50; under the
+  shipped 1.52 the same build is 7.30s and −59%, which is what §3.1 prints.)
 
 Revision 1's error is worth stating precisely, because revision 2 stated it
 wrongly. It was **not** that `cadence_mult` lacked a duplicate-module guard:
@@ -548,3 +609,24 @@ time.** Numbers get checked because they look checkable. Sentences like "no lega
 build reaches it", "passes unchanged", "enforced rather than assumed" and "only
 `test_build.gd` fails" are the ones that ship broken, and every one of them was
 caught by a reviewer running code rather than reading.
+
+**Round 3** returned six REVISE, but the shape changed: a reviewer implemented §5
+verbatim and measured the design **correct** — 14 of 16 files passing exactly as
+§7 predicts, `data_sweep` clean under every new rule, the sweep reproducing §7
+digit for digit over 624,240 builds and again over a wider 1,166,880, and the
+`scale` fix live in both directions. Nothing in the mechanism was refuted.
+
+What was left was one unenforced precondition — five reviewers independently
+found that a VECTOR carrying `cadence_mult` voids §2's guarantee, and one built
+the case and reproduced revision 1's exact disease through it — plus a set of
+sentences that claimed more than had been measured: "exactly 0.0" for a
+rendering of 3.33e-16, a DPS bound scoped to one build dimension and stated
+generally, and two figures still derived from the superseded 1.50.
+
+Three rounds in, the tally is unambiguous. **Every arithmetic claim I made
+survived independent re-derivation. Almost every claim about a consequence did
+not.** The specific failures rhyme: "no legal build reaches it", "passes
+unchanged", "enforced rather than assumed", "only `test_build.gd` fails", "its
+one precondition", "not reconstructible", "exactly 0.0". Each was a sentence
+asserting that something *follows*, written without running the thing that would
+show whether it does — and each was caught by a reviewer who ran it.
