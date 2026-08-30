@@ -5,7 +5,7 @@ func _initialize() -> void:
 	run = load("res://scenes/run.tscn").instantiate()
 	root.add_child(run)
 	await process_frame
-	run.level_up_offered.connect(func(cards): run.choose_card(cards[0][0], cards[0][1]))
+	run.level_up_offered.connect(func(cards): run.choose_card(cards[0][0], Loadout.best_target(cards[0][1])))
 func _process(_d: float) -> bool:
 	frames += 1
 	if run != null and frames > 30:

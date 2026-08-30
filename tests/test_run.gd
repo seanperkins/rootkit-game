@@ -85,7 +85,7 @@ func _flipped_left() -> int:
 
 func _auto_pick(cards: Array) -> void:
 	picks += 1
-	run.choose_card(cards[0][0], cards[0][1])
+	run.choose_card(cards[0][0], Loadout.best_target(cards[0][1]))
 
 func _check(label: String, got, want) -> void:
 	if got == want:

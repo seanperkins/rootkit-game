@@ -20,12 +20,26 @@ const SEPARATION_RADIUS := 26.0
 ## This is the single largest item in the tick and most of it was invisible.
 const STEER_RANGE_SQ := 820.0 * 820.0
 const STEER_SLICES := 2
+## Half the viewport diagonal at zoom 1.15, plus a small margin. Nothing targets
+## or is targeted beyond what the player can see.
+const VIEW_RANGE := 620.0
+
+## Worms are a chain: a head that steers, and segments that follow the path the
+## head actually took rather than beelining at the player. Segments are real
+## enemies — individually killable, individually dangerous — but they do not
+## steer, and they decohere when their head dies.
+const WORM_TYPE := 2
+const WORM_TRAIL_LEN := 96
+const WORM_SEG_STEPS := 8       # ticks of head history between segments
+const WORM_BASE_SEGMENTS := 2   # head + 1 at the start of a run
+const WORM_MAX_SEGMENTS := 6
+const WORM_GROWTH_SECONDS := 70.0
 const SPAWN_RING := 720.0
 
 const PLAYER_MAX_HEALTH := 100.0
 const PLAYER_SPEED := 220.0
 const PLAYER_RADIUS := 11.0
-const PICKUP_RADIUS := 48.0
+const PICKUP_RADIUS := 30.0
 const IFRAMES := 0.5
 
 const FIRE_BUDGET := 4
@@ -72,6 +86,11 @@ var _fire_acc: PackedFloat32Array
 var _proj_owner: PackedInt32Array
 var _proj_pierce: PackedInt32Array
 var _proj_last: PackedInt32Array
+var _worm_id: PackedInt32Array
+var _worm_seg: PackedInt32Array
+var _worm_trail := {}          # worm id -> PackedVector2Array ring buffer
+var _worm_cursor := {}         # worm id -> write index
+var _next_worm_id := 1
 var _botnet_ratio: PackedFloat32Array
 var _botnet_life: PackedFloat32Array
 
@@ -115,6 +134,8 @@ func _ready() -> void:
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
+	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
+	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
 	_botnet_ratio = PackedFloat32Array(); _botnet_ratio.resize(MAX_BOTNET)
 	_botnet_life = PackedFloat32Array(); _botnet_life.resize(MAX_BOTNET)
 
@@ -165,10 +186,18 @@ func _physics_process(dt: float) -> void:
 func _step1_spawn(dt: float) -> void:
 	for s in director.step(dt, player_pos, SPAWN_RING):
 		var ti: int = s[0]
+		if ti == WORM_TYPE:
+			if _spawn_worm(s[1]):
+				director.spawned += 1
+			else:
+				director.dropped += 1
+			continue
 		var t = enemy_types[ti]
-		if enemies.spawn(s[1], Vector2.ZERO, t.integrity, ENEMY_RADIUS, ti) < 0:
+		var idx := enemies.spawn(s[1], Vector2.ZERO, t.integrity, ENEMY_RADIUS, ti)
+		if idx < 0:
 			director.dropped += 1
 		else:
+			_worm_id[idx] = 0
 			director.spawned += 1
 	if director.should_spawn_boss():
 		director.boss_spawned = true
@@ -180,12 +209,45 @@ func _step1_spawn(dt: float) -> void:
 		# silently returns -1 while boss_spawned is set, so it never retries.
 		while enemies.count > 0:
 			enemies.despawn(enemies.count - 1)
+		_worm_trail.clear()
+		_worm_cursor.clear()
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(player_pos + Vector2(cos(a), sin(a)) * 420.0,
 			Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		emit_signal("stats_changed")
+
+## Longer worms later in the run: two segments at the start, up to six by the
+## time ICE arrives.
+func _worm_length() -> int:
+	return mini(WORM_MAX_SEGMENTS,
+		WORM_BASE_SEGMENTS + int(director.elapsed / WORM_GROWTH_SECONDS))
+
+func _spawn_worm(at: Vector2) -> bool:
+	var t = enemy_types[WORM_TYPE]
+	var n := _worm_length()
+	if enemies.count + n > MAX_ENEMIES:
+		return false
+	var id := _next_worm_id
+	_next_worm_id += 1
+	var trail := PackedVector2Array()
+	trail.resize(WORM_TRAIL_LEN)
+	trail.fill(at)
+	_worm_trail[id] = trail
+	_worm_cursor[id] = 0
+	for k in n:
+		var idx := enemies.spawn(at, Vector2.ZERO, t.integrity, ENEMY_RADIUS, WORM_TYPE)
+		if idx < 0:
+			return k > 0
+		_worm_id[idx] = id
+		_worm_seg[idx] = k
+	return true
+
+func _worm_sample(id: int, steps_back: int) -> Vector2:
+	var trail: PackedVector2Array = _worm_trail[id]
+	var c: int = _worm_cursor[id]
+	return trail[(c - steps_back + WORM_TRAIL_LEN * 2) % WORM_TRAIL_LEN]
 
 func _step2_integrate(dt: float) -> void:
 	# Polled directly so no InputMap entries are needed. WASD and arrows both.
@@ -208,19 +270,42 @@ func _step2_integrate(dt: float) -> void:
 	if player_iframe > 0.0:
 		player_iframe -= dt
 
+	# Heads and ordinary enemies move first so the trail is current before the
+	# segments sample it this same tick.
 	for i in enemies.count:
+		if _worm_id[i] != 0 and _worm_seg[i] != 0:
+			continue
 		var t = enemy_types[enemies.type_index[i]]
 		var to := (player_pos - enemies.pos[i]).normalized()
 		enemies.vel[i] = to * t.speed + enemies.force[i]
 		enemies.pos[i] += enemies.vel[i] * dt
+		if _worm_id[i] != 0:
+			var id := _worm_id[i]
+			var c: int = (_worm_cursor[id] + 1) % WORM_TRAIL_LEN
+			_worm_cursor[id] = c
+			var trail: PackedVector2Array = _worm_trail[id]
+			trail[c] = enemies.pos[i]
+			_worm_trail[id] = trail
+	for i in enemies.count:
+		var wid := _worm_id[i]
+		if wid == 0 or _worm_seg[i] == 0:
+			continue
+		if not _worm_trail.has(wid):
+			continue
+		var prev := enemies.pos[i]
+		enemies.pos[i] = _worm_sample(wid, _worm_seg[i] * WORM_SEG_STEPS)
+		enemies.vel[i] = (enemies.pos[i] - prev) / maxf(dt, 0.0001)
 	for i in projectiles.count:
 		projectiles.pos[i] += projectiles.vel[i] * dt
 	for i in botnet.count:
 		_botnet_life[i] -= dt
 	for i in shards.count:
 		var d := player_pos - shards.pos[i]
-		if d.length() < pickup_radius * 6.0:
-			shards.pos[i] += d.normalized() * 340.0 * dt
+		# Magnet reach. Was 6x the pickup radius (288 px), which meant shards
+		# came to you from most of the screen and collection was never a
+		# positioning decision.
+		if d.length() < pickup_radius * 2.2:
+			shards.pos[i] += d.normalized() * 300.0 * dt
 
 func _step3_rebuild() -> void:
 	_pos_arrays[Grid.Pop.ENEMY] = enemies.pos
@@ -241,6 +326,9 @@ func _step4_steer() -> void:
 	_steer_phase = (_steer_phase + 1) % STEER_SLICES
 	var i := _steer_phase
 	while i < enemies.count:
+		if _worm_id[i] != 0 and _worm_seg[i] != 0:
+			i += STEER_SLICES
+			continue
 		var here := enemies.pos[i]
 		if here.distance_squared_to(player_pos) > STEER_RANGE_SQ:
 			enemies.force[i] = Vector2.ZERO
@@ -324,7 +412,10 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				from = enemies.pos[picked]
 				hops += 1
 		_:
-			var t3 := _nearest_enemy(1400.0)
+			# The viewport covers ~1113x626 world units at this zoom, so the
+			# corner is ~640 away. Targeting at 1400 let packets fire at enemies
+			# well off-screen — and made every shot walk the entire grid.
+			var t3 := _nearest_enemy(VIEW_RANGE)
 			var dir2 := Vector2.RIGHT if t3 < 0 else (enemies.pos[t3] - player_pos).normalized()
 			var pi := projectiles.spawn(player_pos, dir2 * maxf(r.projectile_speed, 120.0),
 				1.0, PROJECTILE_RADIUS, 0)
@@ -506,11 +597,28 @@ func _drop_shards(i: int) -> void:
 			_rng.randf_range(-8, 8)), Vector2.ZERO, 1.0, 4.0, 0)
 
 func _step9_recycle() -> void:
+	# A dead head takes its remaining segments with it: a headless chain has no
+	# path to follow and would drift as a line of stragglers.
+	var orphaned := {}
+	for i in enemies.count:
+		if enemies.state[i] != Population.ALIVE and _worm_id[i] != 0 and _worm_seg[i] == 0:
+			orphaned[_worm_id[i]] = true
+	if not orphaned.is_empty():
+		for i in enemies.count:
+			if orphaned.has(_worm_id[i]):
+				enemies.state[i] = Population.DEAD
+		for id in orphaned:
+			_worm_trail.erase(id)
+			_worm_cursor.erase(id)
+
 	var i := 0
 	while i < enemies.count:
 		# FLIPPED retires the enemy slot too — it became a botnet node. Freeing
 		# only DEAD leaves flipped entities in the swarm forever.
 		if enemies.state[i] != Population.ALIVE:
+			var last := enemies.count - 1
+			_worm_id[i] = _worm_id[last]
+			_worm_seg[i] = _worm_seg[last]
 			enemies.despawn(i)
 		else:
 			i += 1
@@ -566,8 +674,10 @@ func _offer_cards() -> void:
 	paused = true
 	var pool := []
 	for m in _unlocked:
-		var p := loadout.resolve(m)
-		pool.append([m, p])
+		var targets := loadout.legal_targets(m)
+		if targets.is_empty():
+			continue          # nothing legal: not worth a card slot
+		pool.append([m, targets])
 	# Seeded so a run reproduces exactly from a bug report.
 	for i in range(pool.size() - 1, 0, -1):
 		var j := _card_rng.randi_range(0, i)
@@ -576,17 +686,16 @@ func _offer_cards() -> void:
 	for entry in pool:
 		if cards.size() >= 3:
 			break
-		if entry[1].rule != Loadout.Rule.NONE:
-			cards.append(entry)
+		cards.append(entry)
 	while cards.size() < 3:
-		cards.append([null, null])      # salvage card fallback
+		cards.append([null, []])        # salvage card fallback
 	emit_signal("level_up_offered", cards)
 
-func choose_card(m, p) -> void:
+func choose_card(m, target) -> void:
 	if m == null:
 		salvage += 50
 	else:
-		loadout.apply(m, p)
+		loadout.place_at(m, target.exploit, target.slot)
 		_recompile()
 	pending_levels = maxi(0, pending_levels - 1)
 	paused = false
@@ -681,7 +790,10 @@ func _update_renderers() -> void:
 		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2(s, s), 0.0, enemies.pos[i]))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
-		mm.set_instance_color(i, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * 1.15)
+		var shade := 1.15
+		if _worm_id[i] != 0 and _worm_seg[i] != 0:
+			shade = 1.15 * (0.82 - 0.07 * mini(_worm_seg[i], 4))
+		mm.set_instance_color(i, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade)
 		mm.set_instance_custom_data(i, Color(float(t.glyph), 0.0, 0.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count

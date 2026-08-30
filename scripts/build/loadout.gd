@@ -9,6 +9,18 @@ const MAX_EXPLOITS := 3
 
 enum Rule { NONE, RANK_UP, EMPTY_SLOT, NEW_EXPLOIT, REPLACE }
 
+## A slot the player may drop a given module into, with what would happen.
+class Target extends RefCounted:
+	var exploit: int
+	var slot: int
+	var action: int          # Rule.RANK_UP | EMPTY_SLOT | REPLACE
+	var victim: Module = null
+	func _init(e: int, s: int, a: int, v: Module = null) -> void:
+		exploit = e
+		slot = s
+		action = a
+		victim = v
+
 class Placement extends RefCounted:
 	var rule: int = Rule.NONE
 	var exploit_index: int = -1
@@ -42,6 +54,72 @@ func assert_unique() -> void:
 		for em in ex.equipped():
 			assert(not seen.has(em.module.id), "duplicate module id in loadout: %s" % em.module.id)
 			seen[em.module.id] = true
+
+## Every slot this module may legally occupy, for the player to choose between.
+## Placement is the player's decision; this only enforces the invariants:
+##   - a module id appears at most once in the loadout, so an already-equipped
+##     module can only rank up, in the slot that holds it;
+##   - the last INTERVAL trigger cannot be displaced, which would leave an
+##     event-triggered loadout with no way to fire at all.
+func legal_targets(m: Module) -> Array:
+	var out := []
+	var held := holds(m.id)
+	for e in MAX_EXPLOITS:
+		var ex: Exploit = exploits[e] if e < exploits.size() else null
+		for sl in Exploit.SLOT_COUNT:
+			if Exploit.slot_type(sl) != m.slot:
+				continue
+			# Already equipped: the ONLY legal move is ranking it up where it
+			# sits. This has to be checked before the unfounded-exploit branch
+			# below, or a held module gets offered empty slots elsewhere and the
+			# id ends up in the loadout twice.
+			if held >= 0:
+				if ex == null:
+					continue
+				var occ := ex.at(sl)
+				if occ != null and occ.module.id == m.id and occ.can_rank_up():
+					out.append(Target.new(e, sl, Rule.RANK_UP))
+				continue
+			if ex == null:
+				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
+				continue
+			var occupant := ex.at(sl)
+			if occupant == null:
+				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
+			elif not _is_last_interval(occupant):
+				out.append(Target.new(e, sl, Rule.REPLACE, occupant.module))
+	return out
+
+## The preference a sensible player follows, and what the auto-slotter used to
+## do on its own: rank up what you have, then fill something empty, and only
+## displace when there is no other home. Placement is the player's decision now,
+## so this is a default rather than the rule — the level-up board offers every
+## legal slot and this only orders them.
+static func best_target(targets: Array) -> Target:
+	var best: Target = null
+	var best_score := -1
+	for t in targets:
+		var score := 0
+		match t.action:
+			Rule.RANK_UP:    score = 3
+			Rule.EMPTY_SLOT: score = 2
+			_:               score = 1
+		if score > best_score:
+			best_score = score
+			best = t
+	return best
+
+func place_at(m: Module, exploit_index: int, slot_index: int) -> void:
+	while exploits.size() <= exploit_index:
+		exploits.append(Exploit.new())
+	var ex: Exploit = exploits[exploit_index]
+	var occupant := ex.at(slot_index)
+	if occupant != null and occupant.module.id == m.id:
+		occupant.rank += 1
+	else:
+		# A displaced module loses its rank: drawn again it re-enters at 1.
+		ex.set_at(slot_index, EquippedModule.new(m))
+	assert_unique()
 
 ## Resolves where a card would land. Rule 0 (no legal placement) returns NONE,
 ## and the caller offers the card as salvage — the backstop that makes the set

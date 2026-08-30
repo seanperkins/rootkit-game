@@ -129,7 +129,7 @@ func _real_run() -> PackedFloat64Array:
 	var g: Node2D = load("res://scenes/run.tscn").instantiate()
 	root.add_child(g)
 	await process_frame
-	g.level_up_offered.connect(func(c): g.choose_card(c[0][0], c[0][1]))
+	g.level_up_offered.connect(func(c): g.choose_card(c[0][0], Loadout.best_target(c[0][1])))
 	var out := PackedFloat64Array()
 	var t := 0
 	while t < 24000 and g.alive and not g.won:

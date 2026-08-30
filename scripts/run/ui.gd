@@ -60,9 +60,26 @@ func _build() -> void:
 	_overlay.add_child(scrim)
 
 	var title := _mono(20)
+	title.name = "Title"
 	title.text = "  LEVEL UP  ::  select module"
-	title.position = Vector2(60, 90)
+	title.position = Vector2(60, 78)
 	_overlay.add_child(title)
+
+	var slots := VBoxContainer.new()
+	slots.name = "Slots"
+	slots.position = Vector2(60, 150)
+	slots.visible = false
+	slots.add_theme_constant_override("separation", 10)
+	_overlay.add_child(slots)
+
+	var back := Button.new()
+	back.name = "Back"
+	back.text = "back  ->  pick a different module"
+	back.position = Vector2(60, 470)
+	back.custom_minimum_size = Vector2(300, 32)
+	back.visible = false
+	_overlay.add_child(back)
+	back.pressed.connect(_show_cards)
 
 	var row := HBoxContainer.new()
 	row.name = "Row"
@@ -126,17 +143,97 @@ func _bar(f: float, w: int) -> String:
 	var n := int(clampf(f, 0.0, 1.0) * w)
 	return "#".repeat(n) + ".".repeat(w - n)
 
+var _cards_data: Array = []
+
 func _on_cards(cards: Array) -> void:
+	_cards_data = cards
+	_show_cards()
+	_overlay.visible = true
+
+func _show_cards() -> void:
+	_overlay.get_node("Title").text = "  LEVEL UP  ::  select module"
+	_overlay.get_node("Row").visible = true
+	_overlay.get_node("Decline").visible = true
+	_overlay.get_node("Slots").visible = false
+	_overlay.get_node("Back").visible = false
 	var row: HBoxContainer = _overlay.get_node("Row")
 	for c in row.get_children():
+		row.remove_child(c)
 		c.queue_free()
-	for entry in cards:
+	for entry in _cards_data:
 		row.add_child(_make_card(entry))
-	_overlay.visible = true
+
+## Stage 2 — the loadout as a board. Every slot is shown; only the ones this
+## module may legally occupy are enabled, so the shape of the build is visible
+## at the moment you are deciding.
+func _show_slots(m: Module, targets: Array) -> void:
+	_overlay.get_node("Title").text = "  %s  ::  choose a slot" % m.display_name
+	_overlay.get_node("Row").visible = false
+	_overlay.get_node("Decline").visible = false
+	_overlay.get_node("Back").visible = true
+	var box: VBoxContainer = _overlay.get_node("Slots")
+	box.visible = true
+	for c in box.get_children():
+		box.remove_child(c)
+		c.queue_free()
+
+	var by_slot := {}
+	for t in targets:
+		by_slot[t.exploit * 10 + t.slot] = t
+
+	for e in Loadout.MAX_EXPLOITS:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var label := _mono(13)
+		label.custom_minimum_size = Vector2(110, 0)
+		var ex: Exploit = run.loadout.exploits[e] if e < run.loadout.exploits.size() else null
+		label.text = "exploit_%02d" % (e + 1)
+		label.add_theme_color_override("font_color", FG if ex != null else DIM)
+		row.add_child(label)
+		for sl in Exploit.SLOT_COUNT:
+			row.add_child(_slot_button(m, ex, e, sl, by_slot.get(e * 10 + sl)))
+		box.add_child(row)
+
+	var legend := _mono(12)
+	legend.add_theme_color_override("font_color", DIM)
+	legend.text = "\n  VECTOR      TRIGGER     PAYLOAD     PAYLOAD"
+	box.add_child(legend)
+
+func _slot_button(m: Module, ex, e: int, sl: int, target) -> Button:
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(168, 54)
+	b.add_theme_font_size_override("font_size", 12)
+	var occupant: EquippedModule = ex.at(sl) if ex != null else null
+	var occupied_by := ""
+	if occupant != null:
+		occupied_by = "%s%s" % [occupant.module.display_name,
+			"" if occupant.rank == 1 else " ·%d" % occupant.rank]
+	else:
+		occupied_by = "( empty )"
+
+	if target == null:
+		# Not a legal home for this module: wrong slot type, a duplicate id, or
+		# the last interval trigger.
+		b.disabled = true
+		b.text = occupied_by
+		b.add_theme_stylebox_override("disabled", _panel(Color(0.18, 0.26, 0.22)))
+	else:
+		match target.action:
+			Loadout.Rule.RANK_UP:
+				b.text = "%s\nRANK UP -> %d" % [occupied_by, occupant.rank + 1]
+				b.add_theme_stylebox_override("normal", _panel(Color(0.55, 1.0, 0.72)))
+			Loadout.Rule.REPLACE:
+				b.text = "%s\nREPLACE" % occupied_by
+				b.add_theme_stylebox_override("normal", _panel(WARN))
+			_:
+				b.text = "( empty )\nPLACE"
+				b.add_theme_stylebox_override("normal", _panel(FG))
+		b.pressed.connect(func(): run.choose_card(m, target))
+	return b
 
 func _make_card(entry: Array) -> Control:
 	var m = entry[0]
-	var p = entry[1]
+	var targets: Array = entry[1]
 	var b := Button.new()
 	b.custom_minimum_size = Vector2(268, 210)
 	b.add_theme_font_size_override("font_size", 13)
@@ -144,19 +241,14 @@ func _make_card(entry: Array) -> Control:
 	if m == null:
 		b.text = "\n[ salvage ]\n\nno module fits\n\n+50 salvage"
 		b.add_theme_stylebox_override("normal", _panel(DIM))
+		b.pressed.connect(func(): run.choose_card(null, null))
 	else:
 		var slot: String = ["VECTOR", "TRIGGER", "PAYLOAD"][int(m.slot)]
-		var action := ""
-		match p.rule:
-			Loadout.Rule.RANK_UP:     action = "rank up  ->  exploit_%02d" % (p.exploit_index + 1)
-			Loadout.Rule.EMPTY_SLOT:  action = "slot in  ->  exploit_%02d" % (p.exploit_index + 1)
-			Loadout.Rule.NEW_EXPLOIT: action = "compile  ->  exploit_%02d (new)" % (p.exploit_index + 1)
-			Loadout.Rule.REPLACE:     action = "REPLACE %s in exploit_%02d" % [
-				p.victim.display_name, p.exploit_index + 1]
-		b.text = "\n[ %s ]\n\n%s\n\n%s\n\n%s" % [slot, m.display_name, action, _stats_line(m)]
-		b.add_theme_stylebox_override("normal",
-			_panel(WARN if p.rule == Loadout.Rule.REPLACE else FG))
-	b.pressed.connect(func(): run.choose_card(m, p))
+		b.text = "\n[ %s ]\n\n%s\n\n%d slot%s available\n\n%s" % [
+			slot, m.display_name, targets.size(),
+			"" if targets.size() == 1 else "s", _stats_line(m)]
+		b.add_theme_stylebox_override("normal", _panel(FG))
+		b.pressed.connect(func(): _show_slots(m, targets))
 	return b
 
 func _stats_line(m: Module) -> String:
