@@ -71,6 +71,8 @@ func resolve(m: Module) -> Placement:
 	var best_em: EquippedModule = null
 	for i in exploits.size():
 		for em in _slot_members(exploits[i], m.slot):
+			if _is_last_interval(em):
+				continue     # see _is_last_interval
 			if best_em == null or em.rank < best_em.rank:
 				best_em = em
 				best_ex = i
@@ -110,6 +112,24 @@ func _displace(ei: int, victim: Module) -> void:
 		if ex.payloads[i] != null and ex.payloads[i].module.id == victim.id:
 			ex.payloads[i] = null
 			return
+
+## The loadout must always retain at least one INTERVAL trigger.
+##
+## Event triggers cannot bootstrap: an ON_KILL exploit fires when it kills, and
+## it kills when it fires. With one exploit, rule 4 displacing `interval` for
+## `on_kill` leaves the player with no weapon at all and no way to recover —
+## observed in a full-run test as 6 kills in 116 seconds. Refusing the swap is
+## cheaper than special-casing the deadlock everywhere downstream.
+func _is_last_interval(em: EquippedModule) -> bool:
+	if em.module.slot != Module.Slot.TRIGGER:
+		return false
+	if em.module.trigger_kind != Module.TriggerKind.INTERVAL:
+		return false
+	var n := 0
+	for ex in exploits:
+		if ex.trigger != null and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL:
+			n += 1
+	return n <= 1
 
 func _slot_members(ex: Exploit, slot: int) -> Array:
 	match slot:

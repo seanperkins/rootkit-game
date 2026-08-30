@@ -59,13 +59,15 @@ func fillability_invariant() -> void:
 	_check("unlock invariant: >=3 TRIGGER", t >= 3, true)
 	_check("unlock invariant: >=6 PAYLOAD", p >= 6, true)
 
+## Derived from the table, not hardcoded — a balance pass should not be able to
+## fail a correctness test.
 func rank_scaling() -> void:
+	var base: float = T[&"broadcast"].stats[&"damage"]
+	var pay: float = T[&"buffer_overflow"].stats[&"damage"]
 	var ex := _mk(&"broadcast", &"interval", [&"buffer_overflow"])
-	var r1 := Compiler.build(ex)
-	_check("rank 1: damage 4 + 6", r1.damage, 10.0)
+	_check("rank 1: base + payload", Compiler.build(ex).damage, base + pay)
 	ex.payloads[0].rank = 3
-	var r3 := Compiler.build(ex)
-	_check("rank 3: damage 4 + 6*3", r3.damage, 22.0)
+	_check("rank 3: base + payload*3", Compiler.build(ex).damage, base + pay * 3.0)
 
 ## Stack every cooldown contributor at max rank and the floor must still hold.
 func cooldown_clamp() -> void:

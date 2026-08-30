@@ -22,13 +22,13 @@ static func all() -> Array:
 	return [
 		# --- VECTOR ---------------------------------------------------------
 		Module.make(&"broadcast", "broadcast()", S.VECTOR,
-			{&"damage": 4.0, &"radius": 90.0, &"cooldown": 1.0}, [], V.BROADCAST),
+			{&"damage": 5.0, &"radius": 120.0, &"cooldown": 0.85}, [], V.BROADCAST),
 		Module.make(&"packet", "packet()", S.VECTOR,
-			{&"damage": 6.0, &"projectile_speed": 320.0, &"cooldown": 0.9}, [], V.PACKET),
+			{&"damage": 9.0, &"projectile_speed": 420.0, &"cooldown": 0.5}, [], V.PACKET),
 		Module.make(&"chain", "chain()", S.VECTOR,
-			{&"damage": 5.0, &"chain_count": 2.0, &"radius": 150.0, &"cooldown": 1.1}, [], V.CHAIN),
+			{&"damage": 7.0, &"chain_count": 2.0, &"radius": 170.0, &"cooldown": 0.9}, [], V.CHAIN),
 		Module.make(&"beam", "beam()", S.VECTOR,
-			{&"damage": 3.0, &"pierce": 3.0, &"radius": 240.0, &"cooldown": 0.7}, [], V.BEAM),
+			{&"damage": 5.0, &"pierce": 3.0, &"radius": 240.0, &"cooldown": 0.6}, [], V.BEAM),
 
 		# --- TRIGGER --------------------------------------------------------
 		Module.make(&"interval", "interval(t)", S.TRIGGER,
@@ -42,11 +42,11 @@ static func all() -> Array:
 
 		# --- PAYLOAD --------------------------------------------------------
 		Module.make(&"buffer_overflow", "buffer_overflow", S.PAYLOAD,
-			{&"damage": 6.0}),
+			{&"damage": 7.0}),
 		Module.make(&"fork_bomb", "fork_bomb", S.PAYLOAD,
-			{&"damage": 3.0, &"radius": 45.0}, [&"aoe"]),
+			{&"damage": 5.0, &"radius": 60.0}, [&"aoe"]),
 		Module.make(&"corrupt", "corrupt", S.PAYLOAD,
-			{&"corruption": 3.0}, [&"corruption"]),
+			{&"corruption": 4.0}, [&"corruption"]),
 		Module.make(&"keylog", "keylog", S.PAYLOAD,
 			{&"lifesteal": 0.4}),
 		Module.make(&"worm", "worm", S.PAYLOAD,

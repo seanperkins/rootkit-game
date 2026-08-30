@@ -3,9 +3,16 @@ config_version=5
 [application]
 config/name="ROOTKIT"
 config/features=PackedStringArray("4.7", "GL Compatibility")
+run/main_scene="res://scenes/main.tscn"
 
 [physics]
 common/physics_ticks_per_second=60
 
 [rendering]
 renderer/rendering_method="gl_compatibility"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
