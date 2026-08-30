@@ -53,10 +53,7 @@ const WORM_MAX_SEGMENTS := 6
 const WORM_GROWTH_SECONDS := 70.0
 const SPAWN_RING := 720.0
 
-const PLAYER_MAX_HEALTH := 100.0
-const PLAYER_SPEED := 220.0
 const PLAYER_RADIUS := 11.0
-const PICKUP_RADIUS := 30.0
 const IFRAMES := 0.5
 
 const FIRE_BUDGET := 4
@@ -80,7 +77,11 @@ var loadout: Loadout
 var director: SpawnDirector
 
 var player_pos := Vector2.ZERO
-var player_health := PLAYER_MAX_HEALTH
+## The merged base + meta player sheet. Seeded in _ready, because a declaration
+## initialiser is evaluated before _ready reads the save — a player with memory
+## ranks would otherwise start every run at the base 100.
+var _sheet: Dictionary = PlayerStats.BASE.duplicate()
+var player_health := 0.0
 var player_iframe := 0.0
 var alive := true
 var won := false
@@ -93,7 +94,7 @@ var kills := 0
 var flips := 0
 var pending_levels := 0
 var paused := false
-var pickup_radius := PICKUP_RADIUS
+var pickup_radius := 0.0
 var _steer_phase := 0
 ## Diagnostic only: how many times each exploit's vector was emitted this tick.
 var _trigger_fires := {}
@@ -180,7 +181,9 @@ func _ready() -> void:
 	loadout = Loadout.new()
 	loadout.start(table[&"packet"], table[&"interval"])
 	loadout.mult = PlayerStats.mults(SaveGame.multipliers())
-	pickup_radius = PICKUP_RADIUS + SaveGame.pickup_bonus()
+	_sheet = PlayerStats.sheet(SaveGame.player_sheet())
+	player_health = _sheet[&"integrity"]
+	pickup_radius = _sheet[&"pickup_radius"]
 	_unlocked = SaveGame.unlocked_modules()
 	_recompile()
 
@@ -196,6 +199,9 @@ func _ready() -> void:
 	ui.set_script(load("res://scripts/run/ui.gd"))
 	add_child(ui)
 	ui.bind(self)
+
+func _eff_integrity() -> float:
+	return _sheet[&"integrity"]
 
 func _recompile() -> void:
 	resolved = loadout.compile_all()
@@ -320,14 +326,14 @@ func _step2_integrate(dt: float) -> void:
 		# as up/down, which is what makes the controls feel lopsided. Because
 		# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
 		# through WITHOUT renormalising makes the on-screen velocity exactly
-		# PLAYER_SPEED in every direction.
+		# clock_speed in every direction.
 		#
 		# The trade is that world speed now varies with heading (fastest along
 		# the screen vertical, where the projection compresses most). That is the
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
-		player_pos += world_dir * PLAYER_SPEED * dt
+		player_pos += world_dir * _sheet[&"clock_speed"] * dt
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
 	if player_iframe > 0.0:
@@ -667,7 +673,7 @@ func _on_death(i: int) -> void:
 	if killer >= 0 and killer < resolved.size():
 		var lifesteal: float = resolved[killer].lifesteal
 		if lifesteal > 0.0:
-			player_health = minf(PLAYER_MAX_HEALTH, player_health + lifesteal)
+			player_health = minf(_eff_integrity(), player_health + lifesteal)
 
 ## A flipped enemy drops the same shards a killed one does, so a corruption
 ## build does not starve its own level-ups in proportion to how well it works.

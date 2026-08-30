@@ -19,7 +19,6 @@ const BUFF_COST_BASE := 60
 const BUFF_COST_STEP := 30
 const BUFF_MAX := 10
 
-const PICKUP_PER_RANK := 6.0
 
 ## The v2 split. Two tables, because the two namespaces are read at different
 ## times by different code. SHEET_EFFECT is additive PLAYER stats, read directly
@@ -197,10 +196,6 @@ static func _fold(table: Dictionary) -> Dictionary:
 		for k in eff:
 			out[k] = out.get(k, 0.0) + eff[k] * n
 	return out
-
-## Read directly by the run, outside the compile path.
-static func pickup_bonus() -> float:
-	return float(load_state()["buffs"].get("bandwidth", 0)) * PICKUP_PER_RANK
 
 static func buff_price(current: int) -> int:
 	return BUFF_COST_BASE + BUFF_COST_STEP * current
