@@ -12,7 +12,7 @@ const STAT_KEYS := [
 	&"pierce", &"chain_count", &"projectile_speed",
 	&"botnet_cap", &"botnet_lifetime", &"botnet_damage_ratio",
 	&"ward_armor", &"ward_defense", &"ward_clock_speed", &"ward_duration",
-	&"travel",
+	&"travel", &"cadence_mult",
 ]
 
 @export var id: StringName
