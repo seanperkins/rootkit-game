@@ -97,6 +97,18 @@ var pickup_radius := PICKUP_RADIUS
 var _steer_phase := 0
 ## Diagnostic only: how many times each exploit's vector was emitted this tick.
 var _trigger_fires := {}
+## Time until each exploit may fire again. INTERVAL uses its own accumulator;
+## this gates the EVENT triggers, which previously had no rate limit at all —
+## ON_KILL fired once per adjudicated death, so in a swarm it ran continuously
+## and was bounded only by the per-tick fire budget.
+var _fire_cd: PackedFloat32Array
+## Transient shot visuals. BROADCAST, BEAM and CHAIN resolve straight through
+## the hit queue and drew nothing at all — you saw enemies die with no sign of
+## what killed them. Bounded by the fire budget: 3 exploits x 4 fires x FX_LIFE
+## worth of ticks.
+const FX_LIFE := 0.13
+var _fx_line: Array = []      # [a, b, t, colour]
+var _fx_ring: Array = []      # [centre, radius, t, colour]
 var _order: PackedInt32Array
 var _band_count: PackedInt32Array
 const DEPTH_BANDS := 192
@@ -153,6 +165,7 @@ func _ready() -> void:
 	_counts = PackedInt32Array(); _counts.resize(4)
 	_pos_arrays = [null, null, null, null]
 	_fire_acc = PackedFloat32Array(); _fire_acc.resize(Loadout.MAX_EXPLOITS)
+	_fire_cd = PackedFloat32Array(); _fire_cd.resize(Loadout.MAX_EXPLOITS)
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
@@ -349,6 +362,7 @@ func _step2_integrate(dt: float) -> void:
 		projectiles.pos[i] += projectiles.vel[i] * dt
 	for i in botnet.count:
 		_botnet_life[i] -= dt
+	_age_fx(dt)
 	for i in shards.count:
 		var d := player_pos - shards.pos[i]
 		# Magnet reach. Was 6x the pickup radius (288 px), which meant shards
@@ -356,6 +370,22 @@ func _step2_integrate(dt: float) -> void:
 		# positioning decision.
 		if d.length() < pickup_radius * 2.2:
 			shards.pos[i] += d.normalized() * 300.0 * dt
+
+func _age_fx(dt: float) -> void:
+	var i := 0
+	while i < _fx_line.size():
+		_fx_line[i][2] -= dt
+		if _fx_line[i][2] <= 0.0:
+			_fx_line.remove_at(i)
+		else:
+			i += 1
+	i = 0
+	while i < _fx_ring.size():
+		_fx_ring[i][2] -= dt
+		if _fx_ring[i][2] <= 0.0:
+			_fx_ring.remove_at(i)
+		else:
+			i += 1
 
 func _step3_rebuild() -> void:
 	_pos_arrays[Grid.Pop.ENEMY] = enemies.pos
@@ -397,8 +427,20 @@ func _step4_steer() -> void:
 		enemies.force[i] = push * 2.2
 		i += STEER_SLICES
 
+## Event triggers respond only when off cooldown. Returns false when the
+## exploit is still recovering, so callers can skip the emit.
+func _try_event_fire(ei: int, r: ResolvedExploit) -> bool:
+	if _fire_cd[ei] > 0.0:
+		return false
+	_fire_cd[ei] = r.cooldown
+	_emit_vector(ei, r)
+	return true
+
 func _step5_fire(dt: float) -> void:
 	queue.begin_tick()
+	for ei in _fire_cd.size():
+		if _fire_cd[ei] > 0.0:
+			_fire_cd[ei] -= dt
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if r.inert:
@@ -420,6 +462,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
+			_fx_ring.append([player_pos, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
 			var n := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(n, _buf.size()):
 				_hit(ei, r, Grid.index_of(_buf[k]))
@@ -428,6 +471,8 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			if target < 0:
 				return
 			var dir := (enemies.pos[target] - player_pos).normalized()
+			_fx_line.append([player_pos, player_pos + dir * r.radius, FX_LIFE,
+				Color(2.2, 1.4, 2.6)])
 			var n2 := grid.query_radius_into(player_pos + dir * r.radius * 0.5,
 				r.radius * 0.5, _buf, Grid.M_ENEMY)
 			var struck := 0
@@ -441,6 +486,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			if t2 < 0:
 				return
 			_hit(ei, r, t2)
+			_fx_line.append([player_pos, enemies.pos[t2], FX_LIFE, Color(1.0, 2.2, 1.6)])
 			var from := enemies.pos[t2]
 			var visited := [t2]
 			var hops := 0
@@ -459,6 +505,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				if picked < 0:
 					break
 				_hit(ei, r, picked)
+				_fx_line.append([from, enemies.pos[picked], FX_LIFE, Color(1.0, 2.2, 1.6)])
 				visited.append(picked)
 				from = enemies.pos[picked]
 				hops += 1
@@ -546,7 +593,7 @@ func _damage_player(amount: float) -> void:
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
-			_emit_vector(ei, r)
+			_try_event_fire(ei, r)
 	if player_health <= 0.0 and alive and not won:
 		player_health = 0.0
 		alive = false
@@ -574,7 +621,7 @@ func _steps78_drain() -> void:
 			for ei in resolved.size():
 				var r: ResolvedExploit = resolved[ei]
 				if not r.inert and r.trigger_kind == Module.TriggerKind.ON_HIT:
-					_emit_vector(ei, r)
+					_try_event_fire(ei, r)
 
 		# Break only when nothing resolved AND nothing new is queued. Breaking on
 		# resolved_n alone discarded the events ON_HIT had just appended one line
@@ -615,7 +662,7 @@ func _on_death(i: int) -> void:
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_KILL:
-			_emit_vector(ei, r)
+			_try_event_fire(ei, r)
 	var killer := queue.killer_exploit[i]
 	if killer >= 0 and killer < resolved.size():
 		var lifesteal: float = resolved[killer].lifesteal
@@ -890,6 +937,20 @@ func _depth_sort() -> void:
 		_band_count[key2] += 1
 
 func _draw() -> void:
+	# Shot visuals, oldest fading out. Drawn under the ship.
+	for fx in _fx_line:
+		var f: float = fx[2] / FX_LIFE
+		var c: Color = fx[3]
+		draw_line(to_iso(fx[0]), to_iso(fx[1]), Color(c.r, c.g, c.b, f), 1.0 + 2.5 * f)
+	for fx in _fx_ring:
+		var f2: float = fx[2] / FX_LIFE
+		var c2: Color = fx[3]
+		var pts := PackedVector2Array()
+		for k in 33:
+			var a2 := TAU * k / 32.0
+			pts.append(to_iso(fx[0] + Vector2(cos(a2), sin(a2)) * fx[1] * (1.0 - f2 * 0.25)))
+		draw_polyline(pts, Color(c2.r, c2.g, c2.b, f2 * 0.85), 1.0 + 2.0 * f2)
+
 	# The ship is drawn screen-aligned at the projected position: a glyph that
 	# tilts with the ground plane reads as debris, not as the thing you steer.
 	var o := to_iso(player_pos)

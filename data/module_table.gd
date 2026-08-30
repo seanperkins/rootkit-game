@@ -34,7 +34,7 @@ static func all() -> Array:
 		Module.make(&"interval", "interval(t)", S.TRIGGER,
 			{&"cooldown": -0.10}, [], 0, T.INTERVAL),
 		Module.make(&"on_kill", "on_kill()", S.TRIGGER,
-			{&"damage": 3.0}, [], 0, T.ON_KILL),
+			{&"damage": 3.0, &"cooldown": 0.35}, [], 0, T.ON_KILL),
 		Module.make(&"on_hit", "on_hit()", S.TRIGGER,
 			{&"damage": 1.0, &"cooldown": 0.20}, [], 0, T.ON_HIT),
 		Module.make(&"on_damage_taken", "on_damage_taken()", S.TRIGGER,
