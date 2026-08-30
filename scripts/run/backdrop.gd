@@ -21,25 +21,26 @@ func _draw() -> void:
 		return
 	var o: Vector2 = target.ARENA_ORIGIN
 	var sz: Vector2 = target.ARENA_SIZE
-	var c: Vector2 = target.player_pos
 
-	# Clip in WORLD space to a box around the player, then project. Clipping
-	# after projection would cut the lattice along screen axes and the diagonals
-	# would visibly pop.
-	var reach := 1100.0
-	var x0 := maxf(o.x, floorf((c.x - reach) / STEP) * STEP)
-	var x1 := minf(o.x + sz.x, c.x + reach)
-	var y0 := maxf(o.y, floorf((c.y - reach) / STEP) * STEP)
-	var y1 := minf(o.y + sz.y, c.y + reach)
-
-	var x := x0
-	while x <= x1:
-		draw_line(target.to_iso(Vector2(x, y0)), target.to_iso(Vector2(x, y1)), LINE, 1.0)
-		x += STEP
-	var y := y0
-	while y <= y1:
-		draw_line(target.to_iso(Vector2(x0, y)), target.to_iso(Vector2(x1, y)), LINE, 1.0)
-		y += STEP
+	# The whole lattice, every frame, in fixed world positions.
+	#
+	# It used to be clipped to a box around the player, with the start snapped to
+	# the grid and THEN clamped to the arena — but the arena origin is not a
+	# multiple of STEP, so near an edge the clamp won and every line jumped to a
+	# different offset as the player moved. Clipping bought nothing anyway: the
+	# arena is 34 vertical lines and 21 horizontal ones.
+	var k := int(ceil(o.x / STEP))
+	while k * STEP <= o.x + sz.x:
+		var x := k * STEP
+		draw_line(target.to_iso(Vector2(x, o.y)),
+			target.to_iso(Vector2(x, o.y + sz.y)), LINE, 1.0)
+		k += 1
+	k = int(ceil(o.y / STEP))
+	while k * STEP <= o.y + sz.y:
+		var y := k * STEP
+		draw_line(target.to_iso(Vector2(o.x, y)),
+			target.to_iso(Vector2(o.x + sz.x, y)), LINE, 1.0)
+		k += 1
 
 	_wall(o, sz, 0.0, EDGE, 3.0)
 	_wall(o, sz, 10.0, GLOW, 2.0)
