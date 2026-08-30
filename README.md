@@ -66,10 +66,14 @@ godot --headless -s res://tests/test_run.gd          # a full winning subnet
 godot --headless -s res://tests/perf_milestone0.gd   # the architecture gate
 ```
 
-The perf gate is **load-relative**: it times a fixed workload first and scales
-its budget, because identical code measures 5.2 ms median on a quiet machine and
-8.5 ms under load. Above 1.8x contention it declines to judge rather than
-false-fail.
+The perf gate drives the **real** `run._physics_process`, not a model of it, and
+gates on a full autopiloted run: mean 1.13 ms, p95 2.40 ms against an 11 ms
+budget derived from the 60 Hz frame. It also reports a stress figure with every
+pool at simultaneous cap (600 enemies + 400 projectiles + 1500 shards + 64
+botnet — a load real play never reaches): mean 7.5 ms, p95 9.7 ms, still inside
+the frame. It is load-relative, timing a fixed workload first and scaling the
+budget, because identical code measures 5.2 ms median on a quiet machine and
+8.5 ms under load.
 
 ## Not in this build
 

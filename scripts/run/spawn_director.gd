@@ -64,12 +64,13 @@ func step(dt: float, origin: Vector2, radius: float) -> Array:
 		var w: Wave = waves[i]
 		if elapsed < w.t0 or prev >= w.t1:
 			continue
-		var span := minf(elapsed, w.t1) - maxf(prev, w.t0)
-		if span <= 0.0:
-			continue
-		_milli[i] += int(round(w.rate * span * 1000.0))
-		while _milli[i] >= 1000:
-			_milli[i] -= 1000
+		# Derive the running total from elapsed time rather than accumulating a
+		# rounded per-tick increment: rounding each tick made the count depend on
+		# the tick rate (1382 spawns at 60 Hz against 1383 at 10 Hz).
+		var active: float = minf(elapsed, w.t1) - w.t0
+		var due := int(floor(w.rate * active))
+		while _milli[i] < due:
+			_milli[i] += 1
 			out.append([w.type_index, _place(w.formation, origin, radius)])
 	return out
 

@@ -7,6 +7,9 @@ extends SceneTree
 var failures := 0
 
 func _initialize() -> void:
+	# Redirect persistence: this suite writes hostile fixtures and a deliberately
+	# truncated file, which previously landed in the player's real save.
+	SaveGame.use_test_paths()
 	print("ROOTKIT — meta / save\n")
 	price_curve()
 	buying()
@@ -61,6 +64,12 @@ func buffs_fold_into_compile() -> void:
 	var cooled := Compiler.build(ex, SaveGame.buff_stats())
 	_check("cooling never breaches MIN_COOLDOWN",
 		cooled.cooldown >= Compiler.MIN_COOLDOWN, true)
+	# bandwidth is a player stat, not an exploit stat: it must NOT reach the
+	# compiler, and it must actually move pickup range.
+	SaveGame.load_state()["buffs"]["bandwidth"] = 5
+	_check("bandwidth stays out of the compile path",
+		SaveGame.buff_stats().has(&"radius"), false)
+	_check("bandwidth moves pickup range", SaveGame.pickup_bonus(), 30.0)
 
 func unlocks() -> void:
 	SaveGame.use_fresh_state()

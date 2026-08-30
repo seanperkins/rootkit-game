@@ -52,8 +52,6 @@ var hit_exploit: PackedInt32Array
 var hit_target: PackedInt32Array
 var hit_count: int = 0
 
-var dropped: int = 0
-
 func _init(capacity: int, entity_capacity: int) -> void:
 	_capacity = capacity
 	kind.resize(capacity)
@@ -70,7 +68,6 @@ func _init(capacity: int, entity_capacity: int) -> void:
 
 func begin_tick() -> void:
 	count = 0
-	dropped = 0
 	hit_count = 0
 	adjudication.fill(OPEN)
 	outcome.fill(Outcome.NONE)
@@ -79,7 +76,6 @@ func begin_tick() -> void:
 
 func append(k: int, exploit: int, tgt: int, gen: int, amt: float) -> bool:
 	if count >= _capacity:
-		dropped += 1
 		return false
 	kind[count] = k
 	source_exploit[count] = exploit
@@ -89,13 +85,15 @@ func append(k: int, exploit: int, tgt: int, gen: int, amt: float) -> bool:
 	count += 1
 	return true
 
-func clear_events() -> void:
-	count = 0
-	hit_count = 0
-
 ## Applies every queued event to `pop`, then adjudicates each entity this pass
 ## marked. Returns the number adjudicated. Events are consumed.
 func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
+	# hit_count is PER PASS. It was reset only in begin_tick while the arrays
+	# are sized for a single pass's events, so eight passes could drive the
+	# write index to 7200 + 7*1800 = 19800 into a 7200-element array — an
+	# out-of-bounds write aborting the drain mid-tick at max density.
+	hit_count = 0
+
 	# --- apply -------------------------------------------------------------
 	for e in count:
 		var i := target[e]

@@ -41,8 +41,6 @@ var _items: PackedInt32Array        # tagged indices, bucketed
 var _item_pos: PackedVector2Array   # positions parallel to _items
 var _item_mask: PackedInt32Array    # 1 << population, parallel to _items
 
-var _total: int = 0
-
 func _init(origin: Vector2, size: Vector2, p_cell_size: float, capacity: int) -> void:
 	cell_size = p_cell_size
 	_origin = origin
@@ -69,14 +67,11 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array) -> void:
 		_cursor[c] = 0
 
 	# Pass 1 — count per cell.
-	var total := 0
 	for p in npops:
 		var pa: PackedVector2Array = pos_arrays[p]
 		var n := counts[p]
-		total += n
 		for i in n:
 			_cursor[_cell_index(pa[i])] += 1
-	_total = total
 
 	# Prefix sum. _cursor is rewritten in place to each bucket's write head.
 	var acc := 0
@@ -128,6 +123,3 @@ func query_radius_into(point: Vector2, r: float, buf: PackedInt32Array, mask: in
 						buf[found] = _items[k]
 					found += 1
 	return found
-
-func total() -> int:
-	return _total

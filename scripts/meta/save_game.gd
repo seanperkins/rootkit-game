@@ -8,20 +8,28 @@ class_name SaveGame extends RefCounted
 ## to .bak, then rename .tmp into place. A newer-version file is preserved to
 ## .v<N> rather than .bak, which would clobber the fallback.
 
-const PATH := "user://save.json"
-const BAK := "user://save.json.bak"
-const TMP := "user://save.json.tmp"
+## Not const: tests redirect these so a suite run cannot destroy a real
+## profile's progression. See SaveGame.use_test_paths().
+static var PATH := "user://save.json"
+static var BAK := "user://save.json.bak"
+static var TMP := "user://save.json.tmp"
 const VERSION := 1
 
 const BUFF_COST_BASE := 60
 const BUFF_COST_STEP := 30
 const BUFF_MAX := 10
 
+## cpu_cycles and cooling fold into ResolvedExploit through Compiler.build.
+## bandwidth does NOT: pickup range is a player stat, not an exploit stat. It
+## previously mapped to &"radius", which is the exploit's effect radius — so the
+## shop sold "pickup radius" for up to 1950 salvage and delivered something else
+## entirely, and delivered nothing at all to a packet-only build, whose vector
+## ignores r.radius.
 const BUFF_EFFECT := {
 	&"cpu_cycles": {&"damage": 1.5},
 	&"cooling": {&"cooldown": -0.02},
-	&"bandwidth": {&"radius": 6.0},
 }
+const PICKUP_PER_RANK := 6.0
 
 static var _cache: Dictionary = {}
 
@@ -40,6 +48,17 @@ static func _default() -> Dictionary:
 ## and therefore the build — so a test that inherits user://save.json is not
 ## measuring what it thinks it is.
 static func use_fresh_state() -> void:
+	_cache = _default()
+
+## Point persistence at throwaway files. Without this the suite writes hostile
+## fixtures and a deliberately truncated file straight into the player's save.
+static func use_test_paths() -> void:
+	PATH = "user://test_save.json"
+	BAK = "user://test_save.json.bak"
+	TMP = "user://test_save.json.tmp"
+	DirAccess.remove_absolute(PATH)
+	DirAccess.remove_absolute(BAK)
+	DirAccess.remove_absolute(TMP)
 	_cache = _default()
 
 static func load_state() -> Dictionary:
@@ -149,6 +168,10 @@ static func buff_stats() -> Dictionary:
 		for k in BUFF_EFFECT[StringName(name)]:
 			out[k] = out.get(k, 0.0) + BUFF_EFFECT[StringName(name)][k] * n
 	return out
+
+## Read directly by the run, outside the compile path.
+static func pickup_bonus() -> float:
+	return float(load_state()["buffs"].get("bandwidth", 0)) * PICKUP_PER_RANK
 
 static func buff_price(current: int) -> int:
 	return BUFF_COST_BASE + BUFF_COST_STEP * current

@@ -14,6 +14,12 @@ const MAX_BOTNET := 64
 const ENEMY_RADIUS := 12.0
 const PROJECTILE_RADIUS := 4.0
 const SEPARATION_RADIUS := 26.0
+## Separation only matters where the player can see it. The viewport covers
+## roughly 640 px from the player at this zoom, so enemies beyond this keep
+## their steering force from the last time they were in range and cost nothing.
+## This is the single largest item in the tick and most of it was invisible.
+const STEER_RANGE_SQ := 820.0 * 820.0
+const STEER_SLICES := 2
 const SPAWN_RING := 720.0
 
 const PLAYER_MAX_HEALTH := 100.0
@@ -56,6 +62,8 @@ var kills := 0
 var flips := 0
 var pending_levels := 0
 var paused := false
+var pickup_radius := PICKUP_RADIUS
+var _steer_phase := 0
 
 var thresholds: PackedFloat32Array
 var enemy_types: Array
@@ -66,8 +74,6 @@ var _proj_pierce: PackedInt32Array
 var _proj_last: PackedInt32Array
 var _botnet_ratio: PackedFloat32Array
 var _botnet_life: PackedFloat32Array
-var _botnet_seq: PackedInt32Array
-var _seq := 0
 
 var _buf: PackedInt32Array
 var _counts: PackedInt32Array
@@ -111,12 +117,12 @@ func _ready() -> void:
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_botnet_ratio = PackedFloat32Array(); _botnet_ratio.resize(MAX_BOTNET)
 	_botnet_life = PackedFloat32Array(); _botnet_life.resize(MAX_BOTNET)
-	_botnet_seq = PackedInt32Array(); _botnet_seq.resize(MAX_BOTNET)
 
 	var table := ModuleTable.by_id()
 	loadout = Loadout.new()
 	loadout.start(table[&"packet"], table[&"interval"])
 	loadout.buffs = SaveGame.buff_stats()
+	pickup_radius = PICKUP_RADIUS + SaveGame.pickup_bonus()
 	_unlocked = SaveGame.unlocked_modules()
 	_recompile()
 
@@ -213,7 +219,7 @@ func _step2_integrate(dt: float) -> void:
 		_botnet_life[i] -= dt
 	for i in shards.count:
 		var d := player_pos - shards.pos[i]
-		if d.length() < PICKUP_RADIUS * 6.0:
+		if d.length() < pickup_radius * 6.0:
 			shards.pos[i] += d.normalized() * 340.0 * dt
 
 func _step3_rebuild() -> void:
@@ -227,9 +233,19 @@ func _step3_rebuild() -> void:
 	_counts[Grid.Pop.SHARD] = shards.count
 	grid.rebuild(_pos_arrays, _counts)
 
+## Steering is time-sliced across STEER_SLICES ticks: each tick recomputes one
+## slice and every other enemy keeps the force it was last given. At 60 Hz a
+## force is at most 2 ticks (33 ms) stale, which is invisible on a separation
+## nudge, and it was the largest single item in the tick by a wide margin.
 func _step4_steer() -> void:
-	for i in enemies.count:
+	_steer_phase = (_steer_phase + 1) % STEER_SLICES
+	var i := _steer_phase
+	while i < enemies.count:
 		var here := enemies.pos[i]
+		if here.distance_squared_to(player_pos) > STEER_RANGE_SQ:
+			enemies.force[i] = Vector2.ZERO
+			i += STEER_SLICES
+			continue
 		var n := grid.query_radius_into(here, SEPARATION_RADIUS, _buf, Grid.M_ENEMY)
 		var push := Vector2.ZERO
 		for k in mini(n, _buf.size()):
@@ -241,6 +257,7 @@ func _step4_steer() -> void:
 			if dl > 0.001:
 				push += d / dl * (SEPARATION_RADIUS - dl)
 		enemies.force[i] = push * 2.2
+		i += STEER_SLICES
 
 func _step5_fire(dt: float) -> void:
 	queue.begin_tick()
@@ -286,18 +303,24 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				return
 			_hit(ei, r, t2)
 			var from := enemies.pos[t2]
+			var visited := [t2]
 			var hops := 0
 			while hops < r.chain_count:
 				var n3 := grid.query_radius_into(from, 120.0, _buf, Grid.M_ENEMY)
 				var picked := -1
 				for k in mini(n3, _buf.size()):
 					var j := Grid.index_of(_buf[k])
-					if j != t2:
+					# Excluding only the ORIGINAL target let every hop re-select
+					# the enemy it had just jumped from — that enemy sits at
+					# distance 0 from the query point. chain_count scaled nothing
+					# but repeat hits on one target.
+					if not (j in visited):
 						picked = j
 						break
 				if picked < 0:
 					break
 				_hit(ei, r, picked)
+				visited.append(picked)
 				from = enemies.pos[picked]
 				hops += 1
 		_:
@@ -367,7 +390,7 @@ func _step6_detect(dt: float) -> void:
 			_damage_player(t.contact_damage)
 
 	# Pickups.
-	var n4 := grid.query_radius_into(player_pos, PICKUP_RADIUS, _buf, Grid.M_SHARD)
+	var n4 := grid.query_radius_into(player_pos, pickup_radius, _buf, Grid.M_SHARD)
 	for k in mini(n4, _buf.size()):
 		shards.state[Grid.index_of(_buf[k])] = Population.DEAD
 		_gain_xp(1)
@@ -382,7 +405,7 @@ func _damage_player(amount: float) -> void:
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
 			_emit_vector(ei, r)
-	if player_health <= 0.0:
+	if player_health <= 0.0 and alive and not won:
 		player_health = 0.0
 		alive = false
 		# Salvage is lost, but kills and flips still count toward unlocks —
@@ -411,21 +434,41 @@ func _steps78_drain() -> void:
 				if not r.inert and r.trigger_kind == Module.TriggerKind.ON_HIT:
 					_emit_vector(ei, r)
 
-		if resolved_n == 0:
+		# Break only when nothing resolved AND nothing new is queued. Breaking on
+		# resolved_n alone discarded the events ON_HIT had just appended one line
+		# above, so ON_HIT contributed nothing in any tick whose pass killed
+		# nothing — the ordinary case the trigger exists for.
+		if resolved_n == 0 and queue.count == 0:
 			break
-		for i in enemies.count:
-			if queue.outcome[i] == HitQueue.Outcome.DEAD and enemies.state[i] == Population.DEAD:
-				_on_death(i)
-			elif queue.outcome[i] == HitQueue.Outcome.FLIPPED and enemies.state[i] == Population.FLIPPED:
-				_on_flip(i)
+
+		# Consume each verdict as it is dispatched. outcome[] persists for the
+		# whole tick and enemies.state[] until step 9, so an enemy resolved in
+		# pass 1 matched again in every later pass: kills, shards, ON_KILL
+		# cascades, lifesteal and botnet spawns all multiplied by cascade depth.
+		# HitQueue held "adjudicated exactly once"; this loop, its only consumer,
+		# broke it.
+		if resolved_n > 0:
+			for i in enemies.count:
+				var o := queue.outcome[i]
+				if o == HitQueue.Outcome.NONE:
+					continue
+				queue.outcome[i] = HitQueue.Outcome.NONE
+				if o == HitQueue.Outcome.DEAD and enemies.state[i] == Population.DEAD:
+					_on_death(i)
+				elif o == HitQueue.Outcome.FLIPPED and enemies.state[i] == Population.FLIPPED:
+					_on_flip(i)
 
 func _on_death(i: int) -> void:
-	if enemies.type_index[i] == EnemyTable.ICE:
+	kills += 1
+	if enemies.type_index[i] == EnemyTable.ICE and not won:
+		# kills is incremented FIRST: banking before it meant the kill that ends
+		# a winning run was never persisted, so entering the boss at 399 kills
+		# won, displayed 400, and saved 399 — silently missing the beam unlock.
+		# The `not won` guard keeps a second dispatch from re-banking the run.
 		won = true
 		salvage += 500
 		SaveGame.bank(salvage, kills, flips)
 		emit_signal("run_ended", true, salvage)
-	kills += 1
 	_drop_shards(i)
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
@@ -455,8 +498,6 @@ func _on_flip(i: int) -> void:
 	if bi >= 0:
 		_botnet_ratio[bi] = BOTNET_BASE_RATIO * corr
 		_botnet_life[bi] = BOTNET_BASE_LIFETIME
-		_seq += 1
-		_botnet_seq[bi] = _seq
 
 func _drop_shards(i: int) -> void:
 	var t = enemy_types[enemies.type_index[i]]
@@ -478,6 +519,14 @@ func _step9_recycle() -> void:
 		var p := projectiles.pos[i]
 		if projectiles.state[i] != Population.ALIVE \
 				or p.distance_squared_to(player_pos) > 1600.0 * 1600.0:
+			# Population.despawn swap-removes the tail into slot i, so every
+			# parallel array must move with it. Omitting this let a surviving
+			# projectile inherit a dead one's owner exploit (wrong damage and
+			# wrong lifesteal attribution) and its exhausted pierce.
+			var last := projectiles.count - 1
+			_proj_owner[i] = _proj_owner[last]
+			_proj_pierce[i] = _proj_pierce[last]
+			_proj_last[i] = _proj_last[last]
 			projectiles.despawn(i)
 		else:
 			i += 1
@@ -492,7 +541,6 @@ func _step9_recycle() -> void:
 		if _botnet_life[i] <= 0.0:
 			_botnet_life[i] = _botnet_life[botnet.count - 1]
 			_botnet_ratio[i] = _botnet_ratio[botnet.count - 1]
-			_botnet_seq[i] = _botnet_seq[botnet.count - 1]
 			botnet.despawn(i)
 		else:
 			i += 1
@@ -540,7 +588,7 @@ func choose_card(m, p) -> void:
 	else:
 		loadout.apply(m, p)
 		_recompile()
-	pending_levels -= 1
+	pending_levels = maxi(0, pending_levels - 1)
 	paused = false
 	if pending_levels > 0:
 		_offer_cards()
@@ -548,7 +596,7 @@ func choose_card(m, p) -> void:
 
 func decline_card() -> void:
 	salvage += 25
-	pending_levels -= 1
+	pending_levels = maxi(0, pending_levels - 1)
 	paused = false
 	if pending_levels > 0:
 		_offer_cards()
@@ -601,6 +649,16 @@ func _build_environment() -> void:
 	add_child(grid_lines)
 	grid_lines.set("target", self)
 
+## Only enemies need per-frame colour (the corruption lerp) and per-frame glyph
+## (type varies by slot). Projectiles, shards and botnet nodes are one colour and
+## one glyph for the life of the pool, and MultiMesh instance buffers persist —
+## so those are written once here instead of ~4000 setter calls every frame.
+func _prime_constant_instances(node: MultiMeshInstance2D, glyph: float, c: Color) -> void:
+	var mm := node.multimesh
+	for i in mm.instance_count:
+		mm.set_instance_color(i, c)
+		mm.set_instance_custom_data(i, Color(glyph, 0.0, 0.0, 0.0))
+
 func _build_renderers() -> void:
 	_mm_enemy = _make_mm(30.0, 2)
 	_mm_enemy.multimesh.instance_count = MAX_ENEMIES
@@ -610,6 +668,10 @@ func _build_renderers() -> void:
 	_mm_shard.multimesh.instance_count = MAX_SHARDS
 	_mm_botnet = _make_mm(26.0, 2)
 	_mm_botnet.multimesh.instance_count = MAX_BOTNET
+
+	_prime_constant_instances(_mm_proj, 4.0, Color(1.1, 1.7, 1.4))
+	_prime_constant_instances(_mm_shard, 5.0, Color(0.5, 1.3, 1.7))
+	_prime_constant_instances(_mm_botnet, 3.0, Color(1.6, 0.5, 1.6))
 
 func _update_renderers() -> void:
 	var mm := _mm_enemy.multimesh
@@ -625,20 +687,14 @@ func _update_renderers() -> void:
 	mm.visible_instance_count = projectiles.count
 	for i in projectiles.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, projectiles.pos[i]))
-		mm.set_instance_color(i, Color(1.1, 1.7, 1.4))
-		mm.set_instance_custom_data(i, Color(4.0, 0.0, 0.0, 0.0))
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, shards.pos[i]))
-		mm.set_instance_color(i, Color(0.5, 1.3, 1.7))
-		mm.set_instance_custom_data(i, Color(5.0, 0.0, 0.0, 0.0))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
 	for i in botnet.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, botnet.pos[i]))
-		mm.set_instance_color(i, Color(1.6, 0.5, 1.6))
-		mm.set_instance_custom_data(i, Color(3.0, 0.0, 0.0, 0.0))
 
 func _draw() -> void:
 	var pts := PackedVector2Array([
@@ -646,4 +702,4 @@ func _draw() -> void:
 		player_pos + Vector2(0, 3), player_pos + Vector2(-12, 8)])
 	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
 	draw_polyline(pts + PackedVector2Array([pts[0]]), c, 2.0)
-	draw_arc(player_pos, PICKUP_RADIUS, 0, TAU, 40, Color(0.35, 0.9, 0.7, 0.22), 1.0)
+	draw_arc(player_pos, pickup_radius, 0, TAU, 40, Color(0.35, 0.9, 0.7, 0.22), 1.0)
