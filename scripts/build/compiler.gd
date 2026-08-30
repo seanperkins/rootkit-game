@@ -1,10 +1,31 @@
 class_name Compiler extends RefCounted
 
-## Pure. Modules + meta buffs in, ResolvedExploit out. No scene tree, no globals.
+## Pure. Modules + global player multipliers in, ResolvedExploit out. No scene
+## tree, no globals.
 ## Runs once per module pick, never per frame — combat reads only the flat result.
 
 const MIN_COOLDOWN := 0.05
 const MAX_PROJECTILE_SPEED := 960.0
+
+## Which global multiplier scales which stats. Total and non-overlapping: every
+## stat key not named here is deliberately excluded.
+##   - lifesteal is excluded so attack is not also the best defensive stat.
+##   - projectile_speed is excluded because its cap prevents tunnelling through
+##     the smallest combined radius; a multiplier applied before the cap would
+##     silently do nothing at high values.
+## Defensive magnitudes accumulate by MAX, not by +. The same module is legal in
+## both payload slots of one exploit, so summing would buy double magnitude at
+## zero uptime cost — the opposite of what a second copy should be worth.
+const MAX_FOLD_KEYS := [
+	&"ward_armor", &"ward_defense", &"ward_clock_speed", &"ward_duration",
+	&"lifesteal",
+]
+
+const MULT_KEYS := {
+	&"attack": [&"damage", &"corruption"],
+	&"haste":  [&"cooldown"],
+	&"reach":  [&"radius", &"travel"],
+}
 
 ## Both clamps guard the same bug class: an unbounded additive stat. Cooldown
 ## reached -1.70s at max rank and hung a `while accumulator >= cooldown` loop.
@@ -12,7 +33,7 @@ const MAX_PROJECTILE_SPEED := 960.0
 ## missed hits nobody could reproduce. 960 = 60 * (PROJECTILE_RADIUS 4 +
 ## ENEMY_RADIUS 12): the bound is the smallest combined radius, not the cell size.
 
-static func build(ex: Exploit, buffs: Dictionary = {}) -> ResolvedExploit:
+static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	var r := ResolvedExploit.new()
 	r.inert = ex.is_inert()
 
@@ -40,9 +61,18 @@ static func build(ex: Exploit, buffs: Dictionary = {}) -> ResolvedExploit:
 	if ex.trigger != null:
 		_fold(r, ex.trigger)
 
-	for k in buffs:
-		if k in Module.STAT_KEYS:
-			r.set(k, r.get(k) + buffs[k])
+	# Captured pre-multiplier, pre-clamp. See ResolvedExploit.base_cooldown.
+	r.base_cooldown = r.cooldown
+
+	# The player layer is the PERCENTAGE layer: modules contribute flat numbers,
+	# and these scale the total afterwards. mult holds absolutes (x1.40), not the
+	# deltas SaveGame stores — PlayerStats.mults() is the converter.
+	for mk in MULT_KEYS:
+		var f := float(mult.get(mk, 1.0))
+		if f == 1.0:
+			continue
+		for sk in MULT_KEYS[mk]:
+			r.set(sk, r.get(sk) * f)
 
 	r.cooldown = maxf(r.cooldown, MIN_COOLDOWN)
 	r.projectile_speed = minf(r.projectile_speed, MAX_PROJECTILE_SPEED)
@@ -64,8 +94,20 @@ static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 		# weapon fired three times slower for three times the damage, which is
 		# flat DPS, bad feel, and made MIN_COOLDOWN unreachable from the vector
 		# side. Reductions from payloads and triggers still scale with rank.
-		var scale: int = 1 if (is_vector and key == &"cooldown") else em.rank
-		r.set(key, r.get(key) + float(m.stats[key]) * scale)
+		var scale: int = em.rank
+		if is_vector and (key == &"cooldown" or key == &"travel"):
+			# A vector's cadence and its range are base properties, not scaling
+			# stats. travel especially: at em.rank a rank-3 packet would fly
+			# 1920px and outrun every bound the design has.
+			scale = 1
+		elif key == &"ward_duration":
+			# Rank buys ward magnitude, never uptime.
+			scale = 1
+		var v := float(m.stats[key]) * scale
+		if key in MAX_FOLD_KEYS:
+			r.set(key, maxf(r.get(key), v))
+		else:
+			r.set(key, r.get(key) + v)
 	for t in m.tags:
 		r.tags[t] = true
 

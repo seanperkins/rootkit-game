@@ -13,7 +13,7 @@ func _initialize() -> void:
 	print("ROOTKIT — meta / save\n")
 	price_curve()
 	buying()
-	buffs_fold_into_compile()
+	buffs_split_into_sheet_and_mults()
 	unlocks()
 	clamping()
 	bak_recovery()
@@ -36,7 +36,7 @@ func price_curve() -> void:
 	for n in SaveGame.BUFF_MAX:
 		total += SaveGame.buff_price(n)
 	_check("maxing one line costs 1950", total, 1950)
-	_check("all three lines cost 5850", total * 3, 5850)
+	_check("all eight lines cost 15600", total * 8, 15600)
 
 func buying() -> void:
 	SaveGame.use_fresh_state()
@@ -49,31 +49,44 @@ func buying() -> void:
 	SaveGame.load_state()["buffs"]["cooling"] = SaveGame.BUFF_MAX
 	_check("maxed line refuses further purchase", SaveGame.buy(&"cooling"), false)
 
-## A buff that does not reach ResolvedExploit is a buff that does nothing.
-func buffs_fold_into_compile() -> void:
+## A buff that does not reach the player or the compiler is a buff that does
+## nothing. Every one of the eight shop lines is asserted POSITIVELY here: the
+## previous version of this test checked only that a key was ABSENT, which an
+## aborted function satisfies for free, and that is precisely how the
+## save_game.gd:168 partial-table bug survived in a green suite.
+func buffs_split_into_sheet_and_mults() -> void:
 	SaveGame.use_fresh_state()
-	var t := ModuleTable.by_id()
-	var ex := Exploit.new()
-	ex.place(t[&"packet"])
-	ex.place(t[&"interval"])
-	var base := Compiler.build(ex, {})
-	SaveGame.load_state()["buffs"]["cpu_cycles"] = 4
-	var buffed := Compiler.build(ex, SaveGame.buff_stats())
-	_check("4 ranks of +CPU cycles add 6.0 damage", buffed.damage - base.damage, 6.0)
-	SaveGame.load_state()["buffs"]["cooling"] = 10
-	var cooled := Compiler.build(ex, SaveGame.buff_stats())
-	_check("cooling never breaches MIN_COOLDOWN",
-		cooled.cooldown >= Compiler.MIN_COOLDOWN, true)
-	# bandwidth is a player stat, not an exploit stat: it must NOT reach the
-	# compiler, and it must actually move pickup range.
-	SaveGame.load_state()["buffs"]["bandwidth"] = 5
-	_check("bandwidth stays out of the compile path",
-		SaveGame.buff_stats().has(&"radius"), false)
-	_check("bandwidth moves pickup range", SaveGame.pickup_bonus(), 30.0)
+	var names := ["cpu_cycles", "cooling", "memory", "firewall",
+		"encryption", "bus_speed", "addressing", "bandwidth"]
+	for name in names:
+		SaveGame.load_state()["buffs"][name] = SaveGame.BUFF_MAX
+
+	var sheet := SaveGame.player_sheet()
+	_check("memory     -> integrity +80",     sheet.get(&"integrity", 0.0), 80.0)
+	_check("firewall   -> armor +6",          sheet.get(&"armor", 0.0), 6.0)
+	_check("encryption -> defense +60",       sheet.get(&"defense", 0.0), 60.0)
+	_check("bus_speed  -> clock_speed +60",   sheet.get(&"clock_speed", 0.0), 60.0)
+	_check("bandwidth  -> pickup_radius +60", sheet.get(&"pickup_radius", 0.0), 60.0)
+
+	var mult := SaveGame.multipliers()
+	_check("cpu_cycles -> attack +0.40", mult.get(&"attack", 0.0), 0.40)
+	_check("cooling    -> haste -0.30",  mult.get(&"haste", 0.0), -0.30)
+	_check("addressing -> reach +0.30",  mult.get(&"reach", 0.0), 0.30)
+
+	# The two namespaces never leak into each other. A player stat reaching the
+	# compiler is the bandwidth-sold-as-radius bug; a multiplier reaching the
+	# sheet would be the same mistake mirrored.
+	_check("sheet carries no multiplier", sheet.has(&"attack"), false)
+	_check("mults carry no player stat",  mult.has(&"integrity"), false)
+
+	# PlayerStats.mults is the converter: the shop stores deltas, the compiler
+	# multiplies by absolutes. Handing it a raw 0.40 would scale damage DOWN.
+	_check("mults() converts the delta to a multiplier",
+		PlayerStats.mults(mult)[&"attack"], 1.40)
 
 func unlocks() -> void:
 	SaveGame.use_fresh_state()
-	_check("fresh save starts with 12 modules", SaveGame.unlocked_modules().size(), 12)
+	_check("fresh save starts with 15 modules", SaveGame.unlocked_modules().size(), 15)
 	SaveGame.load_state()["flips"] = 49
 	_check("49 flips does not unlock worm",
 		&"worm" in _ids(SaveGame.unlocked_modules()), false)

@@ -8,8 +8,8 @@ class_name ModuleTable extends RefCounted
 ## every player gets an empty card pool. A code table cannot go stale against
 ## itself and needs no build-time manifest step.
 ##
-## Split: 4 VECTOR / 4 TRIGGER / 7 PAYLOAD = 15.
-## Unlocked at start: 3 / 3 / 6 = 12. A 3-exploit board needs 3 distinct
+## Split: 4 VECTOR / 4 TRIGGER / 10 PAYLOAD = 18.
+## Unlocked at start: 3 / 3 / 9 = 15. A 3-exploit board needs 3 distinct
 ## VECTORs and 3 distinct TRIGGERs, so anything less is not fillable.
 
 const S := Module.Slot
@@ -24,7 +24,8 @@ static func all() -> Array:
 		Module.make(&"broadcast", "broadcast()", S.VECTOR,
 			{&"damage": 5.0, &"radius": 120.0, &"cooldown": 0.85}, [], V.BROADCAST),
 		Module.make(&"packet", "packet()", S.VECTOR,
-			{&"damage": 9.0, &"projectile_speed": 420.0, &"cooldown": 0.5}, [], V.PACKET),
+			{&"damage": 9.0, &"projectile_speed": 420.0, &"cooldown": 0.5,
+			 &"travel": 640.0}, [], V.PACKET),
 		Module.make(&"chain", "chain()", S.VECTOR,
 			{&"damage": 7.0, &"chain_count": 2.0, &"radius": 170.0, &"cooldown": 0.9}, [], V.CHAIN),
 		Module.make(&"beam", "beam()", S.VECTOR,
@@ -55,6 +56,18 @@ static func all() -> Array:
 			{&"botnet_cap": 2.0}),
 		Module.make(&"overclock", "overclock", S.PAYLOAD,
 			{&"damage": 2.0, &"cooldown": -0.12}),
+
+		# --- PAYLOAD, defensive ------------------------------------------------
+		# None contributes damage, so equipping one is a real cost against the two
+		# payload slots. Magnitudes are set from worked worst cases: nice matches
+		# the whole maxed bus_speed shop line (+60), so one module in one slot is
+		# never worth more than 1,950 salvage of upgrades.
+		Module.make(&"harden", "harden", S.PAYLOAD,
+			{&"ward_armor": 1.2, &"ward_duration": 2.0}),
+		Module.make(&"sandbox", "sandbox", S.PAYLOAD,
+			{&"ward_defense": 10.0, &"ward_duration": 3.0}),
+		Module.make(&"nice", "nice()", S.PAYLOAD,
+			{&"ward_clock_speed": 12.0, &"ward_duration": 1.5}),
 	]
 
 static func by_id() -> Dictionary:

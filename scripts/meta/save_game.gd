@@ -13,23 +13,37 @@ class_name SaveGame extends RefCounted
 static var PATH := "user://save.json"
 static var BAK := "user://save.json.bak"
 static var TMP := "user://save.json.tmp"
-const VERSION := 1
+const VERSION := 2
 
 const BUFF_COST_BASE := 60
 const BUFF_COST_STEP := 30
 const BUFF_MAX := 10
 
-## cpu_cycles and cooling fold into ResolvedExploit through Compiler.build.
-## bandwidth does NOT: pickup range is a player stat, not an exploit stat. It
-## previously mapped to &"radius", which is the exploit's effect radius — so the
-## shop sold "pickup radius" for up to 1950 salvage and delivered something else
-## entirely, and delivered nothing at all to a packet-only build, whose vector
-## ignores r.radius.
-const BUFF_EFFECT := {
-	&"cpu_cycles": {&"damage": 1.5},
-	&"cooling": {&"cooldown": -0.02},
+
+## The v2 split. Two tables, because the two namespaces are read at different
+## times by different code. SHEET_EFFECT is additive PLAYER stats, read directly
+## by run.gd and never passed to the compiler. MULT_EFFECT is multiplicative
+## EXPLOIT scalars, folded by Compiler.build after the flat module fold.
+##
+## Both hold DELTAS, not absolutes: cpu_cycles at rank 10 yields 0.40, and
+## PlayerStats.mults() is what turns that into the x1.40 the compiler wants.
+##
+## The split is what makes the bandwidth-sold-as-radius bug structurally
+## impossible to repeat: a player stat has no landing site in the exploit
+## namespace, so it cannot be quietly delivered as something else.
+const SHEET_EFFECT := {
+	&"memory":     {&"integrity": 8.0},
+	&"firewall":   {&"armor": 0.6},
+	&"encryption": {&"defense": 6.0},
+	&"bus_speed":  {&"clock_speed": 6.0},
+	&"bandwidth":  {&"pickup_radius": 6.0},
 }
-const PICKUP_PER_RANK := 6.0
+
+const MULT_EFFECT := {
+	&"cpu_cycles": {&"attack": 0.04},
+	&"cooling":    {&"haste": -0.03},
+	&"addressing": {&"reach": 0.03},
+}
 
 static var _cache: Dictionary = {}
 
@@ -37,7 +51,10 @@ static func _default() -> Dictionary:
 	return {
 		"version": VERSION,
 		"salvage": 0,
-		"buffs": {"cpu_cycles": 0, "cooling": 0, "bandwidth": 0},
+		"buffs": {
+			"cpu_cycles": 0, "cooling": 0, "memory": 0, "firewall": 0,
+			"encryption": 0, "bus_speed": 0, "addressing": 0, "bandwidth": 0,
+		},
 		"unlocked": [],
 		"kills": 0,
 		"flips": 0,
@@ -158,20 +175,27 @@ static func unlocked_modules() -> Array:
 			out.append(table[id])
 	return out
 
-static func buff_stats() -> Dictionary:
+static func player_sheet() -> Dictionary:
+	return _fold(SHEET_EFFECT)
+
+static func multipliers() -> Dictionary:
+	return _fold(MULT_EFFECT)
+
+## .get, never a direct index. d["buffs"] holds all eight names while each table
+## holds only its own subset, so a direct index throws on the first name the
+## table does not know and aborts the whole fold — returning {} and discarding
+## everything accumulated before it. That is the shipped bug this file carried.
+static func _fold(table: Dictionary) -> Dictionary:
 	var d := load_state()
 	var out := {}
 	for name in d["buffs"]:
 		var n: int = d["buffs"][name]
 		if n <= 0:
 			continue
-		for k in BUFF_EFFECT[StringName(name)]:
-			out[k] = out.get(k, 0.0) + BUFF_EFFECT[StringName(name)][k] * n
+		var eff: Dictionary = table.get(StringName(name), {})
+		for k in eff:
+			out[k] = out.get(k, 0.0) + eff[k] * n
 	return out
-
-## Read directly by the run, outside the compile path.
-static func pickup_bonus() -> float:
-	return float(load_state()["buffs"].get("bandwidth", 0)) * PICKUP_PER_RANK
 
 static func buff_price(current: int) -> int:
 	return BUFF_COST_BASE + BUFF_COST_STEP * current

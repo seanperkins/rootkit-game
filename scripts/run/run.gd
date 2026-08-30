@@ -53,10 +53,7 @@ const WORM_MAX_SEGMENTS := 6
 const WORM_GROWTH_SECONDS := 70.0
 const SPAWN_RING := 720.0
 
-const PLAYER_MAX_HEALTH := 100.0
-const PLAYER_SPEED := 220.0
 const PLAYER_RADIUS := 11.0
-const PICKUP_RADIUS := 30.0
 const IFRAMES := 0.5
 
 const FIRE_BUDGET := 4
@@ -80,7 +77,11 @@ var loadout: Loadout
 var director: SpawnDirector
 
 var player_pos := Vector2.ZERO
-var player_health := PLAYER_MAX_HEALTH
+## The merged base + meta player sheet. Seeded in _ready, because a declaration
+## initialiser is evaluated before _ready reads the save — a player with memory
+## ranks would otherwise start every run at the base 100.
+var _sheet: Dictionary = PlayerStats.BASE.duplicate()
+var player_health := 0.0
 var player_iframe := 0.0
 var alive := true
 var won := false
@@ -93,7 +94,7 @@ var kills := 0
 var flips := 0
 var pending_levels := 0
 var paused := false
-var pickup_radius := PICKUP_RADIUS
+var pickup_radius := 0.0
 var _steer_phase := 0
 ## Diagnostic only: how many times each exploit's vector was emitted this tick.
 var _trigger_fires := {}
@@ -101,6 +102,11 @@ var _trigger_fires := {}
 ## this gates the EVENT triggers, which previously had no rate limit at all —
 ## ON_KILL fired once per adjudicated death, so in a swarm it ran continuously
 ## and was bounded only by the per-tick fire budget.
+## One float per exploit. A fire arms it; _step2_integrate decays it. While it is
+## live, that exploit's ward_* values count toward the player's effective stats —
+## as a MAX across exploits, never a sum, because the same module is legal in
+## several slots and summing would buy magnitude at no uptime cost.
+var _ward_left: PackedFloat32Array
 var _fire_cd: PackedFloat32Array
 ## Transient shot visuals. BROADCAST, BEAM and CHAIN resolve straight through
 ## the hit queue and drew nothing at all — you saw enemies die with no sign of
@@ -120,6 +126,12 @@ var _fire_acc: PackedFloat32Array
 var _proj_owner: PackedInt32Array
 var _proj_pierce: PackedInt32Array
 var _proj_last: PackedInt32Array
+## Remaining flight distance. This is the ONLY lifetime bound on a projectile.
+## The old player-relative 1600-unit cull is gone: it was measured FROM THE
+## PLAYER, so fleeing at a legal buffed clock_speed could cull a max-reach packet
+## early and make reach silently inert exactly when you run away. Max travel is
+## 832px, so projectiles now live shorter than they used to, not longer.
+var _proj_dist_left: PackedFloat32Array
 var _worm_id: PackedInt32Array
 var _worm_seg: PackedInt32Array
 var _worm_trail := {}          # worm id -> PackedVector2Array ring buffer
@@ -166,9 +178,11 @@ func _ready() -> void:
 	_pos_arrays = [null, null, null, null]
 	_fire_acc = PackedFloat32Array(); _fire_acc.resize(Loadout.MAX_EXPLOITS)
 	_fire_cd = PackedFloat32Array(); _fire_cd.resize(Loadout.MAX_EXPLOITS)
+	_ward_left = PackedFloat32Array(); _ward_left.resize(Loadout.MAX_EXPLOITS)
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
+	_proj_dist_left = PackedFloat32Array(); _proj_dist_left.resize(MAX_PROJECTILES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
 	_order = PackedInt32Array(); _order.resize(MAX_ENEMIES)
@@ -179,8 +193,10 @@ func _ready() -> void:
 	var table := ModuleTable.by_id()
 	loadout = Loadout.new()
 	loadout.start(table[&"packet"], table[&"interval"])
-	loadout.buffs = SaveGame.buff_stats()
-	pickup_radius = PICKUP_RADIUS + SaveGame.pickup_bonus()
+	loadout.mult = PlayerStats.mults(SaveGame.multipliers())
+	_sheet = PlayerStats.sheet(SaveGame.player_sheet())
+	player_health = _sheet[&"integrity"]
+	pickup_radius = _sheet[&"pickup_radius"]
 	_unlocked = SaveGame.unlocked_modules()
 	_recompile()
 
@@ -196,6 +212,31 @@ func _ready() -> void:
 	ui.set_script(load("res://scripts/run/ui.gd"))
 	add_child(ui)
 	ui.bind(self)
+
+func _eff_integrity() -> float:
+	return _sheet[&"integrity"]
+
+## Max over live wards, never a sum. Loadout has no module-uniqueness rule, so
+## all six payload slots can hold the same ward; summing turns that into a
+## build the design explicitly rejects.
+func _ward_max(key: StringName) -> float:
+	var best := 0.0
+	for ei in mini(_ward_left.size(), resolved.size()):
+		if _ward_left[ei] > 0.0:
+			best = maxf(best, float(resolved[ei].get(key)))
+	return best
+
+func _eff_armor() -> float:
+	return _sheet[&"armor"] + _ward_max(&"ward_armor")
+
+func _eff_defense() -> float:
+	return _sheet[&"defense"] + _ward_max(&"ward_defense")
+
+func _eff_clock_speed() -> float:
+	return _sheet[&"clock_speed"] + _ward_max(&"ward_clock_speed")
+
+func _mitigated(amount: float) -> float:
+	return PlayerStats.mitigate(amount, _eff_armor(), _eff_defense())
 
 func _recompile() -> void:
 	resolved = loadout.compile_all()
@@ -320,18 +361,21 @@ func _step2_integrate(dt: float) -> void:
 		# as up/down, which is what makes the controls feel lopsided. Because
 		# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
 		# through WITHOUT renormalising makes the on-screen velocity exactly
-		# PLAYER_SPEED in every direction.
+		# clock_speed in every direction.
 		#
 		# The trade is that world speed now varies with heading (fastest along
 		# the screen vertical, where the projection compresses most). That is the
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
-		player_pos += world_dir * PLAYER_SPEED * dt
+		player_pos += world_dir * _eff_clock_speed() * dt
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
 	if player_iframe > 0.0:
 		player_iframe -= dt
+	for wi in _ward_left.size():
+		if _ward_left[wi] > 0.0:
+			_ward_left[wi] -= dt
 
 	# Heads and ordinary enemies move first so the trail is current before the
 	# segments sample it this same tick.
@@ -360,6 +404,13 @@ func _step2_integrate(dt: float) -> void:
 		enemies.vel[i] = (enemies.pos[i] - prev) / maxf(dt, 0.0001)
 	for i in projectiles.count:
 		projectiles.pos[i] += projectiles.vel[i] * dt
+		# Population stores no scalar speed, so the step is the velocity's
+		# length: one sqrt per live projectile per tick, bounded by
+		# MAX_PROJECTILES. This is the first thing that can mark a projectile
+		# dead in step 2, which is why _step6_detect needs its state guard.
+		_proj_dist_left[i] -= projectiles.vel[i].length() * dt
+		if _proj_dist_left[i] <= 0.0:
+			projectiles.state[i] = Population.DEAD
 	for i in botnet.count:
 		_botnet_life[i] -= dt
 	_age_fx(dt)
@@ -460,6 +511,12 @@ func _step5_fire(dt: float) -> void:
 
 func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
+	# Before the match, deliberately. BEAM and CHAIN return early when they have
+	# no target, and a defensive build on those vectors must still ward — it has
+	# already spent its cooldown by the time it reaches here, because
+	# _try_event_fire sets _fire_cd before calling this.
+	if r.ward_duration > 0.0:
+		_ward_left[ei] = r.ward_duration
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
 			_fx_ring.append([player_pos, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
@@ -521,6 +578,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_owner[pi] = ei
 				_proj_pierce[pi] = r.pierce
 				_proj_last[pi] = -1
+				_proj_dist_left[pi] = maxf(r.travel, 1.0)
 
 func _hit(ei: int, r: ResolvedExploit, target: int) -> void:
 	if target < 0 or target >= enemies.count:
@@ -546,6 +604,11 @@ func _step6_detect(dt: float) -> void:
 	# test re-hits the same enemy every tick it overlaps, so damage would scale
 	# INVERSELY with projectile speed and pierce would have no meaning.
 	for i in projectiles.count:
+		# Travel expiry marks projectiles dead back in step 2, so a dead one can
+		# reach this loop — it could not before, and without this guard it still
+		# lands a hit on its expiry tick.
+		if projectiles.state[i] != Population.ALIVE:
+			continue
 		var n := grid.query_radius_into(projectiles.pos[i],
 			PROJECTILE_RADIUS + ENEMY_RADIUS, _buf, Grid.M_ENEMY)
 		for k in mini(n, _buf.size()):
@@ -585,15 +648,19 @@ func _step6_detect(dt: float) -> void:
 		_gain_xp(1)
 
 func _damage_player(amount: float) -> void:
-	player_health -= amount
-	player_iframe = IFRAMES
-	# ON_DAMAGE_TAKEN fires per damage instance the player actually takes — not
-	# from a loop over terminally-marked entities, which would fire it once per
-	# run, at game over.
+	# Triggers BEFORE the subtraction, so an on_damage_taken ward is up for the
+	# hit that summoned it rather than the next one. ON_DAMAGE_TAKEN fires per
+	# damage instance the player actually takes — not from a loop over
+	# terminally-marked entities, which would fire it once per run, at game over.
+	#
+	# No recursion: the path is _try_event_fire -> _emit_vector -> _hit ->
+	# queue.append, and nothing re-enters here.
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
 			_try_event_fire(ei, r)
+	player_health -= _mitigated(amount)
+	player_iframe = IFRAMES
 	if player_health <= 0.0 and alive and not won:
 		player_health = 0.0
 		alive = false
@@ -667,7 +734,7 @@ func _on_death(i: int) -> void:
 	if killer >= 0 and killer < resolved.size():
 		var lifesteal: float = resolved[killer].lifesteal
 		if lifesteal > 0.0:
-			player_health = minf(PLAYER_MAX_HEALTH, player_health + lifesteal)
+			player_health = minf(_eff_integrity(), player_health + lifesteal)
 
 ## A flipped enemy drops the same shards a killed one does, so a corruption
 ## build does not starve its own level-ups in proportion to how well it works.
@@ -722,9 +789,7 @@ func _step9_recycle() -> void:
 			i += 1
 	i = 0
 	while i < projectiles.count:
-		var p := projectiles.pos[i]
-		if projectiles.state[i] != Population.ALIVE \
-				or p.distance_squared_to(player_pos) > 1600.0 * 1600.0:
+		if projectiles.state[i] != Population.ALIVE:
 			# Population.despawn swap-removes the tail into slot i, so every
 			# parallel array must move with it. Omitting this let a surviving
 			# projectile inherit a dead one's owner exploit (wrong damage and
@@ -733,6 +798,7 @@ func _step9_recycle() -> void:
 			_proj_owner[i] = _proj_owner[last]
 			_proj_pierce[i] = _proj_pierce[last]
 			_proj_last[i] = _proj_last[last]
+			_proj_dist_left[i] = _proj_dist_left[last]
 			projectiles.despawn(i)
 		else:
 			i += 1

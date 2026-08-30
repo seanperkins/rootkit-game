@@ -119,12 +119,18 @@ func _refresh() -> void:
 		return
 	var t: float = run.time_left()
 	var hp := int(run.player_health)
+	# The maximum was hardcoded in the FORMAT STRING, so no compiler caught it:
+	# a memory-r10 player read "integrity 180/100".
+	var maxhp := int(run._eff_integrity())
 	var top: Label = _hud.get_node("Top")
-	top.text = "integrity %3d/100   %s   lvl %d  [%s]   salvage %d   botnet %d   kills %d  flips %d" % [
-		hp, "%d:%02d" % [int(t) / 60, int(t) % 60], run.level,
+	top.text = "integrity %3d/%d  armor %.0f  def %.0f   %s   lvl %d  [%s]   salvage %d   botnet %d   kills %d  flips %d" % [
+		hp, maxhp, run._eff_armor(), run._eff_defense(),
+		"%d:%02d" % [int(t) / 60, int(t) % 60], run.level,
 		_bar(float(run.xp) / maxf(run.xp_needed, 1), 14), run.salvage,
 		run.botnet.count, run.kills, run.flips]
-	top.add_theme_color_override("font_color", WARN if hp < 30 else FG)
+	# Proportional, not absolute. A fixed 30 fires at 16.7% on a 180 bar.
+	top.add_theme_color_override("font_color",
+		WARN if float(hp) < float(maxhp) * 0.3 else FG)
 
 	var lines := []
 	for i in run.resolved.size():

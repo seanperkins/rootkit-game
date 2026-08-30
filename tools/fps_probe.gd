@@ -67,7 +67,7 @@ func _fill() -> void:
 	while run.projectiles.count < run.MAX_PROJECTILES:
 		var a2 := rng.randf()*TAU
 		var pi: int = run.projectiles.spawn(run.player_pos + Vector2(cos(a2),sin(a2))*200.0, Vector2(cos(a2),sin(a2))*300.0, 1.0, run.PROJECTILE_RADIUS, 0)
-		if pi >= 0: run._proj_owner[pi]=0; run._proj_pierce[pi]=9999; run._proj_last[pi]=-1
+		if pi >= 0: run._proj_owner[pi]=0; run._proj_pierce[pi]=9999; run._proj_last[pi]=-1; run._proj_dist_left[pi]=99999.0
 	while run.shards.count < run.MAX_SHARDS:
 		var a3 := rng.randf()*TAU
 		run.shards.spawn(run.player_pos + Vector2(cos(a3),sin(a3))*rng.randf_range(300,900), Vector2.ZERO, 1.0, 4.0, 0)

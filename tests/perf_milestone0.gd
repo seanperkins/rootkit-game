@@ -181,6 +181,10 @@ func _fill() -> void:
 			run._proj_owner[pi] = 0
 			run._proj_pierce[pi] = 9999
 			run._proj_last[pi] = -1
+			# A resized PackedFloat32Array gives 0.0, which would expire every
+			# stress projectile on its first integration pass and silently make
+			# this gate measure a much lighter workload.
+			run._proj_dist_left[pi] = 99999.0
 	while run.shards.count < run.MAX_SHARDS:
 		var a3 := rng.randf() * TAU
 		run.shards.spawn(run.player_pos + Vector2(cos(a3), sin(a3)) * rng.randf_range(300.0, 900.0),
