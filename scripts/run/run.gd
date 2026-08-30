@@ -126,6 +126,12 @@ var _fire_acc: PackedFloat32Array
 var _proj_owner: PackedInt32Array
 var _proj_pierce: PackedInt32Array
 var _proj_last: PackedInt32Array
+## Remaining flight distance. This is the ONLY lifetime bound on a projectile.
+## The old player-relative 1600-unit cull is gone: it was measured FROM THE
+## PLAYER, so fleeing at a legal buffed clock_speed could cull a max-reach packet
+## early and make reach silently inert exactly when you run away. Max travel is
+## 832px, so projectiles now live shorter than they used to, not longer.
+var _proj_dist_left: PackedFloat32Array
 var _worm_id: PackedInt32Array
 var _worm_seg: PackedInt32Array
 var _worm_trail := {}          # worm id -> PackedVector2Array ring buffer
@@ -176,6 +182,7 @@ func _ready() -> void:
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
+	_proj_dist_left = PackedFloat32Array(); _proj_dist_left.resize(MAX_PROJECTILES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
 	_order = PackedInt32Array(); _order.resize(MAX_ENEMIES)
@@ -397,6 +404,13 @@ func _step2_integrate(dt: float) -> void:
 		enemies.vel[i] = (enemies.pos[i] - prev) / maxf(dt, 0.0001)
 	for i in projectiles.count:
 		projectiles.pos[i] += projectiles.vel[i] * dt
+		# Population stores no scalar speed, so the step is the velocity's
+		# length: one sqrt per live projectile per tick, bounded by
+		# MAX_PROJECTILES. This is the first thing that can mark a projectile
+		# dead in step 2, which is why _step6_detect needs its state guard.
+		_proj_dist_left[i] -= projectiles.vel[i].length() * dt
+		if _proj_dist_left[i] <= 0.0:
+			projectiles.state[i] = Population.DEAD
 	for i in botnet.count:
 		_botnet_life[i] -= dt
 	_age_fx(dt)
@@ -564,6 +578,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_owner[pi] = ei
 				_proj_pierce[pi] = r.pierce
 				_proj_last[pi] = -1
+				_proj_dist_left[pi] = maxf(r.travel, 1.0)
 
 func _hit(ei: int, r: ResolvedExploit, target: int) -> void:
 	if target < 0 or target >= enemies.count:
@@ -589,6 +604,11 @@ func _step6_detect(dt: float) -> void:
 	# test re-hits the same enemy every tick it overlaps, so damage would scale
 	# INVERSELY with projectile speed and pierce would have no meaning.
 	for i in projectiles.count:
+		# Travel expiry marks projectiles dead back in step 2, so a dead one can
+		# reach this loop — it could not before, and without this guard it still
+		# lands a hit on its expiry tick.
+		if projectiles.state[i] != Population.ALIVE:
+			continue
 		var n := grid.query_radius_into(projectiles.pos[i],
 			PROJECTILE_RADIUS + ENEMY_RADIUS, _buf, Grid.M_ENEMY)
 		for k in mini(n, _buf.size()):
@@ -769,9 +789,7 @@ func _step9_recycle() -> void:
 			i += 1
 	i = 0
 	while i < projectiles.count:
-		var p := projectiles.pos[i]
-		if projectiles.state[i] != Population.ALIVE \
-				or p.distance_squared_to(player_pos) > 1600.0 * 1600.0:
+		if projectiles.state[i] != Population.ALIVE:
 			# Population.despawn swap-removes the tail into slot i, so every
 			# parallel array must move with it. Omitting this let a surviving
 			# projectile inherit a dead one's owner exploit (wrong damage and
@@ -780,6 +798,7 @@ func _step9_recycle() -> void:
 			_proj_owner[i] = _proj_owner[last]
 			_proj_pierce[i] = _proj_pierce[last]
 			_proj_last[i] = _proj_last[last]
+			_proj_dist_left[i] = _proj_dist_left[last]
 			projectiles.despawn(i)
 		else:
 			i += 1
