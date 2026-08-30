@@ -1135,7 +1135,10 @@ func arms_and_decays() -> void:
 ## _emit_vector — so the placement buys the ward, not the cadence.)
 func beam_with_no_target_still_wards() -> void:
 	var run := await _bare_run()
-	SaveGame.unlock(&"beam")
+	# Placed directly from the table, not via unlocked_modules(): unlock state is
+	# derived from milestone counters (beam needs 400 kills) and only gates the
+	# card OFFER pool, never what a test may construct. test_triggers.gd:13 does
+	# the same with on_damage_taken.
 	var idx := _with(run, &"beam", [&"harden"])
 	for tick in 120:
 		run._physics_process(DT)
@@ -1175,7 +1178,6 @@ func ward_moves_the_player() -> void:
 func absorbs_its_own_hit() -> void:
 	var run := await _bare_run()
 	var t := ModuleTable.by_id()
-	SaveGame.unlock(&"on_damage_taken")
 	var ex := Exploit.new()
 	ex.place(t[&"broadcast"]); ex.place(t[&"on_damage_taken"]); ex.place(t[&"harden"])
 	run.loadout.exploits.append(ex)
@@ -1781,5 +1783,16 @@ an absolute threshold, so a 180-integrity player read 180/100 and warned at
 **Unverified reports about existing `run.gd` bugs.** Another review session reported three CRITICALs in code this plan touches — enemies paid twice in the outcome rescan around `run.gd:416-420`, a `hit_queue` out-of-bounds at population cap, and ON_HIT events enqueued then discarded around `run.gd:408-415`. **These were not verified during planning and are not in scope here.** If a task's tests fail in a way that looks like double-counted kills or missing ON_HIT damage, suspect those rather than the task, and stop to confirm before working around it.
 
 **Task order matters in two places.** Task 3 must precede Task 4 (the compiler needs `SaveGame.multipliers()` to exist), and Task 5 must precede Tasks 7 and 9 (the ward and travel fields must exist before anything reads them). Everything else can move.
+
+**A new `class_name` file needs an import pass before any test can see it.**
+`player_stats.gd` is the only new `class_name` in this plan. Godot registers
+`class_name` in `.godot/global_script_class_cache.cfg` during a project scan, and
+`godot --headless -s <script>` does not trigger one — the test fails with
+`Parse Error: Identifier "PlayerStats" not declared in the current scope` no
+matter how correct the file is. Run this once after creating it:
+
+```bash
+godot --headless --path /Users/sean/sites/hacking-bullet-heaven --import
+```
 
 **Task 5 leaves `test_build.gd` red on purpose.** Its two hardcoded count assertions fail between Task 5 and Task 8. That is the only point in the plan where a task ends with a known-failing assertion, and Task 8 is what closes it.
