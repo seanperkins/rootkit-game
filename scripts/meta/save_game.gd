@@ -35,6 +35,13 @@ static func _default() -> Dictionary:
 		"flips": 0,
 	}
 
+## Tests must run against a known save. Progression is persistent by design —
+## banked kills cross milestones and unlock modules, which changes the card pool
+## and therefore the build — so a test that inherits user://save.json is not
+## measuring what it thinks it is.
+static func use_fresh_state() -> void:
+	_cache = _default()
+
 static func load_state() -> Dictionary:
 	if not _cache.is_empty():
 		return _cache

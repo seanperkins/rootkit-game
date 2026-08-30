@@ -7,6 +7,7 @@ extends SceneTree
 const DT := 1.0 / 60.0
 
 func _initialize() -> void:
+	SaveGame.use_fresh_state()
 	var run: Node2D = load("res://scenes/main.tscn").instantiate()
 	root.add_child(run)
 	await process_frame
