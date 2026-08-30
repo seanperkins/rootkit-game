@@ -31,6 +31,24 @@ const TICKS := 600
 const DT := 1.0 / 60.0
 const BUDGET_MS := 8.0
 
+## The gate is load-RELATIVE, not absolute. An absolute wall-clock threshold
+## false-fails on a loaded machine or a slow CI runner and false-passes on a
+## quiet workstation — measured here as 5.2 ms median idle vs 8.5 ms at load
+## average 5.3, for identical code. So the run first times a fixed synthetic
+## workload, and the budget is scaled by how much slower this machine is than
+## the reference. Both numbers move together under load, so the ratio holds.
+##
+## Reference: Apple Silicon, Darwin 25.6, Godot 4.7 headless.
+##
+## DERIVED, not directly measured on an idle machine: the quiet-machine run
+## measured p99 6.192 ms, the loaded run 9.31 ms with calibration 22.504 ms, so
+## the load factor was 1.503x and the idle calibration would be 22.504 / 1.503.
+## Re-measure this constant on a genuinely quiet machine and replace it; the
+## derivation assumes the calibration loop and the tick scale identically with
+## load, which is the assumption the whole normalisation rests on.
+const REFERENCE_CALIBRATION_MS := 14.97
+const CALIBRATION_ITERS := 400000
+
 var enemies: Population
 var projectiles: Population
 var botnet: Population
@@ -66,9 +84,17 @@ func _init() -> void:
 	print("  budget: %.1f ms/tick over %d ticks" % [BUDGET_MS, TICKS])
 	print("")
 
+	var cal := _calibrate()
+	var scale: float = cal / REFERENCE_CALIBRATION_MS
+	var budget: float = BUDGET_MS * scale
+	print("  calibration: %.3f ms (reference %.3f) -> machine is %.2fx" % [
+		cal, REFERENCE_CALIBRATION_MS, scale])
+	print("  scaled budget: %.3f ms" % budget)
+	print("")
+
 	var samples := _run()
-	_report(samples)
-	quit()
+	_report(samples, budget, scale)
+	quit(0 if _p99(samples) <= budget else 1)
 
 ## Worst case is a dense cluster, not a spread: clustering maximises the number
 ## of results every proximity query returns, which is where the cost lives.
@@ -135,6 +161,26 @@ func _tick() -> void:
 		grid.query_radius_into(projectiles.pos[i], PROJECTILE_RADIUS + ENEMY_RADIUS, _buf, Grid.M_ENEMY)
 	grid.query_radius_into(player_pos, PICKUP_RADIUS, _buf, Grid.M_SHARD)
 
+## A fixed workload in the same interpreter doing the same kind of work the
+## tick does, so it absorbs machine load identically.
+func _calibrate() -> float:
+	var a := Vector2(1.0, 2.0)
+	var b := Vector2(3.0, 4.0)
+	var acc := 0.0
+	var t0 := Time.get_ticks_usec()
+	for i in CALIBRATION_ITERS:
+		acc += a.distance_squared_to(b)
+		a.x += 0.000001
+	var dt := float(Time.get_ticks_usec() - t0) / 1000.0
+	if acc < 0.0:
+		print("")     # keep the loop from being optimised away
+	return dt
+
+func _p99(samples: PackedFloat64Array) -> float:
+	var sorted := samples.duplicate()
+	sorted.sort()
+	return sorted[int(sorted.size() * 0.99)]
+
 func _run() -> PackedFloat64Array:
 	for w in 60:            # warm-up, excluded from the sample
 		_tick()
@@ -146,7 +192,7 @@ func _run() -> PackedFloat64Array:
 		samples[t] = float(Time.get_ticks_usec() - t0) / 1000.0
 	return samples
 
-func _report(samples: PackedFloat64Array) -> void:
+func _report(samples: PackedFloat64Array, budget: float, scale: float) -> void:
 	var sorted := samples.duplicate()
 	sorted.sort()
 	var n := sorted.size()
@@ -165,9 +211,11 @@ func _report(samples: PackedFloat64Array) -> void:
 	print("  p99    %7.3f ms" % p99)
 	print("  max    %7.3f ms" % worst)
 	print("")
-	if p99 <= BUDGET_MS:
-		print("  PASS — p99 %.3f ms is within the %.1f ms budget." % [p99, BUDGET_MS])
+	print("  normalised p99: %.3f ms (reference-machine equivalent)" % (p99 / scale))
+	print("")
+	if p99 <= budget:
+		print("  PASS — p99 %.3f ms is within the %.3f ms scaled budget." % [p99, budget])
 		print("  GDScript holds. No C# port needed.")
 	else:
-		print("  FAIL — p99 %.3f ms exceeds the %.1f ms budget." % [p99, BUDGET_MS])
+		print("  FAIL — p99 %.3f ms exceeds the %.3f ms scaled budget." % [p99, budget])
 		print("  Escape hatch: port grid.gd and population.gd to C#.")
