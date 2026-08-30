@@ -19,16 +19,6 @@ const BUFF_COST_BASE := 60
 const BUFF_COST_STEP := 30
 const BUFF_MAX := 10
 
-## cpu_cycles and cooling fold into ResolvedExploit through Compiler.build.
-## bandwidth does NOT: pickup range is a player stat, not an exploit stat. It
-## previously mapped to &"radius", which is the exploit's effect radius — so the
-## shop sold "pickup radius" for up to 1950 salvage and delivered something else
-## entirely, and delivered nothing at all to a packet-only build, whose vector
-## ignores r.radius.
-const BUFF_EFFECT := {
-	&"cpu_cycles": {&"damage": 1.5},
-	&"cooling": {&"cooldown": -0.02},
-}
 const PICKUP_PER_RANK := 6.0
 
 ## The v2 split. Two tables, because the two namespaces are read at different
@@ -184,24 +174,6 @@ static func unlocked_modules() -> Array:
 	for id in ModuleTable.LOCKED:
 		if is_unlocked(id) and table.has(id) and not (table[id] in out):
 			out.append(table[id])
-	return out
-
-static func buff_stats() -> Dictionary:
-	var d := load_state()
-	var out := {}
-	for name in d["buffs"]:
-		var n: int = d["buffs"][name]
-		if n <= 0:
-			continue
-		# .get, not a direct index: d["buffs"] is seeded from _default() and can
-		# legitimately hold names BUFF_EFFECT has no entry for — every player
-		# stat is one. A direct index threw on the first such name and aborted
-		# the whole fold, returning {} and discarding everything accumulated
-		# before it, so anyone who owned bandwidth silently lost cpu_cycles and
-		# cooling too.
-		var eff: Dictionary = BUFF_EFFECT.get(StringName(name), {})
-		for k in eff:
-			out[k] = out.get(k, 0.0) + eff[k] * n
 	return out
 
 static func player_sheet() -> Dictionary:

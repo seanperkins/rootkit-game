@@ -179,7 +179,7 @@ func _ready() -> void:
 	var table := ModuleTable.by_id()
 	loadout = Loadout.new()
 	loadout.start(table[&"packet"], table[&"interval"])
-	loadout.buffs = SaveGame.buff_stats()
+	loadout.mult = PlayerStats.mults(SaveGame.multipliers())
 	pickup_radius = PICKUP_RADIUS + SaveGame.pickup_bonus()
 	_unlocked = SaveGame.unlocked_modules()
 	_recompile()

@@ -31,7 +31,11 @@ class Placement extends RefCounted:
 		victim = v
 
 var exploits: Array = []
-var buffs: Dictionary = {}
+## Global player multipliers, absolutes not deltas. run.gd feeds this from
+## PlayerStats.mults(SaveGame.multipliers()); compile_all is the ONLY runtime
+## caller of Compiler.build, so a multiplier that does not pass through here
+## reaches no exploit at all.
+var mult: Dictionary = {}
 
 ## Starting loadout: one exploit, packet + interval. Without it the rules are
 ## not total — on an empty board a first TRIGGER or PAYLOAD card fails rules
@@ -217,5 +221,5 @@ func _slot_members(ex: Exploit, slot: int) -> Array:
 func compile_all() -> Array:
 	var out := []
 	for ex in exploits:
-		out.append(Compiler.build(ex, buffs))
+		out.append(Compiler.build(ex, mult))
 	return out
