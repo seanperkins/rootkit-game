@@ -298,7 +298,19 @@ func _step2_integrate(dt: float) -> void:
 		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
 			input.y += 1.0
 	if input.length_squared() > 0.0:
-		world_dir = from_iso(input).normalized()
+		# Uniform SCREEN speed, not uniform world speed.
+		#
+		# Normalising the WORLD direction keeps world speed constant, which makes
+		# on-screen speed inherit the 2:1 squash — left/right moves twice as fast
+		# as up/down, which is what makes the controls feel lopsided. Because
+		# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
+		# through WITHOUT renormalising makes the on-screen velocity exactly
+		# PLAYER_SPEED in every direction.
+		#
+		# The trade is that world speed now varies with heading (fastest along
+		# the screen vertical, where the projection compresses most). That is the
+		# right way round for a game where every dodge is judged on screen.
+		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
 		player_pos += world_dir * PLAYER_SPEED * dt
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),

@@ -12,7 +12,7 @@ func _process(_d: float) -> bool:
 		run.level_up_offered.connect(func(c): run.choose_card(c[0][0], Loadout.best_target(c[0][1])))
 		# Do NOT jump elapsed: every wave would dump its whole backlog in one
 		# tick, since spawns are derived from elapsed rather than accumulated.
-		run.player_pos = Vector2(-1180, -640)   # near a corner, so the wall is in frame
+		run.player_pos = Vector2(1180, 640)     # near corner, so the slab faces are in frame
 	if frames > 20:
 		# kite, so the player survives long enough to photograph
 		var flee := Vector2.ZERO
