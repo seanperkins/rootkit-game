@@ -565,10 +565,14 @@ func _make_mm(size: float, z: int) -> MultiMeshInstance2D:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_2D
 	mm.use_colors = true
+	mm.use_custom_data = true      # carries the glyph index
 	mm.mesh = quad
 	var node := MultiMeshInstance2D.new()
 	node.multimesh = mm
 	node.z_index = z
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/glyph.gdshader")
+	node.material = mat
 	add_child(node)
 	return node
 
@@ -598,13 +602,13 @@ func _build_environment() -> void:
 	grid_lines.set("target", self)
 
 func _build_renderers() -> void:
-	_mm_enemy = _make_mm(20.0, 2)
+	_mm_enemy = _make_mm(30.0, 2)
 	_mm_enemy.multimesh.instance_count = MAX_ENEMIES
-	_mm_proj = _make_mm(7.0, 3)
+	_mm_proj = _make_mm(13.0, 3)
 	_mm_proj.multimesh.instance_count = MAX_PROJECTILES
-	_mm_shard = _make_mm(5.0, 1)
+	_mm_shard = _make_mm(9.0, 1)
 	_mm_shard.multimesh.instance_count = MAX_SHARDS
-	_mm_botnet = _make_mm(16.0, 2)
+	_mm_botnet = _make_mm(26.0, 2)
 	_mm_botnet.multimesh.instance_count = MAX_BOTNET
 
 func _update_renderers() -> void:
@@ -616,21 +620,25 @@ func _update_renderers() -> void:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2(s, s), 0.0, enemies.pos[i]))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		mm.set_instance_color(i, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * 1.15)
+		mm.set_instance_custom_data(i, Color(float(t.glyph), 0.0, 0.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	for i in projectiles.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, projectiles.pos[i]))
 		mm.set_instance_color(i, Color(1.1, 1.7, 1.4))
+		mm.set_instance_custom_data(i, Color(4.0, 0.0, 0.0, 0.0))
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, shards.pos[i]))
 		mm.set_instance_color(i, Color(0.5, 1.3, 1.7))
+		mm.set_instance_custom_data(i, Color(5.0, 0.0, 0.0, 0.0))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
 	for i in botnet.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, botnet.pos[i]))
 		mm.set_instance_color(i, Color(1.6, 0.5, 1.6))
+		mm.set_instance_custom_data(i, Color(3.0, 0.0, 0.0, 0.0))
 
 func _draw() -> void:
 	var pts := PackedVector2Array([
