@@ -24,7 +24,7 @@ An **exploit** is one weapon with three slot types:
 |---|---|---|---|
 | `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam |
 | `TRIGGER` | 1 | when it fires | interval, on_kill, on_hit, on_damage_taken |
-| `PAYLOAD` | 0–2 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock |
+| `PAYLOAD` | 0–2 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
 
 You hold three exploits. Level-ups offer three module cards, each naming where
 it will land — a rank-up, an empty slot, a new exploit, or a replacement. Any
@@ -47,7 +47,7 @@ the totals of the pass it was first marked in, and flip beats death.
 
 ```
 scripts/core/    grid.gd  object_pool  event_bus
-scripts/build/   module  exploit  compiler  loadout        (pure, no scene tree)
+scripts/build/   module  exploit  compiler  loadout  player_stats  (pure)
 scripts/combat/  population  hit_queue
 scripts/run/     run  spawn_director  ui  backdrop
 scripts/meta/    save_game  meta_screen
@@ -63,6 +63,12 @@ godot --headless -s res://tests/test_drain.gd        # adjudication, both orders
 godot --headless -s res://tests/test_corruption.gd   # flip -> botnet
 godot --headless -s res://tests/test_meta.gd         # shop, unlocks, save durability
 godot --headless -s res://tests/test_run.gd          # a full winning subnet
+godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
+godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
+godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
+godot --headless -s res://tests/test_multipliers.gd  # attack/haste/reach reach combat
+godot --headless -s res://tests/test_travel.gd       # packet range and projectile life
+godot --headless -s res://tests/test_meta_layout.gd  # the shop fits the viewport
 godot --headless -s res://tests/perf_milestone0.gd   # the architecture gate
 ```
 
@@ -78,7 +84,7 @@ budget, because identical code measures 5.2 ms median on a quiet machine and
 ## Not in this build
 
 Audio, additional subnets (the node map is scaffolded but unreachable),
-controller support, and in-run stat changes.
+controller support, and healing beyond `keylog`'s lifesteal.
 
 ## Design
 

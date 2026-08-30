@@ -64,8 +64,10 @@ func holds(id: StringName) -> int:
 ## inert, which is why only the interval exploit appeared to work.
 ## Every slot this module may legally occupy, for the player to choose between.
 ## Placement is the player's decision; this only enforces the invariants:
-##   - a module id appears at most once in the loadout, so an already-equipped
-##     module can only rank up, in the slot that holds it;
+##   - a module id may occupy any number of slots; ranks are per SLOT, so the
+##     same module in two slots is two independent copies, and only the slot
+##     already holding it offers a rank-up. (Compiler._fold folds ward_* and
+##     lifesteal by max precisely because of this rule.)
 ##   - the last INTERVAL trigger cannot be displaced, which would leave an
 ##     event-triggered loadout with no way to fire at all.
 func legal_targets(m: Module) -> Array:
