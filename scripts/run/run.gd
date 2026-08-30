@@ -24,6 +24,23 @@ const STEER_SLICES := 2
 ## or is targeted beyond what the player can see.
 const VIEW_RANGE := 620.0
 
+## Isometric projection, applied at the RENDER and INPUT boundaries only.
+## Simulation stays flat 2D: the grid, collision, steering, targeting and every
+## distance in the tick are unchanged. This is a view transform, not a physics
+## change, which is what keeps it cheap and reversible.
+##
+##   screen.x = (x - y) * K
+##   screen.y = (x + y) * K / 2      <- the 2:1 squash
+const ISO_K := 0.82
+
+static func to_iso(p: Vector2) -> Vector2:
+	return Vector2((p.x - p.y) * ISO_K, (p.x + p.y) * ISO_K * 0.5)
+
+static func from_iso(s: Vector2) -> Vector2:
+	var a := s.x / ISO_K
+	var b := s.y / (ISO_K * 0.5)
+	return Vector2((b + a) * 0.5, (b - a) * 0.5)
+
 ## Worms are a chain: a head that steers, and segments that follow the path the
 ## head actually took rather than beelining at the player. Segments are real
 ## enemies — individually killable, individually dangerous — but they do not
@@ -78,6 +95,9 @@ var pending_levels := 0
 var paused := false
 var pickup_radius := PICKUP_RADIUS
 var _steer_phase := 0
+var _order: PackedInt32Array
+var _band_count: PackedInt32Array
+const DEPTH_BANDS := 192
 
 var thresholds: PackedFloat32Array
 var enemy_types: Array
@@ -136,6 +156,8 @@ func _ready() -> void:
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
+	_order = PackedInt32Array(); _order.resize(MAX_ENEMIES)
+	_band_count = PackedInt32Array(); _band_count.resize(DEPTH_BANDS + 1)
 	_botnet_ratio = PackedFloat32Array(); _botnet_ratio.resize(MAX_BOTNET)
 	_botnet_life = PackedFloat32Array(); _botnet_life.resize(MAX_BOTNET)
 
@@ -180,12 +202,18 @@ func _physics_process(dt: float) -> void:
 	_step9_recycle()
 
 	_update_renderers()
-	_camera.global_position = player_pos
+	_camera.global_position = to_iso(player_pos)
 	queue_redraw()
 
 func _step1_spawn(dt: float) -> void:
 	for s in director.step(dt, player_pos, SPAWN_RING):
 		var ti: int = s[0]
+		# The spawn ring is centred on the player and does not know about the
+		# arena, so near an edge it placed enemies outside the map — invisible
+		# against the void in the isometric view, and unreachable in either.
+		s[1] = (s[1] as Vector2).clamp(
+			ARENA_ORIGIN + Vector2(24, 24),
+			ARENA_ORIGIN + ARENA_SIZE - Vector2(24, 24))
 		if ti == WORM_TYPE:
 			if _spawn_worm(s[1]):
 				director.spawned += 1
@@ -251,9 +279,15 @@ func _worm_sample(id: int, steps_back: int) -> Vector2:
 
 func _step2_integrate(dt: float) -> void:
 	# Polled directly so no InputMap entries are needed. WASD and arrows both.
+	#
+	# input_override is a WORLD direction — it is a simulation hook for headless
+	# drivers, which reason in world space. Keyboard input is SCREEN-relative and
+	# is unprojected below, so W moves you up the screen rather than up the world
+	# axis (which under the projection points diagonally).
 	var input := Vector2.ZERO
+	var world_dir := Vector2.ZERO
 	if input_override != null:
-		input = input_override
+		world_dir = (input_override as Vector2).normalized()
 	else:
 		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
 			input.x -= 1.0
@@ -264,7 +298,9 @@ func _step2_integrate(dt: float) -> void:
 		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
 			input.y += 1.0
 	if input.length_squared() > 0.0:
-		player_pos += input.normalized() * PLAYER_SPEED * dt
+		world_dir = from_iso(input).normalized()
+	if world_dir.length_squared() > 0.0:
+		player_pos += world_dir * PLAYER_SPEED * dt
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
 	if player_iframe > 0.0:
@@ -785,33 +821,71 @@ func _build_renderers() -> void:
 func _update_renderers() -> void:
 	var mm := _mm_enemy.multimesh
 	mm.visible_instance_count = enemies.count
-	for i in enemies.count:
+	# Depth order: farther up the screen draws first. Buckets rather than a
+	# comparison sort — 600 entities every frame, and the band resolution is far
+	# finer than the overlap it resolves.
+	_depth_sort()
+	for n in enemies.count:
+		var i: int = _order[n]
 		var t = enemy_types[enemies.type_index[i]]
 		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2(s, s), 0.0, enemies.pos[i]))
+		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0, to_iso(enemies.pos[i])))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		var shade := 1.15
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
 			shade = 1.15 * (0.82 - 0.07 * mini(_worm_seg[i], 4))
-		mm.set_instance_color(i, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade)
-		mm.set_instance_custom_data(i, Color(float(t.glyph), 0.0, 0.0, 0.0))
+		mm.set_instance_color(n, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade)
+		mm.set_instance_custom_data(n, Color(float(t.glyph), 0.0, 0.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	for i in projectiles.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, projectiles.pos[i]))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(projectiles.pos[i])))
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, shards.pos[i]))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(shards.pos[i])))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
 	for i in botnet.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, botnet.pos[i]))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(botnet.pos[i])))
+
+## Counting sort into screen-depth bands. O(n) with no comparisons, which is
+## what makes per-entity depth ordering affordable at the enemy cap.
+func _depth_sort() -> void:
+	var n := enemies.count
+	if n == 0:
+		return
+	for b in DEPTH_BANDS + 1:
+		_band_count[b] = 0
+	var lo := player_pos.x + player_pos.y - 1800.0
+	var span := 3600.0
+	for i in n:
+		var key := clampi(int((enemies.pos[i].x + enemies.pos[i].y - lo) / span * DEPTH_BANDS),
+			0, DEPTH_BANDS - 1)
+		_band_count[key] += 1
+	var acc := 0
+	for b in DEPTH_BANDS:
+		var c := _band_count[b]
+		_band_count[b] = acc
+		acc += c
+	for i in n:
+		var key2 := clampi(int((enemies.pos[i].x + enemies.pos[i].y - lo) / span * DEPTH_BANDS),
+			0, DEPTH_BANDS - 1)
+		_order[_band_count[key2]] = i
+		_band_count[key2] += 1
 
 func _draw() -> void:
+	# The ship is drawn screen-aligned at the projected position: a glyph that
+	# tilts with the ground plane reads as debris, not as the thing you steer.
+	var o := to_iso(player_pos)
 	var pts := PackedVector2Array([
-		player_pos + Vector2(0, -14), player_pos + Vector2(12, 8),
-		player_pos + Vector2(0, 3), player_pos + Vector2(-12, 8)])
+		o + Vector2(0, -14), o + Vector2(12, 8),
+		o + Vector2(0, 3), o + Vector2(-12, 8)])
 	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
 	draw_polyline(pts + PackedVector2Array([pts[0]]), c, 2.0)
-	draw_arc(player_pos, pickup_radius, 0, TAU, 40, Color(0.35, 0.9, 0.7, 0.22), 1.0)
+	# The pickup ring lies ON the ground plane, so it projects to an ellipse.
+	var ring := PackedVector2Array()
+	for k in 41:
+		var a := TAU * k / 40.0
+		ring.append(to_iso(player_pos + Vector2(cos(a), sin(a)) * pickup_radius))
+	draw_polyline(ring, Color(0.35, 0.9, 0.7, 0.22), 1.0)
