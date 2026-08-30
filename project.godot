@@ -1,0 +1,11 @@
+config_version=5
+
+[application]
+config/name="ROOTKIT"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[physics]
+common/physics_ticks_per_second=60
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
