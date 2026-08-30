@@ -10,7 +10,8 @@ var T := ModuleTable.by_id()
 func _initialize() -> void:
 	print("ROOTKIT — slot targeting\n")
 	compatibility()
-	rank_up_only_where_held()
+	rank_up_where_held_and_placeable_elsewhere()
+	duplicates_allowed()
 	last_interval_protected()
 	empty_exploits_offered()
 	placement_applies()
@@ -48,16 +49,39 @@ func compatibility() -> void:
 				ok = false
 		_check("%s only offered %s slots" % [id, ["VECTOR","TRIGGER","PAYLOAD"][int(m.slot)]], ok, true)
 
-## An equipped module can only rank up where it already sits — offering it
-## anywhere else would put the same id in the loadout twice.
-func rank_up_only_where_held() -> void:
+## An equipped module ranks up in the slot that holds it AND may be placed
+## again elsewhere. Three exploits each need a trigger and there are only four
+## trigger modules, so forbidding duplicates made the board unbuildable.
+func rank_up_where_held_and_placeable_elsewhere() -> void:
 	var l := _fresh()
 	var ts := l.legal_targets(T[&"packet"])
-	_check("held module offers exactly one target", ts.size(), 1)
-	_check("that target is its own slot", _slots(ts)[0], [0, 0])
-	_check("and the action is a rank-up", ts[0].action, Loadout.Rule.RANK_UP)
+	var own: Loadout.Target = null
+	for t in ts:
+		if t.exploit == 0 and t.slot == 0:
+			own = t
+	_check("its own slot offers a rank-up", own != null and own.action == Loadout.Rule.RANK_UP, true)
+	_check("other vector slots are still offered", _slots(ts).has([1, 0]), true)
 	l.exploits[0].vector.rank = T[&"packet"].max_rank
-	_check("at max rank it offers none", l.legal_targets(T[&"packet"]).size(), 0)
+	var ts2 := l.legal_targets(T[&"packet"])
+	_check("at max rank its own slot drops out", _slots(ts2).has([0, 0]), false)
+	_check("but it can still go elsewhere", _slots(ts2).has([1, 0]), true)
+
+## The whole point: the same trigger in every exploit.
+func duplicates_allowed() -> void:
+	var l := _fresh()
+	l.place_at(T[&"chain"], 1, 0)
+	l.place_at(T[&"interval"], 1, 1)
+	l.place_at(T[&"broadcast"], 2, 0)
+	l.place_at(T[&"interval"], 2, 1)
+	var n := 0
+	for ex in l.exploits:
+		if ex.trigger != null and ex.trigger.module.id == &"interval":
+			n += 1
+	_check("interval can drive all three exploits", n, 3)
+	_check("and none of them is inert",
+		not (l.exploits[0].is_inert() or l.exploits[1].is_inert() or l.exploits[2].is_inert()), true)
+	l.exploits[1].trigger.rank = 4
+	_check("ranks are per slot, not shared", l.exploits[2].trigger.rank, 1)
 
 ## Displacing the only interval trigger would leave an event-triggered loadout
 ## unable to fire at all, so that slot is never offered.

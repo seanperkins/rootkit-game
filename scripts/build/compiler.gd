@@ -54,11 +54,18 @@ static func build(ex: Exploit, buffs: Dictionary = {}) -> ResolvedExploit:
 
 static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 	var m := em.module
+	var is_vector := m.slot == Module.Slot.VECTOR
 	for key in m.stats:
 		if not (key in Module.STAT_KEYS):
 			push_error("module '%s': unknown stat key '%s'" % [m.id, key])
 			continue
-		r.set(key, r.get(key) + float(m.stats[key]) * em.rank)
+		# A VECTOR's cooldown is its cadence, not a scaling stat. Folding it per
+		# rank meant ranking broadcast (0.85 s) to rank 3 produced 2.55 s — the
+		# weapon fired three times slower for three times the damage, which is
+		# flat DPS, bad feel, and made MIN_COOLDOWN unreachable from the vector
+		# side. Reductions from payloads and triggers still scale with rank.
+		var scale: int = 1 if (is_vector and key == &"cooldown") else em.rank
+		r.set(key, r.get(key) + float(m.stats[key]) * scale)
 	for t in m.tags:
 		r.tags[t] = true
 

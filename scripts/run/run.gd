@@ -24,6 +24,23 @@ const STEER_SLICES := 2
 ## or is targeted beyond what the player can see.
 const VIEW_RANGE := 620.0
 
+## Isometric projection, applied at the RENDER and INPUT boundaries only.
+## Simulation stays flat 2D: the grid, collision, steering, targeting and every
+## distance in the tick are unchanged. This is a view transform, not a physics
+## change, which is what keeps it cheap and reversible.
+##
+##   screen.x = (x - y) * K
+##   screen.y = (x + y) * K / 2      <- the 2:1 squash
+const ISO_K := 0.82
+
+static func to_iso(p: Vector2) -> Vector2:
+	return Vector2((p.x - p.y) * ISO_K, (p.x + p.y) * ISO_K * 0.5)
+
+static func from_iso(s: Vector2) -> Vector2:
+	var a := s.x / ISO_K
+	var b := s.y / (ISO_K * 0.5)
+	return Vector2((b + a) * 0.5, (b - a) * 0.5)
+
 ## Worms are a chain: a head that steers, and segments that follow the path the
 ## head actually took rather than beelining at the player. Segments are real
 ## enemies — individually killable, individually dangerous — but they do not
@@ -78,6 +95,23 @@ var pending_levels := 0
 var paused := false
 var pickup_radius := PICKUP_RADIUS
 var _steer_phase := 0
+## Diagnostic only: how many times each exploit's vector was emitted this tick.
+var _trigger_fires := {}
+## Time until each exploit may fire again. INTERVAL uses its own accumulator;
+## this gates the EVENT triggers, which previously had no rate limit at all —
+## ON_KILL fired once per adjudicated death, so in a swarm it ran continuously
+## and was bounded only by the per-tick fire budget.
+var _fire_cd: PackedFloat32Array
+## Transient shot visuals. BROADCAST, BEAM and CHAIN resolve straight through
+## the hit queue and drew nothing at all — you saw enemies die with no sign of
+## what killed them. Bounded by the fire budget: 3 exploits x 4 fires x FX_LIFE
+## worth of ticks.
+const FX_LIFE := 0.13
+var _fx_line: Array = []      # [a, b, t, colour]
+var _fx_ring: Array = []      # [centre, radius, t, colour]
+var _order: PackedInt32Array
+var _band_count: PackedInt32Array
+const DEPTH_BANDS := 192
 
 var thresholds: PackedFloat32Array
 var enemy_types: Array
@@ -131,11 +165,14 @@ func _ready() -> void:
 	_counts = PackedInt32Array(); _counts.resize(4)
 	_pos_arrays = [null, null, null, null]
 	_fire_acc = PackedFloat32Array(); _fire_acc.resize(Loadout.MAX_EXPLOITS)
+	_fire_cd = PackedFloat32Array(); _fire_cd.resize(Loadout.MAX_EXPLOITS)
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
+	_order = PackedInt32Array(); _order.resize(MAX_ENEMIES)
+	_band_count = PackedInt32Array(); _band_count.resize(DEPTH_BANDS + 1)
 	_botnet_ratio = PackedFloat32Array(); _botnet_ratio.resize(MAX_BOTNET)
 	_botnet_life = PackedFloat32Array(); _botnet_life.resize(MAX_BOTNET)
 
@@ -180,12 +217,18 @@ func _physics_process(dt: float) -> void:
 	_step9_recycle()
 
 	_update_renderers()
-	_camera.global_position = player_pos
+	_camera.global_position = to_iso(player_pos)
 	queue_redraw()
 
 func _step1_spawn(dt: float) -> void:
 	for s in director.step(dt, player_pos, SPAWN_RING):
 		var ti: int = s[0]
+		# The spawn ring is centred on the player and does not know about the
+		# arena, so near an edge it placed enemies outside the map — invisible
+		# against the void in the isometric view, and unreachable in either.
+		s[1] = (s[1] as Vector2).clamp(
+			ARENA_ORIGIN + Vector2(24, 24),
+			ARENA_ORIGIN + ARENA_SIZE - Vector2(24, 24))
 		if ti == WORM_TYPE:
 			if _spawn_worm(s[1]):
 				director.spawned += 1
@@ -251,9 +294,15 @@ func _worm_sample(id: int, steps_back: int) -> Vector2:
 
 func _step2_integrate(dt: float) -> void:
 	# Polled directly so no InputMap entries are needed. WASD and arrows both.
+	#
+	# input_override is a WORLD direction — it is a simulation hook for headless
+	# drivers, which reason in world space. Keyboard input is SCREEN-relative and
+	# is unprojected below, so W moves you up the screen rather than up the world
+	# axis (which under the projection points diagonally).
 	var input := Vector2.ZERO
+	var world_dir := Vector2.ZERO
 	if input_override != null:
-		input = input_override
+		world_dir = (input_override as Vector2).normalized()
 	else:
 		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
 			input.x -= 1.0
@@ -264,7 +313,21 @@ func _step2_integrate(dt: float) -> void:
 		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
 			input.y += 1.0
 	if input.length_squared() > 0.0:
-		player_pos += input.normalized() * PLAYER_SPEED * dt
+		# Uniform SCREEN speed, not uniform world speed.
+		#
+		# Normalising the WORLD direction keeps world speed constant, which makes
+		# on-screen speed inherit the 2:1 squash — left/right moves twice as fast
+		# as up/down, which is what makes the controls feel lopsided. Because
+		# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
+		# through WITHOUT renormalising makes the on-screen velocity exactly
+		# PLAYER_SPEED in every direction.
+		#
+		# The trade is that world speed now varies with heading (fastest along
+		# the screen vertical, where the projection compresses most). That is the
+		# right way round for a game where every dodge is judged on screen.
+		world_dir = from_iso(input.normalized())
+	if world_dir.length_squared() > 0.0:
+		player_pos += world_dir * PLAYER_SPEED * dt
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
 	if player_iframe > 0.0:
@@ -299,6 +362,7 @@ func _step2_integrate(dt: float) -> void:
 		projectiles.pos[i] += projectiles.vel[i] * dt
 	for i in botnet.count:
 		_botnet_life[i] -= dt
+	_age_fx(dt)
 	for i in shards.count:
 		var d := player_pos - shards.pos[i]
 		# Magnet reach. Was 6x the pickup radius (288 px), which meant shards
@@ -306,6 +370,22 @@ func _step2_integrate(dt: float) -> void:
 		# positioning decision.
 		if d.length() < pickup_radius * 2.2:
 			shards.pos[i] += d.normalized() * 300.0 * dt
+
+func _age_fx(dt: float) -> void:
+	var i := 0
+	while i < _fx_line.size():
+		_fx_line[i][2] -= dt
+		if _fx_line[i][2] <= 0.0:
+			_fx_line.remove_at(i)
+		else:
+			i += 1
+	i = 0
+	while i < _fx_ring.size():
+		_fx_ring[i][2] -= dt
+		if _fx_ring[i][2] <= 0.0:
+			_fx_ring.remove_at(i)
+		else:
+			i += 1
 
 func _step3_rebuild() -> void:
 	_pos_arrays[Grid.Pop.ENEMY] = enemies.pos
@@ -347,8 +427,20 @@ func _step4_steer() -> void:
 		enemies.force[i] = push * 2.2
 		i += STEER_SLICES
 
+## Event triggers respond only when off cooldown. Returns false when the
+## exploit is still recovering, so callers can skip the emit.
+func _try_event_fire(ei: int, r: ResolvedExploit) -> bool:
+	if _fire_cd[ei] > 0.0:
+		return false
+	_fire_cd[ei] = r.cooldown
+	_emit_vector(ei, r)
+	return true
+
 func _step5_fire(dt: float) -> void:
 	queue.begin_tick()
+	for ei in _fire_cd.size():
+		if _fire_cd[ei] > 0.0:
+			_fire_cd[ei] -= dt
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if r.inert:
@@ -367,8 +459,10 @@ func _step5_fire(dt: float) -> void:
 		_fire_acc[ei] = minf(_fire_acc[ei], r.cooldown * FIRE_BUDGET)
 
 func _emit_vector(ei: int, r: ResolvedExploit) -> void:
+	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
+			_fx_ring.append([player_pos, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
 			var n := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(n, _buf.size()):
 				_hit(ei, r, Grid.index_of(_buf[k]))
@@ -377,6 +471,8 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			if target < 0:
 				return
 			var dir := (enemies.pos[target] - player_pos).normalized()
+			_fx_line.append([player_pos, player_pos + dir * r.radius, FX_LIFE,
+				Color(2.2, 1.4, 2.6)])
 			var n2 := grid.query_radius_into(player_pos + dir * r.radius * 0.5,
 				r.radius * 0.5, _buf, Grid.M_ENEMY)
 			var struck := 0
@@ -390,6 +486,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			if t2 < 0:
 				return
 			_hit(ei, r, t2)
+			_fx_line.append([player_pos, enemies.pos[t2], FX_LIFE, Color(1.0, 2.2, 1.6)])
 			var from := enemies.pos[t2]
 			var visited := [t2]
 			var hops := 0
@@ -408,6 +505,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				if picked < 0:
 					break
 				_hit(ei, r, picked)
+				_fx_line.append([from, enemies.pos[picked], FX_LIFE, Color(1.0, 2.2, 1.6)])
 				visited.append(picked)
 				from = enemies.pos[picked]
 				hops += 1
@@ -495,7 +593,7 @@ func _damage_player(amount: float) -> void:
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
-			_emit_vector(ei, r)
+			_try_event_fire(ei, r)
 	if player_health <= 0.0 and alive and not won:
 		player_health = 0.0
 		alive = false
@@ -523,7 +621,7 @@ func _steps78_drain() -> void:
 			for ei in resolved.size():
 				var r: ResolvedExploit = resolved[ei]
 				if not r.inert and r.trigger_kind == Module.TriggerKind.ON_HIT:
-					_emit_vector(ei, r)
+					_try_event_fire(ei, r)
 
 		# Break only when nothing resolved AND nothing new is queued. Breaking on
 		# resolved_n alone discarded the events ON_HIT had just appended one line
@@ -564,7 +662,7 @@ func _on_death(i: int) -> void:
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_KILL:
-			_emit_vector(ei, r)
+			_try_event_fire(ei, r)
 	var killer := queue.killer_exploit[i]
 	if killer >= 0 and killer < resolved.size():
 		var lifesteal: float = resolved[killer].lifesteal
@@ -785,33 +883,85 @@ func _build_renderers() -> void:
 func _update_renderers() -> void:
 	var mm := _mm_enemy.multimesh
 	mm.visible_instance_count = enemies.count
-	for i in enemies.count:
+	# Depth order: farther up the screen draws first. Buckets rather than a
+	# comparison sort — 600 entities every frame, and the band resolution is far
+	# finer than the overlap it resolves.
+	_depth_sort()
+	for n in enemies.count:
+		var i: int = _order[n]
 		var t = enemy_types[enemies.type_index[i]]
 		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2(s, s), 0.0, enemies.pos[i]))
+		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0, to_iso(enemies.pos[i])))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		var shade := 1.15
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
 			shade = 1.15 * (0.82 - 0.07 * mini(_worm_seg[i], 4))
-		mm.set_instance_color(i, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade)
-		mm.set_instance_custom_data(i, Color(float(t.glyph), 0.0, 0.0, 0.0))
+		mm.set_instance_color(n, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade)
+		mm.set_instance_custom_data(n, Color(float(t.glyph), 0.0, 0.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	for i in projectiles.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, projectiles.pos[i]))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(projectiles.pos[i])))
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, shards.pos[i]))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(shards.pos[i])))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
 	for i in botnet.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, botnet.pos[i]))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(botnet.pos[i])))
+
+## Counting sort into screen-depth bands. O(n) with no comparisons, which is
+## what makes per-entity depth ordering affordable at the enemy cap.
+func _depth_sort() -> void:
+	var n := enemies.count
+	if n == 0:
+		return
+	for b in DEPTH_BANDS + 1:
+		_band_count[b] = 0
+	var lo := player_pos.x + player_pos.y - 1800.0
+	var span := 3600.0
+	for i in n:
+		var key := clampi(int((enemies.pos[i].x + enemies.pos[i].y - lo) / span * DEPTH_BANDS),
+			0, DEPTH_BANDS - 1)
+		_band_count[key] += 1
+	var acc := 0
+	for b in DEPTH_BANDS:
+		var c := _band_count[b]
+		_band_count[b] = acc
+		acc += c
+	for i in n:
+		var key2 := clampi(int((enemies.pos[i].x + enemies.pos[i].y - lo) / span * DEPTH_BANDS),
+			0, DEPTH_BANDS - 1)
+		_order[_band_count[key2]] = i
+		_band_count[key2] += 1
 
 func _draw() -> void:
+	# Shot visuals, oldest fading out. Drawn under the ship.
+	for fx in _fx_line:
+		var f: float = fx[2] / FX_LIFE
+		var c: Color = fx[3]
+		draw_line(to_iso(fx[0]), to_iso(fx[1]), Color(c.r, c.g, c.b, f), 1.0 + 2.5 * f)
+	for fx in _fx_ring:
+		var f2: float = fx[2] / FX_LIFE
+		var c2: Color = fx[3]
+		var pts := PackedVector2Array()
+		for k in 33:
+			var a2 := TAU * k / 32.0
+			pts.append(to_iso(fx[0] + Vector2(cos(a2), sin(a2)) * fx[1] * (1.0 - f2 * 0.25)))
+		draw_polyline(pts, Color(c2.r, c2.g, c2.b, f2 * 0.85), 1.0 + 2.0 * f2)
+
+	# The ship is drawn screen-aligned at the projected position: a glyph that
+	# tilts with the ground plane reads as debris, not as the thing you steer.
+	var o := to_iso(player_pos)
 	var pts := PackedVector2Array([
-		player_pos + Vector2(0, -14), player_pos + Vector2(12, 8),
-		player_pos + Vector2(0, 3), player_pos + Vector2(-12, 8)])
+		o + Vector2(0, -14), o + Vector2(12, 8),
+		o + Vector2(0, 3), o + Vector2(-12, 8)])
 	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
 	draw_polyline(pts + PackedVector2Array([pts[0]]), c, 2.0)
-	draw_arc(player_pos, pickup_radius, 0, TAU, 40, Color(0.35, 0.9, 0.7, 0.22), 1.0)
+	# The pickup ring lies ON the ground plane, so it projects to an ellipse.
+	var ring := PackedVector2Array()
+	for k in 41:
+		var a := TAU * k / 40.0
+		ring.append(to_iso(player_pos + Vector2(cos(a), sin(a)) * pickup_radius))
+	draw_polyline(ring, Color(0.35, 0.9, 0.7, 0.22), 1.0)

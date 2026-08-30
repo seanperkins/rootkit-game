@@ -9,6 +9,7 @@ func _init() -> void:
 	fillability_invariant()
 	rank_scaling()
 	cooldown_clamp()
+	vector_cadence_does_not_scale()
 	speed_clamp()
 	int_fold_order()
 	permutation_determinism()
@@ -68,6 +69,19 @@ func rank_scaling() -> void:
 	_check("rank 1: base + payload", Compiler.build(ex).damage, base + pay)
 	ex.payloads[0].rank = 3
 	_check("rank 3: base + payload*3", Compiler.build(ex).damage, base + pay * 3.0)
+
+## Ranking a weapon up must not make it fire slower. A VECTOR's cooldown is its
+## cadence; only reductions from payloads and triggers scale with rank.
+func vector_cadence_does_not_scale() -> void:
+	var base: float = T[&"broadcast"].stats[&"cooldown"]
+	var ex := _mk(&"broadcast", &"interval")
+	var r1 := Compiler.build(ex)
+	ex.vector.rank = 5
+	var r5 := Compiler.build(ex)
+	_check("rank 5 vector fires at the same cadence", r5.cooldown, r1.cooldown)
+	_check("and that cadence is the module's own", r1.cooldown,
+		base + T[&"interval"].stats[&"cooldown"])
+	_check("while its damage does scale", r5.damage > r1.damage, true)
 
 ## Stack every cooldown contributor at max rank and the floor must still hold.
 func cooldown_clamp() -> void:
