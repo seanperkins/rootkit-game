@@ -116,6 +116,14 @@ static func bank(salvage: int, kills: int, flips: int) -> void:
 			d["unlocked"].append(String(m))
 	save_state()
 
+## Unlock state is DERIVED from the milestone counters, never read from the
+## stored list. The list is only evaluated inside bank(), so any state reached
+## outside that call desyncs — a save with 212 kills displayed as locked against
+## a 150-kill requirement. Counters are the single source of truth; the stored
+## list is kept for forward compatibility but is not load-bearing.
+static func is_unlocked(id: StringName) -> bool:
+	return _milestone_met(id, load_state())
+
 static func _milestone_met(id: StringName, d: Dictionary) -> bool:
 	match id:
 		&"worm":            return d["flips"] >= 50
@@ -124,13 +132,11 @@ static func _milestone_met(id: StringName, d: Dictionary) -> bool:
 	return false
 
 static func unlocked_modules() -> Array:
-	var d := load_state()
 	var out := ModuleTable.starting_unlocked()
 	var table := ModuleTable.by_id()
-	for id in d["unlocked"]:
-		var sid := StringName(id)
-		if table.has(sid) and not (table[sid] in out):
-			out.append(table[sid])
+	for id in ModuleTable.LOCKED:
+		if is_unlocked(id) and table.has(id) and not (table[id] in out):
+			out.append(table[id])
 	return out
 
 static func buff_stats() -> Dictionary:

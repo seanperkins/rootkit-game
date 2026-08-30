@@ -12,7 +12,7 @@ var picks := 0
 func _initialize() -> void:
 	print("ROOTKIT — full subnet smoke test\n")
 	SaveGame.use_fresh_state()
-	var scene: PackedScene = load("res://scenes/main.tscn")
+	var scene: PackedScene = load("res://scenes/run.tscn")
 	run = scene.instantiate()
 	root.add_child(run)
 	# add_child during _initialize leaves the node outside the tree, so _ready

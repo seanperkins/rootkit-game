@@ -2,7 +2,7 @@ extends SceneTree
 var run: Node2D
 var frames := 0
 func _initialize() -> void:
-	run = load("res://scenes/main.tscn").instantiate()
+	run = load("res://scenes/run.tscn").instantiate()
 	root.add_child(run)
 	await process_frame
 	run.level_up_offered.connect(func(cards): run.choose_card(cards[0][0], cards[0][1]))

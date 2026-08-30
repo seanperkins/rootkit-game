@@ -385,6 +385,10 @@ func _damage_player(amount: float) -> void:
 	if player_health <= 0.0:
 		player_health = 0.0
 		alive = false
+		# Salvage is lost, but kills and flips still count toward unlocks —
+		# otherwise a losing run gives nothing and the meta has no reason to
+		# exist after a death, which is exactly what it is for.
+		SaveGame.bank(0, kills, flips)
 		emit_signal("run_ended", false, 0)
 	emit_signal("stats_changed")
 

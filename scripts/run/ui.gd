@@ -91,9 +91,9 @@ func _build() -> void:
 	etext.position = Vector2(60, 160)
 	_end.add_child(etext)
 	var again := Button.new()
-	again.text = "run again  [R]"
+	again.text = "disconnect  ->  shell   [R]"
 	again.position = Vector2(60, 260)
-	again.custom_minimum_size = Vector2(200, 36)
+	again.custom_minimum_size = Vector2(280, 36)
 	_end.add_child(again)
 	again.pressed.connect(_restart)
 
@@ -178,7 +178,7 @@ func _on_end(won: bool, salvage: int) -> void:
 	_end.visible = true
 
 func _restart() -> void:
-	get_tree().reload_current_scene()
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 func _input(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and e.keycode == KEY_R and _end.visible:
