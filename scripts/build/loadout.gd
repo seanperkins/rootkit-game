@@ -2,8 +2,8 @@ class_name Loadout extends RefCounted
 
 ## Owns the player's exploits and the auto-slot rules. Pure.
 ##
-## Module ids are globally unique across the loadout — the invariant that makes
-## the rank-up rule singular. assert_unique() is called after every mutation.
+## A module may occupy any number of slots; ranks are per slot, so the same
+## module in two exploits is two independent copies.
 
 const MAX_EXPLOITS := 3
 
@@ -48,13 +48,16 @@ func holds(id: StringName) -> int:
 			return i
 	return -1
 
-func assert_unique() -> void:
-	var seen := {}
-	for ex in exploits:
-		for em in ex.equipped():
-			assert(not seen.has(em.module.id), "duplicate module id in loadout: %s" % em.module.id)
-			seen[em.module.id] = true
-
+## A module may occupy as many slots as the player wants to give it.
+##
+## Ids used to be unique across the whole loadout, which existed only to make
+## "rank up the exploit that holds it" a singular statement back when placement
+## was automatic. With the player choosing the slot that reason is gone, and the
+## restriction was actively harmful: three exploits each need a TRIGGER, there
+## are four trigger modules and one is locked, so the board could not be built
+## out of the interval triggers that actually fire on their own. Exploits two
+## and three ended up with no trigger at all — and an exploit without one is
+## inert, which is why only the interval exploit appeared to work.
 ## Every slot this module may legally occupy, for the player to choose between.
 ## Placement is the player's decision; this only enforces the invariants:
 ##   - a module id appears at most once in the loadout, so an already-equipped
@@ -63,22 +66,10 @@ func assert_unique() -> void:
 ##     event-triggered loadout with no way to fire at all.
 func legal_targets(m: Module) -> Array:
 	var out := []
-	var held := holds(m.id)
 	for e in MAX_EXPLOITS:
 		var ex: Exploit = exploits[e] if e < exploits.size() else null
 		for sl in Exploit.SLOT_COUNT:
 			if Exploit.slot_type(sl) != m.slot:
-				continue
-			# Already equipped: the ONLY legal move is ranking it up where it
-			# sits. This has to be checked before the unfounded-exploit branch
-			# below, or a held module gets offered empty slots elsewhere and the
-			# id ends up in the loadout twice.
-			if held >= 0:
-				if ex == null:
-					continue
-				var occ := ex.at(sl)
-				if occ != null and occ.module.id == m.id and occ.can_rank_up():
-					out.append(Target.new(e, sl, Rule.RANK_UP))
 				continue
 			if ex == null:
 				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
@@ -86,6 +77,11 @@ func legal_targets(m: Module) -> Array:
 			var occupant := ex.at(sl)
 			if occupant == null:
 				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
+			elif occupant.module.id == m.id:
+				# Ranks are per SLOT, not per module. The same module in two
+				# exploits is two independent copies.
+				if occupant.can_rank_up():
+					out.append(Target.new(e, sl, Rule.RANK_UP))
 			elif not _is_last_interval(occupant):
 				out.append(Target.new(e, sl, Rule.REPLACE, occupant.module))
 	return out
@@ -119,7 +115,6 @@ func place_at(m: Module, exploit_index: int, slot_index: int) -> void:
 	else:
 		# A displaced module loses its rank: drawn again it re-enters at 1.
 		ex.set_at(slot_index, EquippedModule.new(m))
-	assert_unique()
 
 ## Resolves where a card would land. Rule 0 (no legal placement) returns NONE,
 ## and the caller offers the card as salvage — the backstop that makes the set
@@ -174,7 +169,6 @@ func apply(m: Module, p: Placement) -> void:
 			exploits[p.exploit_index].place(m)
 		_:
 			return
-	assert_unique()
 
 ## The displaced module's rank is destroyed: drawn again, it re-enters at rank
 ## 1. A real penalty, and it changes what a rule-4 card's delta should show.

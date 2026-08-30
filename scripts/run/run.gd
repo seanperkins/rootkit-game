@@ -95,6 +95,8 @@ var pending_levels := 0
 var paused := false
 var pickup_radius := PICKUP_RADIUS
 var _steer_phase := 0
+## Diagnostic only: how many times each exploit's vector was emitted this tick.
+var _trigger_fires := {}
 var _order: PackedInt32Array
 var _band_count: PackedInt32Array
 const DEPTH_BANDS := 192
@@ -415,6 +417,7 @@ func _step5_fire(dt: float) -> void:
 		_fire_acc[ei] = minf(_fire_acc[ei], r.cooldown * FIRE_BUDGET)
 
 func _emit_vector(ei: int, r: ResolvedExploit) -> void:
+	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
 			var n := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
