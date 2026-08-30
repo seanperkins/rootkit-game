@@ -65,10 +65,17 @@ func buffs_fold_into_compile() -> void:
 	_check("cooling never breaches MIN_COOLDOWN",
 		cooled.cooldown >= Compiler.MIN_COOLDOWN, true)
 	# bandwidth is a player stat, not an exploit stat: it must NOT reach the
-	# compiler, and it must actually move pickup range.
+	# compiler, and it must actually move pickup range. The other two buffs must
+	# also survive being in the same dictionary as it — a direct index into the
+	# partial BUFF_EFFECT table threw here and returned {}, silently wiping the
+	# cpu_cycles and cooling contributions already accumulated. Asserting only
+	# that a key is ABSENT is what let that bug ship: an aborted function
+	# satisfies a negative for free.
 	SaveGame.load_state()["buffs"]["bandwidth"] = 5
-	_check("bandwidth stays out of the compile path",
-		SaveGame.buff_stats().has(&"radius"), false)
+	var with_bw := SaveGame.buff_stats()
+	_check("bandwidth does not wipe cpu_cycles", with_bw.get(&"damage", 0.0), 6.0)
+	_check("bandwidth does not wipe cooling", with_bw.get(&"cooldown", 0.0), -0.2)
+	_check("bandwidth stays out of the compile path", with_bw.has(&"radius"), false)
 	_check("bandwidth moves pickup range", SaveGame.pickup_bonus(), 30.0)
 
 func unlocks() -> void:
