@@ -126,6 +126,8 @@ func _ready() -> void:
 	add_child(_camera)
 	_camera.make_current()
 
+	_build_environment()
+
 	var ui := CanvasLayer.new()
 	ui.set_script(load("res://scripts/run/ui.gd"))
 	add_child(ui)
@@ -566,6 +568,31 @@ func _make_mm(size: float, z: int) -> MultiMeshInstance2D:
 	add_child(node)
 	return node
 
+## Neon on black. Glow comes from WorldEnvironment with HDR 2D rather than a
+## CanvasLayer shader — one full-screen pass cannot do a separable blur without
+## a BackBufferCopy, and this path is both cheaper and idiomatic.
+func _build_environment() -> void:
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.016, 0.031, 0.027)
+	env.glow_enabled = true
+	env.glow_intensity = 1.6
+	env.glow_bloom = 0.55
+	env.glow_strength = 1.5
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
+	env.glow_hdr_threshold = 0.4
+	for i in 4:
+		env.set("glow_levels/%d" % (i + 2), 1.0)
+	var we := WorldEnvironment.new()
+	we.environment = env
+	add_child(we)
+
+	var grid_lines := Node2D.new()
+	grid_lines.set_script(load("res://scripts/run/backdrop.gd"))
+	grid_lines.z_index = -10
+	add_child(grid_lines)
+	grid_lines.set("target", self)
+
 func _build_renderers() -> void:
 	_mm_enemy = _make_mm(20.0, 2)
 	_mm_enemy.multimesh.instance_count = MAX_ENEMIES
@@ -584,27 +611,27 @@ func _update_renderers() -> void:
 		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2(s, s), 0.0, enemies.pos[i]))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
-		mm.set_instance_color(i, t.color.lerp(Color(1.0, 0.2, 1.0), frac))
+		mm.set_instance_color(i, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * 1.15)
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	for i in projectiles.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, projectiles.pos[i]))
-		mm.set_instance_color(i, Color(0.75, 1.0, 0.9))
+		mm.set_instance_color(i, Color(1.1, 1.7, 1.4))
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, shards.pos[i]))
-		mm.set_instance_color(i, Color(0.4, 0.9, 1.0))
+		mm.set_instance_color(i, Color(0.5, 1.3, 1.7))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
 	for i in botnet.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, botnet.pos[i]))
-		mm.set_instance_color(i, Color(1.0, 0.35, 1.0))
+		mm.set_instance_color(i, Color(1.6, 0.5, 1.6))
 
 func _draw() -> void:
 	var pts := PackedVector2Array([
 		player_pos + Vector2(0, -14), player_pos + Vector2(12, 8),
 		player_pos + Vector2(0, 3), player_pos + Vector2(-12, 8)])
-	var c := Color(0.5, 1.0, 0.7) if player_iframe <= 0.0 else Color(1.0, 0.5, 0.5)
+	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
 	draw_polyline(pts + PackedVector2Array([pts[0]]), c, 2.0)
-	draw_arc(player_pos, PICKUP_RADIUS, 0, TAU, 32, Color(0.3, 0.6, 0.5, 0.18), 1.0)
+	draw_arc(player_pos, PICKUP_RADIUS, 0, TAU, 40, Color(0.35, 0.9, 0.7, 0.22), 1.0)

@@ -2,14 +2,16 @@ config_version=5
 
 [application]
 config/name="ROOTKIT"
-config/features=PackedStringArray("4.7", "GL Compatibility")
+config/features=PackedStringArray("4.7", "Forward Plus")
 run/main_scene="res://scenes/main.tscn"
 
 [physics]
 common/physics_ticks_per_second=60
 
 [rendering]
-renderer/rendering_method="gl_compatibility"
+renderer/rendering_method="forward_plus"
+environment/defaults/default_clear_color=Color(0.016, 0.031, 0.027, 1)
+viewport/hdr_2d=true
 
 [display]
 

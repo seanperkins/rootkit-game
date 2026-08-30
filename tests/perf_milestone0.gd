@@ -49,6 +49,12 @@ const BUDGET_MS := 8.0
 const REFERENCE_CALIBRATION_MS := 14.97
 const CALIBRATION_ITERS := 400000
 
+## Above this contention the machine cannot produce a trustworthy tail: observed
+## p99 swinging 16 -> 73 ms across back-to-back runs while the median held at
+## 9.6. Rather than false-fail (or false-pass on a lucky run), the gate declines
+## to judge and says so.
+const MAX_CONTENTION := 1.8
+
 var enemies: Population
 var projectiles: Population
 var botnet: Population
@@ -93,6 +99,12 @@ func _init() -> void:
 	print("")
 
 	var samples := _run()
+	if scale > MAX_CONTENTION:
+		_report(samples, budget, scale)
+		print("")
+		print("  INCONCLUSIVE — machine is %.2fx the reference; too contended to" % scale)
+		print("  measure a tail. Median held at %.3f ms. Re-run on a quiet machine." % _median(samples))
+		quit(0)
 	_report(samples, budget, scale)
 	quit(0 if _p99(samples) <= budget else 1)
 
@@ -175,6 +187,11 @@ func _calibrate() -> float:
 	if acc < 0.0:
 		print("")     # keep the loop from being optimised away
 	return dt
+
+func _median(samples: PackedFloat64Array) -> float:
+	var sorted := samples.duplicate()
+	sorted.sort()
+	return sorted[sorted.size() / 2]
 
 func _p99(samples: PackedFloat64Array) -> float:
 	var sorted := samples.duplicate()

@@ -584,8 +584,13 @@ point queries with a single pass over grid cells doing neighbour pairs. The
 escape hatch remains a C# port of `grid.gd` and `population.gd`, which ports
 cleanly because it is node-free.
 
-The threshold is machine-relative; the reference machine above is recorded so a
-CI runner can be calibrated against it rather than false-failing.
+The threshold is **load-relative**, not absolute. Identical code measured 5.2 ms
+median on a quiet machine and 8.5 ms at load average 5.3, so the run first times
+a fixed synthetic workload and scales the budget by how much slower this machine
+is than the reference. Above 1.8x contention the gate declines to judge and says
+so, rather than false-failing: p99 was observed swinging 16 -> 73 ms across
+back-to-back runs on a loaded machine while the median held at 9.6 ms. A tail
+measured under contention describes the OS, not the code.
 
 Covered:
 
