@@ -49,6 +49,10 @@ var arena_rect: Rect2
 var dist_from_gate: PackedInt32Array
 var max_dist := 0
 var voided: PackedByteArray
+## Arena cells ordered by distance from the gate, farthest FIRST, plus how far
+## down that order the collapse has already eaten.
+var _collapse_order: PackedInt32Array
+var _collapse_idx := 0
 
 func _init(p_origin: Vector2, p_size: Vector2) -> void:
 	arena_rect = Rect2(p_origin, p_size)
@@ -434,6 +438,8 @@ func build_distance_field() -> void:
 	voided = PackedByteArray()
 	voided.resize(w * h)
 	max_dist = 0
+	_collapse_order = PackedInt32Array()
+	_collapse_idx = 0
 	var start := cell_index(gate_pos)
 	if start < 0 or solid[start] != 0:
 		return
@@ -459,21 +465,65 @@ func build_distance_field() -> void:
 			if d > max_dist:
 				max_dist = d
 			queue.append(nb)
+	_build_collapse_order()
+
+## Arena cells by distance, farthest first. A counting sort on distance: O(n),
+## where a comparison sort of thirty thousand cells would not be.
+func _build_collapse_order() -> void:
+	var counts := PackedInt32Array()
+	counts.resize(max_dist + 2)
+	var total := 0
+	for i in dist_from_gate.size():
+		if not _collapsible(i):
+			continue
+		counts[dist_from_gate[i]] += 1
+		total += 1
+	# Prefix sums, descending: distance max_dist lands first.
+	var starts := PackedInt32Array()
+	starts.resize(max_dist + 2)
+	var acc := 0
+	for d in range(max_dist, -1, -1):
+		starts[d] = acc
+		acc += counts[d]
+	_collapse_order = PackedInt32Array()
+	_collapse_order.resize(total)
+	for i in dist_from_gate.size():
+		if not _collapsible(i):
+			continue
+		var d := dist_from_gate[i]
+		_collapse_order[starts[d]] = i
+		starts[d] += 1
+
+func _collapsible(i: int) -> bool:
+	if solid[i] != 0 or dist_from_gate[i] < 0:
+		return false
+	var p := origin + Vector2(float(i % w) + 0.5, float(i / w) + 0.5) * CELL
+	return arena_rect.has_point(p)
 
 ## Void every open ARENA cell farther from the gate than `threshold`.
+##
+## Walks a PRE-SORTED order rather than scanning the grid. The scan was O(cells)
+## every tick, which was tolerable at 28,000 cells and is not at five times the
+## arena; this is O(cells newly voided), so the whole collapse costs one pass in
+## total rather than one pass per tick.
 ##
 ## The corridor is exempt because it lies outside the arena rect. Voiding the
 ## way out would make the deadline unwinnable rather than tense.
 func collapse_to(threshold: int) -> void:
-	if voided.is_empty():
+	if _collapse_order.is_empty():
 		return
-	for i in voided.size():
-		if solid[i] != 0 or dist_from_gate[i] < 0:
-			continue
-		var p := origin + Vector2(float(i % w) + 0.5, float(i / w) + 0.5) * CELL
-		if not arena_rect.has_point(p):
-			continue
-		voided[i] = 1 if dist_from_gate[i] > threshold else 0
+	# Thresholds only fall during a collapse, but a caller may reset one; rewind
+	# rather than silently leaving voided ground behind.
+	if _collapse_idx > 0 and threshold >= dist_from_gate[_collapse_order[_collapse_idx - 1]]:
+		for i in voided.size():
+			voided[i] = 0
+		_collapse_idx = 0
+	while _collapse_idx < _collapse_order.size():
+		var c := _collapse_order[_collapse_idx]
+		if dist_from_gate[c] <= threshold:
+			break
+		voided[c] = 1
+		_collapse_idx += 1
 
 func is_void(p: Vector2) -> bool:
 	if voided.is_empty():

@@ -48,13 +48,20 @@ func _paint(t: Terrain, at: Vector2, kind: int) -> void:
 func projectiles_die_on_walls() -> void:
 	var r := await _fresh_run()
 	var t: Terrain = r.terrain
-	# A wall directly right of the origin, at world x in [192, 256).
-	for y in range(-1, 2):
-		for x in range(0, 2):
-			var c := t.cell_xy(Vector2(200 + x * Terrain.CELL, y * Terrain.CELL))
-			t.solid[c.y * t.w + c.x] = 1
+	# Start from a KNOWN-EMPTY field. This case is about a projectile meeting a
+	# wall, not about what the generator happened to roll — leaving the random
+	# arena in place meant the control shot could fly into real terrain, which
+	# is a test failure that says nothing about the code under test.
+	t.solid.fill(0)
+	# A wall directly right of the origin, two cells wide.
+	var wc := t.cell_xy(Vector2(200, 0))
+	for y in range(wc.y - 1, wc.y + 2):
+		for x in range(wc.x, wc.x + 2):
+			t.solid[y * t.w + x] = 1
 
-	var i: int = r.projectiles.spawn(Vector2(0, 0), Vector2(600, 0), 1.0, 4.0, 0)
+	var wall_x: float = t.origin.x + float(wc.x) * Terrain.CELL
+	var i: int = r.projectiles.spawn(Vector2(wall_x - 190.0, 0), Vector2(600, 0),
+		1.0, 4.0, 0)
 	r._proj_dist_left[i] = 2000.0
 	_check("the projectile starts alive", r.projectiles.state[i], Population.ALIVE)
 	for k in 20:
@@ -62,7 +69,8 @@ func projectiles_die_on_walls() -> void:
 	_check("it is dead once it reaches the wall",
 		r.projectiles.state[i], Population.DEAD)
 
-	var j: int = r.projectiles.spawn(Vector2(0, -600), Vector2(600, 0), 1.0, 4.0, 0)
+	var j: int = r.projectiles.spawn(Vector2(wall_x - 190.0, -600), Vector2(600, 0),
+		1.0, 4.0, 0)
 	r._proj_dist_left[j] = 2000.0
 	for k in 20:
 		r._step2_integrate(1.0 / 60.0)

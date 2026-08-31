@@ -2,8 +2,11 @@ extends Node2D
 
 ## The run. Owns the 9-step tick from the spec and every population in it.
 
-const ARENA_ORIGIN := Vector2(-1600, -1000)
-const ARENA_SIZE := Vector2(3200, 2000)
+## Five times the area of the original 3200x2000, so each side grows by sqrt(5).
+## Area rather than each-side-x5, which would have been twenty-five times the
+## ground and put 156,000 cells in a grid the tick clears every frame.
+const ARENA_ORIGIN := Vector2(-3578, -2236)
+const ARENA_SIZE := Vector2(7156, 4472)
 const CELL := 32.0
 
 const MAX_ENEMIES := 600
