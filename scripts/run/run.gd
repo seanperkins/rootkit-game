@@ -88,6 +88,27 @@ var terrain: Terrain
 var _slow_left: PackedFloat32Array
 var _slow_factor: PackedFloat32Array
 
+## CHARGER phases. Named rather than bare integers because the transitions read
+## as a sentence and a bare 2 does not.
+const CH_APPROACH := 0
+const CH_WINDUP := 1
+const CH_DASH := 2
+const CH_RECOVER := 3
+
+const CHARGE_RANGE := 260.0
+const CHARGE_WINDUP := 0.7
+const CHARGE_DASH := 0.5
+const CHARGE_RECOVER := 0.8
+const CHARGE_SPEED := 3.0
+
+const FLANK_LEAD := 0.9
+const FLANK_TANGENT := 0.55
+
+## The player's actual velocity, derived from the step TAKEN rather than the
+## step requested — so it accounts for the arena clamp and for wall slides,
+## which is exactly what a flanker needs to aim at.
+var player_vel := Vector2.ZERO
+
 ## Per-enemy AI memory. Sized MAX_ENEMIES and reset on every spawn, because
 ## Population.spawn recycles slots and a stale phase is a live bug — an enemy
 ## that inherits a mid-dash timer commits to a dash it never wound up for.
@@ -462,6 +483,7 @@ func _step2_integrate(dt: float) -> void:
 		# the screen vertical, where the projection compresses most). That is the
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
+	var pos_before := player_pos
 	if world_dir.length_squared() > 0.0:
 		player_pos = terrain.slide(player_pos,
 			world_dir * _eff_clock_speed() * dt)
@@ -469,6 +491,7 @@ func _step2_integrate(dt: float) -> void:
 	# the arena rect, and the margin's solid cells are what actually stop you.
 	player_pos = player_pos.clamp(terrain.origin + Vector2(40, 40),
 		terrain.origin + terrain.size - Vector2(40, 40))
+	player_vel = (player_pos - pos_before) / maxf(dt, 0.0001)
 	if player_iframe > 0.0:
 		player_iframe -= dt
 	for wi in _ward_left.size():
@@ -820,9 +843,71 @@ func _behave(i: int, t, dt: float) -> Vector2:
 		sp *= _slow_factor[i]
 	var to_player := player_pos - enemies.pos[i]
 	match t.behaviour:
+		EnemyTable.Behaviour.CHARGER:
+			return _charge(i, sp, to_player, dt)
+		EnemyTable.Behaviour.FLANKER:
+			return _flank(i, sp, to_player)
 		_:
 			return to_player.normalized() * sp
 	return to_player.normalized() * sp
+
+## Approach, telegraph, commit, overshoot.
+##
+## The direction is locked at the MOMENT the dash begins and never revisited.
+## That is the whole design: a dash that keeps tracking you during the dash
+## cannot be dodged and reads as the game cheating, while one that commits is a
+## timing puzzle with a fair answer — sidestep late. The overshoot is the
+## reward for reading it.
+func _charge(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+	_ai_timer[i] -= dt
+	match _ai_phase[i]:
+		CH_APPROACH:
+			if to_player.length() <= CHARGE_RANGE:
+				_ai_phase[i] = CH_WINDUP
+				_ai_timer[i] = CHARGE_WINDUP
+				return Vector2.ZERO
+			return to_player.normalized() * sp
+		CH_WINDUP:
+			if _ai_timer[i] <= 0.0:
+				_ai_phase[i] = CH_DASH
+				_ai_timer[i] = CHARGE_DASH
+				_ai_aim[i] = to_player.normalized()
+				return _ai_aim[i] * sp * CHARGE_SPEED
+			# Still. A telegraph the player cannot see is not a telegraph.
+			return Vector2.ZERO
+		CH_DASH:
+			if _ai_timer[i] <= 0.0:
+				_ai_phase[i] = CH_RECOVER
+				_ai_timer[i] = CHARGE_RECOVER
+				return _ai_aim[i] * sp * 0.5
+			return _ai_aim[i] * sp * CHARGE_SPEED
+		_:
+			if _ai_timer[i] <= 0.0:
+				_ai_phase[i] = CH_APPROACH
+			return to_player.normalized() * sp * 0.5
+
+## Steer at where the player is GOING, plus a tangential bias so it arcs around
+## rather than converging head-on.
+##
+## This is what makes terrain bite: a flanker closes the lane you were kiting
+## toward, and a wall behind you turns that into a real mistake. Against a
+## stationary player the lead term vanishes and it degenerates to a chase, which
+## is correct — there is no escape to cut off.
+func _flank(i: int, sp: float, to_player: Vector2) -> Vector2:
+	var lead := to_player + player_vel * FLANK_LEAD
+	if lead.length_squared() < 0.0001:
+		return to_player.normalized() * sp
+	var dir := lead.normalized()
+	# Tangential component scaled by how fast the player is ACTUALLY moving:
+	# circling a stationary target is just a worse chase.
+	var speed_frac := clampf(player_vel.length() / 220.0, 0.0, 1.0)
+	var tangent := Vector2(-dir.y, dir.x)
+	# Arc the way the player is GOING. Either perpendicular is a valid tangent
+	# and the wrong one swings out behind them — which is a chase with extra
+	# steps, and at this magnitude it could even cancel the lead entirely.
+	if tangent.dot(player_vel) < 0.0:
+		tangent = -tangent
+	return (dir + tangent * FLANK_TANGENT * speed_frac).normalized() * sp
 
 func _clear_slow(i: int) -> void:
 	_slow_left[i] = 0.0

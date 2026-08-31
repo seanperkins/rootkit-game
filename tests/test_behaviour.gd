@@ -5,12 +5,17 @@ extends SceneTree
 var failures := 0
 var finished := {}
 
-const CASES := ["chase_is_unchanged_and_state_resets", "spawning_clears_ai_state"]
+const CASES := ["chase_is_unchanged_and_state_resets", "spawning_clears_ai_state",
+	"charger_commits_to_its_dash", "flanker_leads_the_player",
+	"player_velocity_is_tracked"]
 
 func _initialize() -> void:
 	print("ROOTKIT — enemy behaviour\n")
 	await chase_is_unchanged_and_state_resets()
 	await spawning_clears_ai_state()
+	await charger_commits_to_its_dash()
+	await flanker_leads_the_player()
+	await player_velocity_is_tracked()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -72,3 +77,83 @@ func spawning_clears_ai_state() -> void:
 	_check("and records its spawn HP", r._spawn_hp[j], 10.0)
 	r.free()
 	finished["spawning_clears_ai_state"] = true
+
+func charger_commits_to_its_dash() -> void:
+	var r := await _fresh_run()
+	var t := EnemyTable.EnemyType.new(&"t_charge", 0, Color.WHITE, 40.0, 80.0,
+		20.0, 10.0, 1, EnemyTable.Behaviour.CHARGER)
+	r.player_pos = Vector2.ZERO
+	var i: int = r.enemies.spawn(Vector2(600, 0), Vector2.ZERO, 40.0, 12.0, 0)
+	r._spawn_enemy_state(i, 40.0)
+
+	var v: Vector2 = r._behave(i, t, 1.0 / 60.0)
+	_check("far off it approaches", r._ai_phase[i], r.CH_APPROACH)
+	_check("moving toward the player",
+		v.dot(r.player_pos - r.enemies.pos[i]) > 0.0, true)
+
+	# Inside charge range: winds up, and stands still while it does.
+	r.enemies.pos[i] = r.player_pos + Vector2(200, 0)
+	v = r._behave(i, t, 1.0 / 60.0)
+	_check("in range it winds up", r._ai_phase[i], r.CH_WINDUP)
+	_check("and holds still to telegraph it", v, Vector2.ZERO)
+
+	for k in 60:
+		r._behave(i, t, 1.0 / 60.0)
+	_check("then it dashes", r._ai_phase[i], r.CH_DASH)
+	var locked: Vector2 = r._ai_aim[i]
+	_check("with a locked aim", locked.length() > 0.0, true)
+
+	# THE POINT: the aim does not track the player mid-dash. A dash that follows
+	# you is undodgeable; one that commits is a timing puzzle.
+	r.player_pos += Vector2(0, 600)
+	v = r._behave(i, t, 1.0 / 60.0)
+	_check("the dash does not re-aim", r._ai_aim[i], locked)
+	_check("and travels along the locked aim",
+		v.normalized().is_equal_approx(locked), true)
+	_check("faster than it walks", v.length() > t.speed, true)
+
+	# 20 ticks, not 60: the dash has ~0.18 s left, and recovery only lasts 0.8 s,
+	# so a full second would run the whole cycle back round to APPROACH.
+	for k in 20:
+		r._behave(i, t, 1.0 / 60.0)
+	_check("then it recovers", r._ai_phase[i], r.CH_RECOVER)
+	v = r._behave(i, t, 1.0 / 60.0)
+	_check("sluggishly", v.length() < t.speed, true)
+	r.free()
+	finished["charger_commits_to_its_dash"] = true
+
+func flanker_leads_the_player() -> void:
+	var r := await _fresh_run()
+	var t := EnemyTable.EnemyType.new(&"t_flank", 0, Color.WHITE, 12.0, 110.0,
+		12.0, 6.0, 1, EnemyTable.Behaviour.FLANKER)
+	r.player_pos = Vector2.ZERO
+	var i: int = r.enemies.spawn(Vector2(0, -500), Vector2.ZERO, 12.0, 12.0, 0)
+	r._spawn_enemy_state(i, 12.0)
+
+	# Player running hard along +x: the flanker must steer ahead of them.
+	r.player_vel = Vector2(220, 0)
+	var v: Vector2 = r._behave(i, t, 1.0 / 60.0)
+	_check("it leads a moving player", v.x > 0.0, true)
+
+	# Standing still, it degenerates to a chase rather than orbiting forever.
+	r.player_vel = Vector2.ZERO
+	var w: Vector2 = r._behave(i, t, 1.0 / 60.0)
+	var straight: Vector2 = (r.player_pos - r.enemies.pos[i]).normalized()
+	_check("and closes on a still one", w.normalized().dot(straight) > 0.6, true)
+	_check("at its own speed", is_equal_approx(w.length(), t.speed), true)
+	r.free()
+	finished["flanker_leads_the_player"] = true
+
+func player_velocity_is_tracked() -> void:
+	var r := await _fresh_run()
+	var before: Vector2 = r.player_pos
+	r.input_override = Vector2(1, 0)
+	r._step2_integrate(1.0 / 60.0)
+	_check("moving right gives a positive x velocity", r.player_vel.x > 0.0, true)
+	_check("and it matches the step actually taken",
+		r.player_vel.is_equal_approx((r.player_pos - before) * 60.0), true)
+	r.input_override = Vector2.ZERO
+	r._step2_integrate(1.0 / 60.0)
+	_check("standing still gives zero", r.player_vel, Vector2.ZERO)
+	r.free()
+	finished["player_velocity_is_tracked"] = true
