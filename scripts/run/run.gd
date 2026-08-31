@@ -73,6 +73,16 @@ var shards: Population
 var botnet: Population
 var grid: Grid
 var terrain: Terrain
+
+## Per-enemy slow, owned here rather than by the module pass that will also use
+## it: terrain's SLOW zones need it first, and one mechanic with one home is
+## worth more than two implementations that drift apart.
+var _slow_left: PackedFloat32Array
+var _slow_factor: PackedFloat32Array
+
+## Set by the zone pass each tick and read by _eff_clock_speed, so a slow zone
+## affects the player without a second timer: standing in it IS the duration.
+var _zone_slow_player := false
 var queue: HitQueue
 var loadout: Loadout
 var director: SpawnDirector
@@ -200,6 +210,8 @@ func _ready() -> void:
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_proj_dist_left = PackedFloat32Array(); _proj_dist_left.resize(MAX_PROJECTILES)
+	_slow_left = PackedFloat32Array(); _slow_left.resize(MAX_ENEMIES)
+	_slow_factor = PackedFloat32Array(); _slow_factor.resize(MAX_ENEMIES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
 	_order = PackedInt32Array(); _order.resize(MAX_ENEMIES)
@@ -250,7 +262,12 @@ func _eff_defense() -> float:
 	return _sheet[&"defense"] + _ward_max(&"ward_defense")
 
 func _eff_clock_speed() -> float:
-	return _sheet[&"clock_speed"] + _ward_max(&"ward_clock_speed")
+	var v: float = _sheet[&"clock_speed"] + _ward_max(&"ward_clock_speed")
+	# Applied last, so a slow zone cuts the total rather than the base and
+	# cannot be out-scaled by buying clock_speed in the shop.
+	if _zone_slow_player:
+		v *= Terrain.SLOW_FACTOR
+	return v
 
 func _mitigated(amount: float) -> float:
 	return PlayerStats.mitigate(amount, _eff_armor(), _eff_defense())
@@ -267,6 +284,7 @@ func _physics_process(dt: float) -> void:
 
 	_step1_spawn(dt)
 	_step2_integrate(dt)
+	_step2b_zones(dt)
 	_step3_rebuild()
 	_step4_steer()
 	_step5_fire(dt)
@@ -302,6 +320,7 @@ func _step1_spawn(dt: float) -> void:
 			director.dropped += 1
 		else:
 			_worm_id[idx] = 0
+			_clear_slow(idx)
 			director.spawned += 1
 	if director.should_spawn_boss():
 		director.boss_spawned = true
@@ -347,6 +366,7 @@ func _spawn_worm(at: Vector2) -> bool:
 			return k > 0
 		_worm_id[idx] = id
 		_worm_seg[idx] = k
+		_clear_slow(idx)
 	return true
 
 func _worm_sample(id: int, steps_back: int) -> Vector2:
@@ -406,7 +426,10 @@ func _step2_integrate(dt: float) -> void:
 			continue
 		var t = enemy_types[enemies.type_index[i]]
 		var to := (player_pos - enemies.pos[i]).normalized()
-		enemies.vel[i] = to * t.speed + enemies.force[i]
+		var sp: float = t.speed
+		if _slow_left[i] > 0.0:
+			sp *= _slow_factor[i]
+		enemies.vel[i] = to * sp + enemies.force[i]
 		# Worms phase through terrain, HEADS INCLUDED. Segments are sampled from
 		# the head's trail rather than integrated, so colliding the head alone
 		# would stretch the body through the wall the head is stuck against.
@@ -441,6 +464,10 @@ func _step2_integrate(dt: float) -> void:
 		# dead in step 2, which is why _step6_detect needs its state guard.
 		_proj_dist_left[i] -= projectiles.vel[i].length() * dt
 		if _proj_dist_left[i] <= 0.0:
+			projectiles.state[i] = Population.DEAD
+		# Terrain stops shots. This is what makes a wall cover rather than
+		# decoration, and it is the same O(1) lookup the player's movement uses.
+		elif terrain.is_solid(projectiles.pos[i]):
 			projectiles.state[i] = Population.DEAD
 	for i in botnet.count:
 		_botnet_life[i] -= dt
@@ -693,14 +720,60 @@ func _damage_player(amount: float) -> void:
 	player_health -= _mitigated(amount)
 	player_iframe = IFRAMES
 	if player_health <= 0.0 and alive and not won:
-		player_health = 0.0
-		alive = false
-		# Salvage is lost, but kills and flips still count toward unlocks —
-		# otherwise a losing run gives nothing and the meta has no reason to
-		# exist after a death, which is exactly what it is for.
-		_bank_progress(false)
-		emit_signal("run_ended", false, 0)
+		_die()
 	emit_signal("stats_changed")
+
+## Extracted so the zone pass can reach it: a hazard kills exactly the way a
+## swarm does, and two copies of the banking rules would drift.
+func _die() -> void:
+	player_health = 0.0
+	alive = false
+	# Salvage is lost, but kills and flips still count toward unlocks —
+	# otherwise a losing run gives nothing and the meta has no reason to exist
+	# after a death, which is exactly what it is for.
+	_bank_progress(false)
+	emit_signal("run_ended", false, 0)
+
+## The STRONGER slow wins, never the most recent. Letting the latest write win
+## means walking out of a heavy slow into a light one cancels the heavy one, so
+## the weakest source in the game would become a cleanse.
+## Population.spawn recycles slots, so a fresh enemy can land on an index whose
+## previous occupant was slowed. A stale slow is a live bug, not a cosmetic one:
+## it makes a newly spawned enemy crawl for no reason the player can see.
+func _clear_slow(i: int) -> void:
+	_slow_left[i] = 0.0
+	_slow_factor[i] = 1.0
+
+func apply_slow(i: int, factor: float, seconds: float) -> void:
+	if _slow_left[i] <= 0.0 or factor < _slow_factor[i]:
+		_slow_factor[i] = factor
+	_slow_left[i] = maxf(_slow_left[i], seconds)
+
+## Zone effects, one array index per entity per tick.
+func _step2b_zones(dt: float) -> void:
+	_zone_slow_player = false
+	var pz := terrain.zone_at(player_pos)
+	if pz == Terrain.Kind.HAZARD:
+		# Deliberately NOT through the contact-damage path: iframes exist to stop
+		# a swarm chewing through you on touch, and a hazard you are standing in
+		# is not a contact event. Armour and defence still apply.
+		player_health -= _mitigated(Terrain.HAZARD_DPS * dt)
+		if player_health <= 0.0 and alive and not won:
+			_die()
+	elif pz == Terrain.Kind.SLOW:
+		_zone_slow_player = true
+	for i in enemies.count:
+		if _slow_left[i] > 0.0:
+			_slow_left[i] -= dt
+		match terrain.zone_at(enemies.pos[i]):
+			Terrain.Kind.HAZARD:
+				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i],
+					Terrain.HAZARD_DPS * dt)
+			Terrain.Kind.SLOW:
+				apply_slow(i, Terrain.SLOW_FACTOR, 0.5)
+			Terrain.Kind.CORRUPTION:
+				queue.append(HitQueue.Kind.CORRUPTION, -1, i,
+					enemies.generation[i], Terrain.CORRUPTION_PER_SEC * dt)
 
 func _steps78_drain() -> void:
 	for pass_i in CASCADE_PASSES:
