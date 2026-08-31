@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 63
+const EXPECTED_CHECKS := 76
 
 var failures := 0
 var checks := 0
@@ -31,6 +31,7 @@ func _init() -> void:
 	cadence_mult_folds_by_product()
 	new_keys_fold_by_their_rule()
 	the_new_modules_are_present_and_valid()
+	triggers_earn_their_keep()
 	ward_folds_by_max()
 	rank_carve_outs()
 	ward_equality()
@@ -313,16 +314,19 @@ func cadence_mult_defaults_to_one() -> void:
 	var r := ResolvedExploit.new()
 	_check("cadence_mult defaults to 1.0", r.cadence_mult, 1.0)
 	_check("cadence_mult is a legal stat key", &"cadence_mult" in Module.STAT_KEYS, true)
-	# 22 since the module set: knockback, slow_amount, slow_duration, shield,
-	# orbit_count. Pinned because STAT_KEYS is a CLOSED set whose every member
-	# must be a field on ResolvedExploit — a key added without its field makes
-	# _fold write into nothing at all.
-	_check("STAT_KEYS is 22", Module.STAT_KEYS.size(), 22)
+	# 23: the module set added knockback, slow_amount, slow_duration, shield and
+	# orbit_count, and the trigger rework added burst. Pinned because STAT_KEYS
+	# is a CLOSED set whose every member must be a field on ResolvedExploit — a
+	# key added without its field makes _fold write into nothing at all.
+	_check("STAT_KEYS is 23", Module.STAT_KEYS.size(), 23)
 	var zero_defaults := 0
 	for k in Module.STAT_KEYS:
 		if float(r.get(k)) == 0.0:
 			zero_defaults += 1
-	_check("every OTHER stat key defaults to zero", zero_defaults, 21)
+	# cadence_mult is still the only one that does not, and burst was
+	# deliberately kept a zero-default (0 reads as one emission) so it stays
+	# that way.
+	_check("every OTHER stat key defaults to zero", zero_defaults, 22)
 
 ## Rank scales the two directions differently, because each is the rule the other
 ## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;
@@ -420,3 +424,36 @@ func the_new_modules_are_present_and_valid() -> void:
 		if not SaveGame._milestone_met(id, d):
 			unearnable += 1
 	_check("every locked module is reachable by playing", unearnable, 0)
+
+## The trigger rework. interval used to be BOTH faster than every event trigger
+## and unconditional, so no build could ever prefer one — the ordering below is
+## the fix, and it is worth pinning because a single number regresses it.
+func triggers_earn_their_keep() -> void:
+	var by_id := ModuleTable.by_id()
+	var interval: float = by_id[&"interval"].stats[&"cadence_mult"]
+	_check("interval is the baseline, not a bonus", interval, 1.00)
+
+	# The frequent triggers beat the metronome on RATE when their condition is
+	# hot. That is the whole point: a conditional trigger has to be able to win.
+	for id in [&"on_hit", &"on_kill", &"on_flip"]:
+		_check("%s out-paces interval when hot" % id,
+			float(by_id[id].stats[&"cadence_mult"]) < interval, true)
+
+	# The rare ones are paid in emissions instead, so rarity buys a moment.
+	for id in [&"on_damage_taken", &"on_low_integrity", &"on_level_up"]:
+		_check("%s bursts" % id, float(by_id[id].stats.get(&"burst", 0.0)) > 1.0, true)
+	# And the frequent ones are NOT, or they would win on both axes at once.
+	for id in [&"on_hit", &"on_kill", &"on_flip"]:
+		_check("%s does not burst" % id, by_id[id].stats.has(&"burst"), false)
+
+	# on_flip pays in the resource its own build runs on, which is what stops it
+	# being on_kill with extra steps.
+	_check("on_flip pays in corruption",
+		by_id[&"on_flip"].stats.has(&"corruption"), true)
+	_check("and carries the tag that makes it count",
+		by_id[&"on_flip"].has_tag(&"corruption"), true)
+
+	# burst is meaningless outside a trigger.
+	var bad := Module.make(&"b_bad", "bad", Module.Slot.PAYLOAD, {&"burst": 3.0})
+	_check("a payload carrying burst is rejected",
+		Compiler.validate(bad).size() > 0, true)

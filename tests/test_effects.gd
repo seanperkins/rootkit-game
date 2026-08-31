@@ -5,12 +5,14 @@ extends SceneTree
 
 var failures := 0
 var finished := {}
-const CASES := ["knockback_pushes_then_fades", "the_shield_absorbs_before_integrity"]
+const CASES := ["knockback_pushes_then_fades", "the_shield_absorbs_before_integrity",
+	"burst_emits_more_than_once"]
 
 func _initialize() -> void:
 	print("ROOTKIT — module effects\n")
 	await knockback_pushes_then_fades()
 	await the_shield_absorbs_before_integrity()
+	await burst_emits_more_than_once()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -79,3 +81,44 @@ func the_shield_absorbs_before_integrity() -> void:
 	_check("with no shield the hit lands in full", r.player_health < hp2, true)
 	r.free()
 	finished["the_shield_absorbs_before_integrity"] = true
+
+## A trigger's burst is how many times the vector emits for one event, so the
+## observable is the number of shots produced, not a number on the struct.
+func burst_emits_more_than_once() -> void:
+	var r := await _fresh_run()
+	var t := ModuleTable.by_id()
+	var ex := Exploit.new()
+	ex.place(t[&"packet"])
+	ex.place(t[&"on_level_up"])          # burst 8
+	r.loadout.exploits.append(ex)
+	r._recompile()
+	var ei: int = r.loadout.exploits.size() - 1
+	var res: ResolvedExploit = r.resolved[ei]
+	_check("the exploit resolved a burst", res.burst, 8)
+
+	var before: int = r.projectiles.count
+	r._fire_cd[ei] = 0.0
+	r._try_event_fire(ei, res)
+	_check("one event produced eight shots", r.projectiles.count - before, 8)
+
+	# And it is still gated: a second event inside the cooldown fires nothing.
+	var after: int = r.projectiles.count
+	_check("a second event inside the cooldown is refused",
+		r._try_event_fire(ei, res), false)
+	_check("and produced no shots", r.projectiles.count, after)
+
+	# A trigger with no burst stat emits exactly once — zero must read as one.
+	var ex2 := Exploit.new()
+	ex2.place(t[&"packet"])
+	ex2.place(t[&"on_kill"])
+	r.loadout.exploits.append(ex2)
+	r._recompile()
+	var ei2: int = r.loadout.exploits.size() - 1
+	var res2: ResolvedExploit = r.resolved[ei2]
+	_check("a burstless trigger resolves zero", res2.burst, 0)
+	var b2: int = r.projectiles.count
+	r._fire_cd[ei2] = 0.0
+	r._try_event_fire(ei2, res2)
+	_check("and still emits exactly once", r.projectiles.count - b2, 1)
+	r.free()
+	finished["burst_emits_more_than_once"] = true

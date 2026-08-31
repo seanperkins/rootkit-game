@@ -47,20 +47,32 @@ static func all() -> Array:
 			{&"damage": 3.5, &"pierce": 3.0, &"radius": 240.0, &"cooldown": 0.6}, [], V.BEAM),
 
 		# --- TRIGGER --------------------------------------------------------
+		# Triggers are paid on the axis their FREQUENCY suits. A frequent one is
+		# paid in cadence, because its value is rate; a rare one is paid in
+		# burst, because its value is the moment. on_flip is paid in corruption,
+		# the resource its own build runs on.
+		#
+		# interval sits at 1.00 — the baseline every other trigger is measured
+		# against, not a bonus. It used to be 0.85, which made it both faster
+		# AND unconditional while every event trigger cost cadence for a
+		# condition: an event trigger could never win, in any build.
 		Module.make(&"interval", "interval(t)", S.TRIGGER,
-			{&"cadence_mult": 0.85}, [], 0, T.INTERVAL),
+			{&"cadence_mult": 1.00}, [], 0, T.INTERVAL),
 		Module.make(&"on_kill", "on_kill()", S.TRIGGER,
-			{&"damage": 3.0, &"cadence_mult": 1.52}, [], 0, T.ON_KILL),
+			{&"damage": 3.0, &"cadence_mult": 0.70}, [], 0, T.ON_KILL),
 		Module.make(&"on_hit", "on_hit()", S.TRIGGER,
-			{&"damage": 1.0, &"cadence_mult": 1.30}, [], 0, T.ON_HIT),
+			{&"damage": 1.0, &"cadence_mult": 0.62}, [], 0, T.ON_HIT),
 		Module.make(&"on_damage_taken", "on_damage_taken()", S.TRIGGER,
-			{&"damage": 8.0, &"radius": 40.0}, [], 0, T.ON_DAMAGE_TAKEN),
+			{&"damage": 8.0, &"radius": 40.0, &"cadence_mult": 0.90,
+			 &"burst": 3.0}, [], 0, T.ON_DAMAGE_TAKEN),
 		Module.make(&"on_low_integrity", "on_low_integrity()", S.TRIGGER,
-			{&"damage": 6.0, &"cadence_mult": 1.35}, [], 0, T.ON_LOW_INTEGRITY),
+			{&"damage": 6.0, &"cadence_mult": 1.00, &"burst": 5.0}, [], 0,
+			T.ON_LOW_INTEGRITY),
 		Module.make(&"on_flip", "on_flip()", S.TRIGGER,
-			{&"damage": 4.0, &"cadence_mult": 1.28}, [], 0, T.ON_FLIP),
+			{&"corruption": 2.0, &"cadence_mult": 0.74}, [&"corruption"], 0,
+			T.ON_FLIP),
 		Module.make(&"on_level_up", "on_level_up()", S.TRIGGER,
-			{&"damage": 5.0, &"cadence_mult": 1.20}, [], 0, T.ON_LEVEL_UP),
+			{&"cadence_mult": 1.00, &"burst": 8.0}, [], 0, T.ON_LEVEL_UP),
 
 		# --- VECTOR, attack -------------------------------------------------
 		Module.make(&"spike", "spike()", S.VECTOR,

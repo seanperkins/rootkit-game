@@ -36,6 +36,20 @@ are denser. Generation guarantees the arena is fully connected — an unreachabl
 pocket would be an unwinnable run — by filling any sealed region rather than
 carving into it.
 
+## Triggers
+
+A trigger is paid on the axis its FREQUENCY suits. `interval` sits at cadence
+1.00 — the baseline, not a bonus. Frequent triggers (`on_hit` 0.62, `on_kill`
+0.70, `on_flip` 0.74) go below it, so a build feeding their condition genuinely
+out-fires the metronome. Rare ones are paid in **burst** instead — how many
+times the vector emits for one event: `on_damage_taken` 3, `on_low_integrity` 5,
+`on_level_up` 8. `on_flip` pays in corruption rather than damage, so it feeds
+the build that feeds it.
+
+`interval` keeps the one thing none of them can have: it never idles. It fires
+on an empty field, during the collapse walk, and at the start of a run when
+there is nothing yet to trigger on.
+
 ## The build
 
 An **exploit** is one weapon with three slot types:
@@ -43,7 +57,7 @@ An **exploit** is one weapon with three slot types:
 | Slot | Count | Decides | Modules |
 |---|---|---|---|
 | `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam, spike, flood, snipe, landmine, cascade, bounce, mirror, throttle, airgap, checksum |
-| `TRIGGER` | 1 | when it fires, and how it scales the vector's cadence | interval, on_kill, on_hit, on_damage_taken |
+| `TRIGGER` | 1 | when it fires, how it scales cadence, and how many shots one event produces | interval, on_kill, on_hit, on_damage_taken, on_low_integrity, on_flip, on_level_up |
 | `PAYLOAD` | 0–1 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
 
 You hold three exploits. A module's slot type picks its **column**, so the only

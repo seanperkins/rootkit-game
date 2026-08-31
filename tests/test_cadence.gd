@@ -12,7 +12,7 @@ extends SceneTree
 ## A GDScript runtime error aborts its enclosing function WITHOUT failing the
 ## suite, so a file whose checks stop executing reports PASS while testing
 ## nothing. Counting them makes that loud.
-const EXPECTED_CHECKS := 25
+const EXPECTED_CHECKS := 26
 
 var failures := 0
 var checks := 0
@@ -97,11 +97,17 @@ func ratio_survives_every_build() -> void:
 ## Reaching the floor is not a failure: every vector bottoms out at the same
 ## fraction of a DIFFERENT base, so ratios hold there too — and all four floor
 ## together, never some.
+##
+## Driven by on_hit rather than interval. interval sits at 1.00 now and
+## contributes nothing to the product, so no legal build reaches the floor
+## through it — which is not a regression but a relocation: the floor's job
+## moved to the fast event triggers, which is exactly where a runaway cadence
+## can now come from.
 func the_floor_preserves_ratios() -> void:
 	var floored := 0
 	for v in [&"packet", &"beam", &"broadcast", &"chain"]:
 		var base: float = T[v].stats[&"cooldown"]
-		var cd := _build(v, &"interval", [&"overclock", &"overclock"], 5, [5, 5], 0.70)
+		var cd := _build(v, &"on_hit", [&"overclock"], 5, [5], 0.70)
 		_check("%s floors at its own fraction" % v, cd, base * Compiler.MIN_CADENCE_FRACTION)
 		if abs(cd - base * Compiler.MIN_CADENCE_FRACTION) < 1e-9:
 			floored += 1
@@ -111,16 +117,21 @@ func the_floor_preserves_ratios() -> void:
 ## Reductions compound and converge; costs accumulate linearly. Compounding a
 ## cost was measured as a -53%..-63% DPS trap on the option best_target scores
 ## highest, and applying a reduction linearly goes negative at rank 6.
+## Driven by a SYNTHETIC cost, because after the trigger rework the shipped
+## table has none: every trigger now sits at or below 1.00, since rarity is paid
+## in burst rather than punished in cadence. The asymmetry rule still guards
+## Compiler._rank_factor against the next module that carries one, so it is
+## pinned here rather than deleted along with its last user.
 func rank_is_asymmetric() -> void:
 	var base: float = T[&"broadcast"].stats[&"cooldown"]
-	var interval_f: float = T[&"interval"].stats[&"cadence_mult"]
 	var on_kill_f: float = T[&"on_kill"].stats[&"cadence_mult"]
 
 	_check("a reduction compounds with rank",
-		_build(&"broadcast", &"interval", [], 3, [], 1.0), base * pow(interval_f, 3))
-	_check("a cost accumulates with rank",
-		_build(&"broadcast", &"on_kill", [], 3, [], 1.0),
-		base * (1.0 + (on_kill_f - 1.0) * 3.0))
+		_build(&"broadcast", &"on_kill", [], 3, [], 1.0), base * pow(on_kill_f, 3))
+	_check("a cost accumulates with rank, never compounds",
+		Compiler._rank_factor(1.52, 3), 1.0 + 0.52 * 3.0)
+	_check("and compounding it would have been far worse",
+		pow(1.52, 3) > 1.0 + 0.52 * 3.0, true)
 
 	# Scoped to the BARE vector + trigger build on purpose. With a flat-damage
 	# payload the worst r5/r1 DPS ratio measured 0.484, so an unscoped bound fails.
@@ -129,7 +140,7 @@ func rank_is_asymmetric() -> void:
 		var dmg5: float = float(T[v].stats[&"damage"]) + float(T[&"on_kill"].stats[&"damage"]) * 5.0
 		var dps1: float = dmg1 / _build(v, &"on_kill", [], 1, [], 1.0)
 		var dps5: float = dmg5 / _build(v, &"on_kill", [], 5, [], 1.0)
-		_check("%s: ranking on_kill costs at most 20%% DPS (bare build)" % v,
+		_check("%s: ranking on_kill never costs DPS (bare build)" % v,
 			dps5 >= dps1 * 0.80, true)
 
 ## Each rule was measured passing validate() while breaking something.

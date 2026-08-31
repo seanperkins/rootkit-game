@@ -793,11 +793,18 @@ func _fire_trigger(kind: int) -> void:
 		if not r.inert and r.trigger_kind == kind:
 			_try_event_fire(ei, r)
 
+## Bounded for the same reason FIRE_BUDGET bounds the interval path: a stat that
+## multiplies emissions is a stat that can be stacked.
+const BURST_MAX := 12
+
 func _try_event_fire(ei: int, r: ResolvedExploit) -> bool:
 	if _fire_cd[ei] > 0.0:
 		return false
 	_fire_cd[ei] = r.cooldown
-	_emit_vector(ei, r)
+	# Rarity is paid in emissions: a trigger that fires once a level should
+	# produce a moment, while one that fires on every hit should not.
+	for k in clampi(maxi(int(r.burst), 1), 1, BURST_MAX):
+		_emit_vector(ei, r)
 	return true
 
 func _step5_fire(dt: float) -> void:

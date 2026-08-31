@@ -118,6 +118,7 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	r.chain_count = floori(r.chain_count)
 	r.botnet_cap = floori(r.botnet_cap)
 	r.orbit_count = floori(r.orbit_count)
+	r.burst = floori(r.burst)
 	return r
 
 ## Rank scales the two directions of a cadence factor differently, and each half
@@ -214,6 +215,11 @@ static func validate(m: Module) -> Array[String]:
 	# reads the raw base — so its only distinct behaviour IS the broken ratio.
 	if m.slot == Module.Slot.VECTOR and m.stats.has(&"cadence_mult"):
 		errs.append("module '%s': a VECTOR may not carry cadence_mult" % m.id)
+	# burst is how many times an EVENT produces a shot, so it is meaningless on
+	# anything but a trigger — and a payload carrying it would read as a damage
+	# multiplier that silently does nothing on an interval build.
+	if m.slot != Module.Slot.TRIGGER and m.stats.has(&"burst"):
+		errs.append("module '%s': only a TRIGGER may carry burst" % m.id)
 
 	# The guarantee's other precondition: below this the ABSOLUTE floor binds for
 	# some vectors and not others, and the ratio collapses. Requires the KEY, not
