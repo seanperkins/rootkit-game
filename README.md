@@ -80,6 +80,20 @@ shaders/         glyph.gdshader
 ## Tests
 
 ```
+tools/run_tests.sh            # every suite, plus the perf gate
+tools/run_tests.sh --fast     # skip the perf gate
+```
+
+Use the runner rather than calling suites by hand. A GDScript runtime error
+aborts only the function it happens in — the engine prints `SCRIPT ERROR`,
+`_initialize` carries on, and a suite whose assertions never ran exits 0 saying
+`PASS`. That has hidden two real breakages here. The runner reads stderr as well
+as the verdict and fails a suite on any script error, whatever it claims about
+itself.
+
+Individually:
+
+```
 godot --headless -s res://tests/test_build.gd        # compiler + auto-slot rules
 godot --headless -s res://tests/test_drain.gd        # adjudication, both orders
 godot --headless -s res://tests/test_corruption.gd   # flip -> botnet
