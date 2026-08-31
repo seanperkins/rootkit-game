@@ -112,6 +112,16 @@ const MINIBOSS_SALVAGE := 120
 ## shove rather than a permanent velocity change.
 const KNOCK_DECAY := 6.0
 
+## CONE's arc, half-angle in radians. 45 degrees either side of the aim.
+const CONE_HALF_ANGLE := 0.785
+## A mine sits until something comes within this, then detonates in `radius`.
+const MINE_TRIGGER := 46.0
+const MINE_LIFE := 12.0
+## Orbiters circle at this rate, and live exactly one cadence so that firing
+## again REPLACES them rather than stacking rings.
+const ORBIT_RATE := 2.4
+const LOW_INTEGRITY_FRACTION := 0.4
+
 const AFTERIMAGE_RADIUS := 70.0
 const AFTERIMAGE_SECONDS := 5.0
 const PULSE_PERIOD := 7.0
@@ -179,6 +189,11 @@ var _zone_slow_player := false
 ## and it is spent before armour and defence are ever consulted — a shield is
 ## something in the way, not toughness.
 var player_shield := 0.0
+
+## ON_LOW_INTEGRITY fires on the CROSSING, not while below the line. Without the
+## latch it fires every tick spent under 40%, which is a DPS cliff and, on a
+## defensive vector, an infinite shield.
+var _low_armed := true
 var queue: HitQueue
 var loadout: Loadout
 var director: SpawnDirector
@@ -269,6 +284,11 @@ var _proj_last: PackedInt32Array
 ## early and make reach silently inert exactly when you run away. Max travel is
 ## 832px, so projectiles now live shorter than they used to, not longer.
 var _proj_dist_left: PackedFloat32Array
+## Mines and orbiters borrow the projectile population. Zero means "an ordinary
+## projectile", so no branch is needed for the common case.
+var _mine_left: PackedFloat32Array
+var _orbit_left: PackedFloat32Array
+var _orbit_phase: PackedFloat32Array
 var _worm_id: PackedInt32Array
 var _worm_seg: PackedInt32Array
 var _worm_trail := {}          # worm id -> PackedVector2Array ring buffer
@@ -342,6 +362,9 @@ func _ready() -> void:
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_proj_dist_left = PackedFloat32Array(); _proj_dist_left.resize(MAX_PROJECTILES)
+	_mine_left = PackedFloat32Array(); _mine_left.resize(MAX_PROJECTILES)
+	_orbit_left = PackedFloat32Array(); _orbit_left.resize(MAX_PROJECTILES)
+	_orbit_phase = PackedFloat32Array(); _orbit_phase.resize(MAX_PROJECTILES)
 	_slow_left = PackedFloat32Array(); _slow_left.resize(MAX_ENEMIES)
 	_ai_phase = PackedInt32Array(); _ai_phase.resize(MAX_ENEMIES)
 	_ai_timer = PackedFloat32Array(); _ai_timer.resize(MAX_ENEMIES)
@@ -658,6 +681,27 @@ func _step2_integrate(dt: float) -> void:
 		enemies.pos[i] = _worm_sample(wid, _worm_seg[i] * WORM_SEG_STEPS)
 		enemies.vel[i] = (enemies.pos[i] - prev) / maxf(dt, 0.0001)
 	for i in projectiles.count:
+		# Orbiters have a PARAMETRIC position rather than a velocity, so they
+		# ride the player instead of flying away from where they were fired.
+		if _orbit_left[i] > 0.0:
+			_orbit_left[i] -= dt
+			if _orbit_left[i] <= 0.0:
+				projectiles.state[i] = Population.DEAD
+				continue
+			_orbit_phase[i] += ORBIT_RATE * dt
+			projectiles.pos[i] = player_pos + Vector2(cos(_orbit_phase[i]),
+				sin(_orbit_phase[i])) * 92.0
+			continue
+		# Mines sit still until something is close enough, then go off.
+		if _mine_left[i] > 0.0:
+			_mine_left[i] -= dt
+			if _mine_left[i] <= 0.0:
+				projectiles.state[i] = Population.DEAD
+				continue
+			if grid.query_radius_into(projectiles.pos[i], MINE_TRIGGER, _buf,
+					Grid.M_ENEMY) > 0:
+				_detonate_mine(i)
+			continue
 		projectiles.pos[i] += projectiles.vel[i] * dt
 		# Population stores no scalar speed, so the step is the velocity's
 		# length: one sqrt per live projectile per tick, bounded by
@@ -741,6 +785,14 @@ func _step4_steer() -> void:
 
 ## Event triggers respond only when off cooldown. Returns false when the
 ## exploit is still recovering, so callers can skip the emit.
+## Fire every exploit whose trigger matches. The event triggers all share this;
+## each hook only has to name its kind.
+func _fire_trigger(kind: int) -> void:
+	for ei in resolved.size():
+		var r: ResolvedExploit = resolved[ei]
+		if not r.inert and r.trigger_kind == kind:
+			_try_event_fire(ei, r)
+
 func _try_event_fire(ei: int, r: ResolvedExploit) -> bool:
 	if _fire_cd[ei] > 0.0:
 		return false
@@ -778,6 +830,10 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	# _try_event_fire sets _fire_cd before calling this.
 	if r.ward_duration > 0.0:
 		_ward_left[ei] = r.ward_duration
+	# A shielding exploit grants its pool on fire, capped rather than stacked:
+	# shield folds by MAX for the same reason.
+	if r.shield > 0.0:
+		player_shield = maxf(player_shield, r.shield)
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
 			_fx_ring.append([player_pos, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
@@ -799,6 +855,61 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 					break
 				_hit(ei, r, Grid.index_of(_buf[k]))
 				struck += 1
+		Module.VectorKind.CONE:
+			# A broadcast query filtered by ANGLE. Cheap, and it reads completely
+			# differently because it demands facing.
+			var ct := _nearest_enemy(r.radius)
+			if ct < 0:
+				return
+			var cdir := (enemies.pos[ct] - player_pos).normalized()
+			_fx_line.append([player_pos, player_pos + cdir * r.radius, FX_LIFE,
+				Color(2.0, 1.6, 0.8)])
+			var cn := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
+			for k in mini(cn, _buf.size()):
+				var cj := Grid.index_of(_buf[k])
+				var to_e := enemies.pos[cj] - player_pos
+				if to_e.length_squared() < 0.01:
+					_hit(ei, r, cj)
+					continue
+				if absf(to_e.normalized().angle_to(cdir)) <= CONE_HALF_ANGLE:
+					_hit(ei, r, cj)
+		Module.VectorKind.PULSE:
+			_fx_ring.append([player_pos, r.radius, FX_LIFE * 1.6,
+				Color(0.9, 1.4, 2.2)])
+			var pn := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
+			for k in mini(pn, _buf.size()):
+				var pj := Grid.index_of(_buf[k])
+				_hit(ei, r, pj)
+				if r.knockback > 0.0:
+					var away := enemies.pos[pj] - player_pos
+					if away.length_squared() > 0.01:
+						apply_knockback(pj, away.normalized() * r.knockback)
+		Module.VectorKind.MINE:
+			# A projectile with no velocity and a proximity fuse, so mines cost
+			# no new population and inherit terrain collision for free.
+			var mi := projectiles.spawn(player_pos, Vector2.ZERO, 1.0,
+				PROJECTILE_RADIUS, 0)
+			if mi >= 0:
+				_proj_owner[mi] = ei
+				_proj_pierce[mi] = 0
+				_proj_last[mi] = -1
+				_proj_dist_left[mi] = 1.0
+				_mine_left[mi] = MINE_LIFE
+		Module.VectorKind.ORBIT:
+			# Orbiters live exactly one cadence, so refiring REPLACES the ring
+			# rather than stacking a second one on top of it.
+			var count: int = maxi(int(r.orbit_count), 1)
+			for k in count:
+				var oi := projectiles.spawn(player_pos, Vector2.ZERO, 1.0,
+					PROJECTILE_RADIUS, 0)
+				if oi < 0:
+					break
+				_proj_owner[oi] = ei
+				_proj_pierce[oi] = 999
+				_proj_last[oi] = -1
+				_proj_dist_left[oi] = 1.0
+				_orbit_phase[oi] = TAU * float(k) / float(count)
+				_orbit_left[oi] = r.cooldown
 		Module.VectorKind.CHAIN:
 			var t2 := _nearest_enemy(r.radius)
 			if t2 < 0:
@@ -840,6 +951,10 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_pierce[pi] = r.pierce
 				_proj_last[pi] = -1
 				_proj_dist_left[pi] = maxf(r.travel, 1.0)
+				# Slots are recycled: without this an ordinary shot landing on a
+				# slot that was last a mine would sit still and never fly.
+				_mine_left[pi] = 0.0
+				_orbit_left[pi] = 0.0
 
 ## `from` is where the shot came from. Defaults to the player, which is true for
 ## broadcast, chain and beam; packets pass their own position, because a packet
@@ -863,6 +978,21 @@ func _hit(ei: int, r: ResolvedExploit, target: int,
 ##
 ## Here, where the source is known — not in the drain, which would have to read
 ## facing for every enemy on every hit whether or not one of these is alive.
+## A mine going off is a broadcast at its own position, which is why MINE needed
+## no new hit path — only a fuse.
+func _detonate_mine(i: int) -> void:
+	var ei := _proj_owner[i]
+	if ei < resolved.size():
+		var r: ResolvedExploit = resolved[ei]
+		_fx_ring.append([projectiles.pos[i], r.radius, FX_LIFE * 1.5,
+			Color(2.2, 1.2, 0.5)])
+		var n := grid.query_radius_into(projectiles.pos[i], r.radius, _buf,
+			Grid.M_ENEMY)
+		for k in mini(n, _buf.size()):
+			_hit(ei, r, Grid.index_of(_buf[k]), projectiles.pos[i])
+	_mine_left[i] = 0.0
+	projectiles.state[i] = Population.DEAD
+
 func apply_knockback(i: int, impulse: Vector2) -> void:
 	if i < 0 or i >= _knock.size():
 		return
@@ -966,6 +1096,11 @@ func _damage_player(amount: float) -> void:
 			return
 	player_health -= _mitigated(amount)
 	player_iframe = IFRAMES
+	if _low_armed and player_health < _eff_integrity() * LOW_INTEGRITY_FRACTION:
+		_low_armed = false
+		_fire_trigger(Module.TriggerKind.ON_LOW_INTEGRITY)
+	elif player_health >= _eff_integrity() * LOW_INTEGRITY_FRACTION:
+		_low_armed = true
 	if player_health <= 0.0 and alive and not won:
 		_die()
 	emit_signal("stats_changed")
@@ -1344,6 +1479,7 @@ func _on_death(i: int) -> void:
 ## build does not starve its own level-ups in proportion to how well it works.
 func _on_flip(i: int) -> void:
 	flips += 1
+	_fire_trigger(Module.TriggerKind.ON_FLIP)
 	_drop_shards(i)
 	var cap := BOTNET_BASE_CAP
 	for r in resolved:
@@ -1541,6 +1677,7 @@ func _gain_xp(n: int) -> void:
 		# them against.
 		xp_needed = _xp_for(level)
 		pending_levels += 1
+		_fire_trigger(Module.TriggerKind.ON_LEVEL_UP)
 	if pending_levels > 0 and not paused:
 		_offer_cards()
 	emit_signal("stats_changed")
@@ -1846,6 +1983,21 @@ func _draw() -> void:
 			- gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0)) + up
 		draw_line(l1, l2, gcol, 3.0)
 		draw_line(l1 + Vector2(0, 8), l2 + Vector2(0, 8), gcol.darkened(0.4), 2.0)
+
+	# Orbiters and mines share the projectile pool, so they need to look like
+	# what they are rather than like a shot that stopped.
+	for i in projectiles.count:
+		if _orbit_left[i] > 0.0:
+			var op := to_iso(projectiles.pos[i])
+			draw_circle(op, 6.0, Color(0.5, 1.6, 1.2, 0.30))
+			draw_circle(op, 3.0, Color(0.7, 2.0, 1.5))
+		elif _mine_left[i] > 0.0:
+			# Pulsing, because a mine you forgot you placed is a mine that kills
+			# you when the collapse pushes you back over it.
+			var mp := to_iso(projectiles.pos[i])
+			var beat := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.006)
+			draw_circle(mp, 5.0 + 3.0 * beat, Color(2.0, 1.1, 0.4, 0.25 + 0.3 * beat))
+			draw_circle(mp, 2.5, Color(2.2, 1.3, 0.5))
 
 	# Enemy fire. Distinct from the player's: red, and with a soft halo so a
 	# shot crossing a busy field is still findable.

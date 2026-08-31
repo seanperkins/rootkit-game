@@ -86,7 +86,7 @@ func buffs_split_into_sheet_and_mults() -> void:
 
 func unlocks() -> void:
 	SaveGame.use_fresh_state()
-	_check("fresh save starts with 15 modules", SaveGame.unlocked_modules().size(), 15)
+	_check("fresh save starts with 21 modules", SaveGame.unlocked_modules().size(), 21)
 	SaveGame.load_state()["flips"] = 49
 	_check("49 flips does not unlock worm",
 		&"worm" in _ids(SaveGame.unlocked_modules()), false)

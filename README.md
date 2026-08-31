@@ -42,7 +42,7 @@ An **exploit** is one weapon with three slot types:
 
 | Slot | Count | Decides | Modules |
 |---|---|---|---|
-| `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam |
+| `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam, spike, flood, snipe, landmine, cascade, bounce, mirror, throttle, airgap, checksum |
 | `TRIGGER` | 1 | when it fires, and how it scales the vector's cadence | interval, on_kill, on_hit, on_damage_taken |
 | `PAYLOAD` | 0–1 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
 

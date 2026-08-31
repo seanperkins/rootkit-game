@@ -16,7 +16,17 @@ const S := Module.Slot
 const V := Module.VectorKind
 const T := Module.TriggerKind
 
-const LOCKED := [&"beam", &"on_damage_taken", &"worm"]
+## Roughly half the new breadth ships locked.
+##
+## The table went from 18 modules to 35 while a level-up still shows three
+## cards, which roughly halves the odds of drawing what a build actually wants —
+## and that makes builds mushier, not richer. Gating the breadth behind kill and
+## flip milestones keeps the early pool the size and sharpness it has today.
+const LOCKED := [&"beam", &"on_damage_taken", &"worm",
+	&"snipe", &"landmine", &"cascade",
+	&"mirror", &"airgap", &"checksum",
+	&"on_low_integrity", &"on_flip", &"on_level_up",
+	&"heap_spray", &"tarpit"]
 
 static func all() -> Array:
 	return [
@@ -45,6 +55,44 @@ static func all() -> Array:
 			{&"damage": 1.0, &"cadence_mult": 1.30}, [], 0, T.ON_HIT),
 		Module.make(&"on_damage_taken", "on_damage_taken()", S.TRIGGER,
 			{&"damage": 8.0, &"radius": 40.0}, [], 0, T.ON_DAMAGE_TAKEN),
+		Module.make(&"on_low_integrity", "on_low_integrity()", S.TRIGGER,
+			{&"damage": 6.0, &"cadence_mult": 1.35}, [], 0, T.ON_LOW_INTEGRITY),
+		Module.make(&"on_flip", "on_flip()", S.TRIGGER,
+			{&"damage": 4.0, &"cadence_mult": 1.28}, [], 0, T.ON_FLIP),
+		Module.make(&"on_level_up", "on_level_up()", S.TRIGGER,
+			{&"damage": 5.0, &"cadence_mult": 1.20}, [], 0, T.ON_LEVEL_UP),
+
+		# --- VECTOR, attack -------------------------------------------------
+		Module.make(&"spike", "spike()", S.VECTOR,
+			{&"damage": 9.0, &"radius": 150.0, &"cooldown": 0.75}, [], V.CONE),
+		Module.make(&"flood", "flood()", S.VECTOR,
+			{&"damage": 2.0, &"radius": 300.0, &"cooldown": 1.6}, [], V.BROADCAST),
+		Module.make(&"snipe", "snipe()", S.VECTOR,
+			{&"damage": 14.0, &"projectile_speed": 900.0, &"cooldown": 1.5,
+			 &"travel": 1200.0, &"pierce": 2.0}, [], V.PACKET),
+		Module.make(&"landmine", "landmine()", S.VECTOR,
+			{&"damage": 16.0, &"radius": 130.0, &"cooldown": 1.9}, [&"aoe"], V.MINE),
+		Module.make(&"cascade", "cascade()", S.VECTOR,
+			{&"damage": 3.0, &"chain_count": 4.0, &"radius": 150.0,
+			 &"cooldown": 0.8}, [], V.CHAIN),
+
+		# --- VECTOR, defensive ----------------------------------------------
+		# Still weapons on a cadence; the payoff protects rather than kills.
+		Module.make(&"bounce", "bounce()", S.VECTOR,
+			{&"damage": 2.0, &"radius": 190.0, &"cooldown": 1.1,
+			 &"knockback": 320.0}, [], V.PULSE),
+		Module.make(&"mirror", "mirror()", S.VECTOR,
+			{&"damage": 4.0, &"radius": 90.0, &"cooldown": 2.2,
+			 &"orbit_count": 3.0}, [], V.ORBIT),
+		Module.make(&"throttle", "throttle()", S.VECTOR,
+			{&"damage": 0.5, &"radius": 260.0, &"cooldown": 1.4,
+			 &"slow_amount": 0.55, &"slow_duration": 2.0}, [&"slow"], V.BROADCAST),
+		Module.make(&"airgap", "airgap()", S.VECTOR,
+			{&"radius": 210.0, &"cooldown": 1.6, &"knockback": 520.0,
+			 &"ward_armor": 1.4, &"ward_duration": 2.0}, [], V.PULSE),
+		Module.make(&"checksum", "checksum()", S.VECTOR,
+			{&"damage": 1.0, &"radius": 70.0, &"cooldown": 2.6,
+			 &"shield": 26.0}, [], V.BROADCAST),
 
 		# --- PAYLOAD --------------------------------------------------------
 		Module.make(&"buffer_overflow", "buffer_overflow", S.PAYLOAD,
@@ -73,6 +121,15 @@ static func all() -> Array:
 			{&"ward_defense": 10.0, &"ward_duration": 3.0}),
 		Module.make(&"nice", "nice()", S.PAYLOAD,
 			{&"ward_clock_speed": 12.0, &"ward_duration": 1.5}),
+
+		# --- PAYLOAD, added with the module set -----------------------------
+		Module.make(&"bitmask", "bitmask", S.PAYLOAD, {&"pierce": 1.0}),
+		Module.make(&"race_condition", "race_condition", S.PAYLOAD,
+			{&"cadence_mult": 0.88}),
+		Module.make(&"heap_spray", "heap_spray", S.PAYLOAD,
+			{&"chain_count": 1.0, &"radius": 30.0}),
+		Module.make(&"tarpit", "tarpit", S.PAYLOAD,
+			{&"slow_amount": 0.35, &"slow_duration": 1.5}, [&"slow"]),
 	]
 
 static func by_id() -> Dictionary:

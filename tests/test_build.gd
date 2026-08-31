@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 57
+const EXPECTED_CHECKS := 63
 
 var failures := 0
 var checks := 0
@@ -30,6 +30,7 @@ func _init() -> void:
 	rank_factor_is_asymmetric()
 	cadence_mult_folds_by_product()
 	new_keys_fold_by_their_rule()
+	the_new_modules_are_present_and_valid()
 	ward_folds_by_max()
 	rank_carve_outs()
 	ward_equality()
@@ -65,7 +66,7 @@ func data_sweep() -> void:
 	for m in ModuleTable.all():
 		errs.append_array(Compiler.validate(m))
 	_check("data sweep: 18 modules, 0 errors", errs.size(), 0)
-	_check("data sweep: module count", ModuleTable.all().size(), 18)
+	_check("data sweep: module count", ModuleTable.all().size(), 35)
 
 ## A 3-exploit board needs 3 distinct VECTORs and 3 distinct TRIGGERs. Fewer
 ## unlocked and the advertised cap is unreachable, permanently, for a new player.
@@ -302,7 +303,7 @@ func defensive_share() -> void:
 		if m.id in [&"harden", &"sandbox", &"nice", &"keylog"]:
 			defensive += 1
 	_check("four defensive modules unlocked", defensive, 4)
-	_check("unlocked total", ModuleTable.starting_unlocked().size(), 15)
+	_check("unlocked total", ModuleTable.starting_unlocked().size(), 21)
 
 ## cadence_mult is the only STAT_KEY that does not default to zero, because it
 ## accumulates by product rather than by sum. Anything that resets fields
@@ -379,3 +380,43 @@ func new_keys_fold_by_their_rule() -> void:
 		{&"slow_amount": 0.5})
 	_check("slow without its tag is rejected",
 		Compiler.validate(untagged).size() > 0, true)
+
+func the_new_modules_are_present_and_valid() -> void:
+	var all := ModuleTable.all()
+	var by_id := {}
+	for m in all:
+		by_id[m.id] = m
+	var missing := 0
+	for id in [&"spike", &"flood", &"snipe", &"landmine", &"cascade",
+			&"bounce", &"mirror", &"throttle", &"airgap", &"checksum",
+			&"on_low_integrity", &"on_flip", &"on_level_up",
+			&"bitmask", &"race_condition", &"heap_spray", &"tarpit"]:
+		if not by_id.has(id):
+			missing += 1
+	_check("all seventeen new modules are in the table", missing, 0)
+	_check("the table is 35 modules", all.size(), 35)
+
+	var errs := 0
+	for m in all:
+		errs += Compiler.validate(m).size()
+	_check("every module validates", errs, 0)
+
+	# A card pool that doubled would halve the odds of drawing what a build
+	# needs, which makes builds mushier rather than richer.
+	_check("about half the new breadth is locked",
+		ModuleTable.LOCKED.size() >= 10, true)
+	_check("so the starting pool stays close to today's",
+		ModuleTable.starting_unlocked().size() <= 26, true)
+
+	# Every locked module must have a milestone, or it can never be earned.
+	var unearnable := 0
+	for id in ModuleTable.LOCKED:
+		SaveGame.use_fresh_state()
+		if SaveGame.is_unlocked(id):
+			continue                     # already open at zero progress
+		var d := SaveGame.load_state()
+		d["kills"] = 100000
+		d["flips"] = 100000
+		if not SaveGame._milestone_met(id, d):
+			unearnable += 1
+	_check("every locked module is reachable by playing", unearnable, 0)

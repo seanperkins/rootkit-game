@@ -1,8 +1,11 @@
 class_name Module extends Resource
 
 enum Slot        { VECTOR, TRIGGER, PAYLOAD }
-enum VectorKind  { BROADCAST, PACKET, CHAIN, BEAM }
-enum TriggerKind { INTERVAL, ON_KILL, ON_HIT, ON_DAMAGE_TAKEN }
+## Appended, never reordered: these values are stored on modules, so inserting
+## in the middle silently repoints every module defined above the insert.
+enum VectorKind  { BROADCAST, PACKET, CHAIN, BEAM, CONE, PULSE, MINE, ORBIT }
+enum TriggerKind { INTERVAL, ON_KILL, ON_HIT, ON_DAMAGE_TAKEN,
+	ON_LOW_INTEGRITY, ON_FLIP, ON_LEVEL_UP }
 
 ## The numeric scalar fields of ResolvedExploit, and the ONLY legal stat keys.
 ## Asserting against "fields of ResolvedExploit" would admit stats["tags"] = 1.0

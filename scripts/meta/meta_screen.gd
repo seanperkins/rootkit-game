@@ -4,6 +4,9 @@ extends Control
 ## the meta economy has somewhere to land.
 
 const FG := Color(0.55, 1.0, 0.72)
+## How many still-locked modules the shop lists before summarising the rest.
+const UNLOCK_ROWS := 2
+
 const DIM := Color(0.32, 0.58, 0.45)
 const HOT := Color(1.0, 0.72, 0.35)
 
@@ -122,19 +125,30 @@ func _refresh() -> void:
 			var price := SaveGame.buff_price(n)
 			r["buy"].text = "buy  %d" % price
 			r["buy"].disabled = d["salvage"] < price
+	# Only what is still to come, and only a few of them.
+	#
+	# One row per locked module was fine at three and pushed ./intrude off the
+	# bottom of the screen at fourteen. A player wants to know what is next, not
+	# to read the whole ladder.
 	var lines := []
+	var have_n := 0
+	var hidden := 0
 	for id in ModuleTable.LOCKED:
-		var have: bool = SaveGame.is_unlocked(id)
-		lines.append("  %s %-18s %s" % ["[x]" if have else "[ ]", id,
-			"unlocked" if have else _requirement(id, d)])
+		if SaveGame.is_unlocked(id):
+			have_n += 1
+			continue
+		if lines.size() < UNLOCK_ROWS:
+			lines.append("  [ ] %-18s %s" % [id, SaveGame.milestone_text(id, d)])
+		else:
+			hidden += 1
+	# EXACTLY UNLOCK_ROWS + 1 lines, always. The panel sits above ./intrude in a
+	# fixed layout, so a list that grows with the table pushes the start button
+	# off the bottom of the screen — which is what fourteen locked modules did.
+	while lines.size() < UNLOCK_ROWS:
+		lines.append("")
+	lines.append("  %d of %d unlocked%s" % [have_n, ModuleTable.LOCKED.size(),
+		"   (+%d more locked)" % hidden if hidden > 0 else ""])
 	_status.text = "\n".join(lines)
-
-func _requirement(id: StringName, d: Dictionary) -> String:
-	match id:
-		&"worm":            return "flip 50 enemies   (%d/50)" % d["flips"]
-		&"on_damage_taken": return "150 kills         (%d/150)" % d["kills"]
-		&"beam":            return "400 kills         (%d/400)" % d["kills"]
-	return ""
 
 func _pips(n: int) -> String:
 	return "[" + "#".repeat(n) + ".".repeat(SaveGame.BUFF_MAX - n) + "]"

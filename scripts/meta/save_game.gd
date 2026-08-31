@@ -160,12 +160,44 @@ static func bank(salvage: int, kills: int, flips: int) -> void:
 static func is_unlocked(id: StringName) -> bool:
 	return _milestone_met(id, load_state())
 
+## The unlock ladder, in ONE place.
+##
+## This was a match statement here and a second hardcoded copy of the same
+## numbers in meta_screen's requirement text. Two tables of the same facts drift
+## the moment one is edited, and the symptom — a shop promising 150 kills for
+## something that unlocks at 300 — is invisible until a player counts.
+##
+## Spread across kills and flips deliberately, so a corruption build and a
+## damage build unlock different things rather than walking the same ladder.
+const MILESTONES := {
+	&"worm":             [&"flips", 50],
+	&"beam":             [&"kills", 400],
+	&"on_damage_taken":  [&"kills", 150],
+	&"snipe":            [&"kills", 250],
+	&"landmine":         [&"kills", 550],
+	&"cascade":          [&"kills", 700],
+	&"mirror":           [&"flips", 25],
+	&"airgap":           [&"kills", 900],
+	&"checksum":         [&"flips", 80],
+	&"on_low_integrity": [&"kills", 300],
+	&"on_flip":          [&"flips", 15],
+	&"on_level_up":      [&"kills", 450],
+	&"heap_spray":       [&"kills", 200],
+	&"tarpit":           [&"flips", 40],
+}
+
 static func _milestone_met(id: StringName, d: Dictionary) -> bool:
-	match id:
-		&"worm":            return d["flips"] >= 50
-		&"beam":            return d["kills"] >= 400
-		&"on_damage_taken": return d["kills"] >= 150
-	return false
+	if not MILESTONES.has(id):
+		return false
+	var row: Array = MILESTONES[id]
+	return int(d[row[0]]) >= int(row[1])
+
+## "250 kills (37/250)", from the same table the check reads.
+static func milestone_text(id: StringName, d: Dictionary) -> String:
+	if not MILESTONES.has(id):
+		return ""
+	var row: Array = MILESTONES[id]
+	return "%d %s  (%d/%d)" % [int(row[1]), row[0], int(d[row[0]]), int(row[1])]
 
 static func unlocked_modules() -> Array:
 	var out := ModuleTable.starting_unlocked()
