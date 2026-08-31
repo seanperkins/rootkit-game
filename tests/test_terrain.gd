@@ -15,6 +15,7 @@ func _initialize() -> void:
 	every_open_cell_is_reachable()
 	the_playfield_never_collapses()
 	the_start_is_clear()
+	zones_are_placed_in_the_open()
 	print("")
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
@@ -128,3 +129,33 @@ func _fully_connected(t: Terrain, start: Vector2) -> bool:
 		if t.solid[i] == 0 and not seen.has(i):
 			return false
 	return true
+
+func zones_are_placed_in_the_open() -> void:
+	var overlapping := 0
+	for s in range(60):
+		var t := _fresh()
+		t.generate(s, 2, Vector2.ZERO)
+		for i in t.zone.size():
+			# A zone cell may never also be a wall cell: a hazard you cannot
+			# walk into is not a hazard.
+			if t.zone[i] != 0 and t.solid[i] != 0:
+				overlapping += 1
+	_check("no zone cell is also a wall", overlapping, 0)
+
+	var t2 := _fresh()
+	t2.generate(11, 2, Vector2.ZERO)
+	var kinds := {}
+	for i in t2.zone.size():
+		if t2.zone[i] != 0:
+			kinds[int(t2.zone[i]) - 1] = true
+	_check("zones exist", kinds.size() > 0, true)
+	for k in kinds:
+		_check("zone kind %d is a real effect kind" % k,
+			k in [Terrain.Kind.HAZARD, Terrain.Kind.SLOW, Terrain.Kind.CORRUPTION], true)
+	_check("WALL is never written into the zone layer",
+		kinds.has(Terrain.Kind.WALL), false)
+
+	# Deterministic like everything else in the generator.
+	var a := _fresh(); a.generate(77, 2, Vector2.ZERO)
+	var b := _fresh(); b.generate(77, 2, Vector2.ZERO)
+	_check("zones are deterministic", a.zone, b.zone)

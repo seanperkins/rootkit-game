@@ -89,6 +89,13 @@ const REACHABLE_FLOOR := 0.70
 ## hang before the first frame of the subnet.
 const PLACE_ATTEMPTS := 4000
 
+const ZONES_MIN := 2
+const ZONES_MAX := 4
+
+## WALL is deliberately absent: it is the blocking kind and lives in `solid`.
+## The zone layer holds only the non-blocking effects.
+const ZONE_KINDS := [Kind.HAZARD, Kind.SLOW, Kind.CORRUPTION]
+
 static func density_for(subnet: int) -> float:
 	return DENSITY_BASE + DENSITY_PER_SUBNET * float(maxi(subnet, 1) - 1)
 
@@ -124,6 +131,7 @@ func generate(seed_value: int, subnet: int, player_start: Vector2) -> void:
 		rects.append([r, Kind.WALL])
 
 	_fill_unreachable(player_start)
+	_place_zones(rng, player_start)
 
 ## Flood-fill the open cells from the player's start; anything the fill does not
 ## reach becomes rock.
@@ -170,3 +178,32 @@ func reachable_fraction(player_start: Vector2) -> float:
 		if seen[i] != 0:
 			n += 1
 	return float(n) / float(w * h)
+
+## Zones go down AFTER walls and after the connectivity fill, so a zone can
+## never be sealed behind rock or overwritten by a pocket being filled in.
+func _place_zones(rng: RandomNumberGenerator, player_start: Vector2) -> void:
+	var n := rng.randi_range(ZONES_MIN, ZONES_MAX)
+	var attempts := 0
+	var made := 0
+	while made < n and attempts < PLACE_ATTEMPTS:
+		attempts += 1
+		var rw := rng.randi_range(3, 7)
+		var rh := rng.randi_range(3, 7)
+		var cx := rng.randi_range(0, w - rw)
+		var cy := rng.randi_range(0, h - rh)
+		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
+		if r.grow(WALL_MARGIN).has_point(player_start):
+			continue
+		var kind: int = ZONE_KINDS[rng.randi_range(0, ZONE_KINDS.size() - 1)]
+		var wrote := false
+		for y in range(cy, cy + rh):
+			for x in range(cx, cx + rw):
+				var i := y * w + x
+				# Open cells only. Painting a zone under rock produces an effect
+				# nothing can ever stand in.
+				if solid[i] == 0:
+					zone[i] = kind + 1
+					wrote = true
+		if wrote:
+			rects.append([r, kind])
+			made += 1
