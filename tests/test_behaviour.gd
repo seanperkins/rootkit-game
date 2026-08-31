@@ -8,7 +8,7 @@ var finished := {}
 const CASES := ["chase_is_unchanged_and_state_resets", "spawning_clears_ai_state",
 	"charger_commits_to_its_dash", "flanker_leads_the_player",
 	"player_velocity_is_tracked", "support_heals_but_never_past_spawn",
-	"ambusher_is_untouchable_while_under", "ranged_shoots_and_its_shots_bite"]
+	"ambusher_is_untouchable_while_under", "ranged_shoots_and_its_shots_bite", "the_new_enemies_are_wired"]
 
 func _initialize() -> void:
 	print("ROOTKIT — enemy behaviour\n")
@@ -20,6 +20,7 @@ func _initialize() -> void:
 	await support_heals_but_never_past_spawn()
 	await ambusher_is_untouchable_while_under()
 	await ranged_shoots_and_its_shots_bite()
+	await the_new_enemies_are_wired()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -276,3 +277,41 @@ func ranged_shoots_and_its_shots_bite() -> void:
 	_check("a hostile shot dies on rock", r.hostiles.count, 0)
 	r.free()
 	finished["ranged_shoots_and_its_shots_bite"] = true
+
+func the_new_enemies_are_wired() -> void:
+	var r := await _fresh_run()
+	var all := EnemyTable.all()
+	var by_id := {}
+	for k in all.size():
+		by_id[all[k].id] = all[k]
+	var want := {
+		&"sentinel": EnemyTable.Behaviour.CHARGER,
+		&"tracer": EnemyTable.Behaviour.FLANKER,
+		&"watchdog": EnemyTable.Behaviour.SUPPORT,
+		&"rootkit": EnemyTable.Behaviour.AMBUSHER,
+		&"probe": EnemyTable.Behaviour.RANGED,
+	}
+	for id in want:
+		_check("%s is in the table" % id, by_id.has(id), true)
+		if by_id.has(id):
+			_check("%s has its behaviour" % id, by_id[id].behaviour, want[id])
+
+	# These are INDICES into the table, read by the boss spawn, the win
+	# condition, the flip guard and the worm train. Inserting a type above them
+	# repoints them silently, which is the kind of bug that looks like physics.
+	_check("ICE is still where the code thinks it is",
+		all[EnemyTable.ICE].id, &"ice")
+	_check("and so is the worm type", all[r.WORM_TYPE].id, &"worm")
+
+	# Every new type is scheduled, or it will never be seen.
+	var scheduled := {}
+	for wv in SpawnDirector.new().waves:
+		scheduled[wv.type_index] = true
+	for id in want:
+		var idx := -1
+		for k in all.size():
+			if all[k].id == id:
+				idx = k
+		_check("%s is scheduled in a wave" % id, scheduled.has(idx), true)
+	r.free()
+	finished["the_new_enemies_are_wired"] = true

@@ -56,6 +56,14 @@ Damage tagged `corruption` fills a second bar. An enemy that fills it **flips**
 into a botnet node that fights for you, and drops the same shards a kill does,
 so a corruption build doesn't starve its own levelling.
 
+Enemies are no longer one behaviour with different numbers. `sentinel`
+telegraphs and commits to a dash. `tracer` steers at where you are going rather
+than where you are. `watchdog` hangs back healing the swarm, so it is a target
+you have to dig for. `rootkit` submerges out of the world entirely —
+untouchable and harmless while under — and surfaces on you after a tell.
+`probe` keeps its distance and shoots, which is what makes walls worth standing
+behind.
+
 ## Architecture
 
 Enemies, projectiles, shards, and botnet nodes are **packed arrays over a

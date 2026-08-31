@@ -1494,6 +1494,10 @@ func _update_renderers() -> void:
 		var i: int = _order[n]
 		var t = enemy_types[enemies.type_index[i]]
 		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
+		# A submerged ambusher is out of the grid, so it cannot be hit and cannot
+		# hurt you. Drawing it anyway would be the game lying about that.
+		if _submerged[i] != 0:
+			s = 0.0
 		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0, to_iso(enemies.pos[i])))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		var shade := 1.15
@@ -1667,6 +1671,31 @@ func _draw() -> void:
 			- gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0)) + up
 		draw_line(l1, l2, gcol, 3.0)
 		draw_line(l1 + Vector2(0, 8), l2 + Vector2(0, 8), gcol.darkened(0.4), 2.0)
+
+	# Enemy fire. Distinct from the player's: red, and with a soft halo so a
+	# shot crossing a busy field is still findable.
+	for i in hostiles.count:
+		var hpos := to_iso(hostiles.pos[i])
+		draw_circle(hpos, 7.0, Color(1.8, 0.45, 0.45, 0.22))
+		draw_circle(hpos, 3.5, Color(1.9, 0.55, 0.5))
+
+	# Telegraphs. A charger winding up and an ambusher surfacing are both about
+	# to do something sudden, and both are only fair if you can see them coming.
+	for i in enemies.count:
+		var bh: int = enemy_types[enemies.type_index[i]].behaviour
+		var tell := 0.0
+		if bh == EnemyTable.Behaviour.CHARGER and _ai_phase[i] == CH_WINDUP:
+			tell = 1.0 - _ai_timer[i] / CHARGE_WINDUP
+		elif bh == EnemyTable.Behaviour.AMBUSHER and _ai_phase[i] == AM_SURFACING:
+			tell = 1.0 - _ai_timer[i] / AMBUSH_SURFACING
+		if tell <= 0.0:
+			continue
+		var ring := PackedVector2Array()
+		for k in 17:
+			var ta := TAU * k / 16.0
+			ring.append(to_iso(enemies.pos[i]
+				+ Vector2(cos(ta), sin(ta)) * (14.0 + 26.0 * tell)))
+		draw_polyline(ring, Color(1.9, 0.9, 0.4, 0.85 * (1.0 - tell)), 2.0)
 
 	# Shot visuals, oldest fading out. Drawn under the ship.
 	for fx in _fx_line:

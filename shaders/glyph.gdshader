@@ -43,6 +43,29 @@ void fragment() {
 		float v = (1.0 - smoothstep(0.10, 0.19, abs(p.x))) * step(abs(p.y), 0.42);
 		float hh = (1.0 - smoothstep(0.10, 0.19, abs(p.y))) * step(abs(p.x), 0.42);
 		a = max(v, hh);
+	} else if (g == 5) {
+		// sentinel — heavy arrowhead, so a charge reads as a direction
+		a = ring(max(abs(p.x) * 0.866 + p.y * 0.5, -p.y - 0.02), 0.30, 0.12);
+	} else if (g == 6) {
+		// tracer — a doubled chevron, reading as speed
+		float c1 = (1.0 - smoothstep(0.04, 0.09, abs(abs(p.x) * 1.1 - (p.y + 0.30))))
+			* step(abs(p.x), 0.32);
+		float c2 = (1.0 - smoothstep(0.04, 0.09, abs(abs(p.x) * 1.1 - (p.y + 0.06))))
+			* step(abs(p.x), 0.32);
+		a = max(c1, c2);
+	} else if (g == 7) {
+		// watchdog — an eye: ring around a solid pupil
+		a = max(ring(length(p), 0.36, 0.09),
+			1.0 - smoothstep(0.09, 0.15, length(p)));
+	} else if (g == 8) {
+		// rootkit — a broken ring, so it reads as something not fully here
+		float br = ring(length(p), 0.33, 0.11);
+		float ang = atan(p.y, p.x) / 6.2832 + 0.5;
+		a = br * step(0.34, abs(fract(ang * 4.0) - 0.5) * 2.0);
+	} else if (g == 9) {
+		// probe — a boxed sight, distinct from the packet plus
+		a = max(ring(max(abs(p.x), abs(p.y)), 0.31, 0.09),
+			1.0 - smoothstep(0.05, 0.11, length(p)));
 	} else {
 		// data shard — solid pip
 		a = 1.0 - smoothstep(0.22, 0.34, length(p));

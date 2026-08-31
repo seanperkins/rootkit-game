@@ -59,6 +59,15 @@ var spawned: int = 0
 var dropped: int = 0        # pool was full; counted, never silently ignored
 var boss_spawned: bool = false
 
+## Wave rows address enemy TYPES BY INDEX, so a bare number breaks silently the
+## moment a type is inserted above it. Resolved from the table by id instead.
+static func _idx(id: StringName) -> int:
+	var all := EnemyTable.all()
+	for i in all.size():
+		if all[i].id == id:
+			return i
+	return 0
+
 func _init(seed_value: int = 20260829) -> void:
 	rng.seed = seed_value
 	waves = [
@@ -69,6 +78,15 @@ func _init(seed_value: int = 20260829) -> void:
 		Wave.new(150.0, 240.0, 2, 3.4, Formation.BURST),
 		Wave.new(180.0, 300.0, 0, 4.2, Formation.RING),
 		Wave.new(240.0, 300.0, 1, 1.4, Formation.FLANK),
+		# The new types, introduced one at a time so each is legible when it
+		# first appears rather than arriving in a crowd.
+		Wave.new(70.0,  160.0, _idx(&"tracer"),   1.1,  Formation.FLANK),
+		Wave.new(110.0, 210.0, _idx(&"sentinel"), 0.5,  Formation.RING),
+		Wave.new(150.0, 250.0, _idx(&"probe"),    0.7,  Formation.STREAM),
+		Wave.new(190.0, 300.0, _idx(&"rootkit"),  0.6,  Formation.BURST),
+		# Kept rare deliberately: each watchdog runs a radius query every tick,
+		# and it is meant to be a target you dig for, not a crowd.
+		Wave.new(210.0, 300.0, _idx(&"watchdog"), 0.25, Formation.FLANK),
 	]
 	_milli.resize(waves.size())
 	for i in _milli.size():
