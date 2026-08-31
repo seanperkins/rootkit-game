@@ -6,6 +6,16 @@ extends SceneTree
 ## whatever the damage numbers are tuned to next.
 
 var failures := 0
+var finished := {}
+
+## Every case marks itself on its last line. A runtime error aborts only its own
+## function, so without this a suite whose asserts never ran still exits 0 — as
+## this one did when it kept a reference to a deleted field.
+const CASES := [
+	"hp_ramp_shape", "threshold_steps_per_subnet_only",
+	"advance_preserves_the_build", "advance_clears_the_field",
+	"banking_is_incremental", "last_subnet_wins",
+]
 
 func _initialize() -> void:
 	print("ROOTKIT — campaign loop\n")
@@ -16,6 +26,10 @@ func _initialize() -> void:
 	await banking_is_incremental()
 	await last_subnet_wins()
 	print("")
+	for c in CASES:
+		if not finished.has(c):
+			print("  FAIL  case '%s' never finished — it aborted part way" % c)
+			failures += 1
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
 	quit(1 if failures > 0 else 0)
@@ -51,6 +65,7 @@ func hp_ramp_shape() -> void:
 		_check("subnet %d never scales below the table" % sn,
 			SpawnDirector.hp_mult(sn, 0.0), 1.0)
 
+	finished["hp_ramp_shape"] = true
 ## Thresholds are held per TYPE in one array every live enemy reads, so they may
 ## step per subnet but must NOT drift with elapsed — that would move the target
 ## under an enemy already part-corrupted.
@@ -61,6 +76,7 @@ func threshold_steps_per_subnet_only() -> void:
 	_check("the step matches the HP step per subnet",
 		SpawnDirector.threshold_mult(2), SpawnDirector.hp_mult(2, 0.0))
 
+	finished["threshold_steps_per_subnet_only"] = true
 func advance_preserves_the_build() -> void:
 	var r := await _fresh_run()
 	r.loadout.place_at(ModuleTable.by_id()[&"corrupt"], 0, 2)
@@ -80,6 +96,10 @@ func advance_preserves_the_build() -> void:
 			EnemyTable.all()[0].corruption_threshold * SpawnDirector.threshold_mult(2)), true)
 	r.free()
 
+	finished["advance_preserves_the_build"] = true
+## The clear-down and the heal moved to GATE ENTRY when gates arrived: the
+## advance itself is now only the arena swap, so asserting them against a bare
+## _advance_subnet() call would be testing the wrong half of the transition.
 func advance_clears_the_field() -> void:
 	var r := await _fresh_run()
 	for i in 20:
@@ -88,7 +108,8 @@ func advance_clears_the_field() -> void:
 	r.director.boss_spawned = true
 	var maxhp: float = r._eff_integrity()
 	r.player_health = maxhp * 0.25
-	r._advance_subnet()
+
+	_walk_the_gate(r)
 	_check("live enemies cleared", r.enemies.count, 0)
 	_check("the clock restarted", r.director.elapsed, 0.0)
 	_check("the boss flag cleared", r.director.boss_spawned, false)
@@ -97,9 +118,21 @@ func advance_clears_the_field() -> void:
 
 	# The heal tops out at the maximum rather than overshooting it.
 	r.player_health = maxhp
-	r._advance_subnet()
+	_walk_the_gate(r)
 	_check("heal never exceeds max integrity", r.player_health, maxhp)
 	r.free()
+
+	finished["advance_clears_the_field"] = true
+## Clear the subnet, step into the gate, cross the corridor, come out the far
+## side — the whole transition, driven the way a player drives it.
+func _walk_the_gate(r: Node2D) -> void:
+	r.phase = r.Phase.CLEARED
+	r.terrain.gate_open = true
+	r.player_pos = r.terrain.gate_pos
+	r._physics_process(1.0 / 60.0)
+	r.player_pos = r.corridor.gate_pos
+	r._physics_process(1.0 / 60.0)
+
 
 ## SaveGame.bank() ACCUMULATES. A run that banks at every subnet clear must hand
 ## it deltas — totals would count subnet 01's kills once per subnet and hand out
@@ -126,22 +159,23 @@ func banking_is_incremental() -> void:
 	_check("banked salvage survives the death", SaveGame.load_state()["salvage"], 260)
 	r.free()
 
+	finished["banking_is_incremental"] = true
 ## Killing ICE advances, until the last subnet, where it wins.
 func last_subnet_wins() -> void:
 	var r := await _fresh_run()
 	_check("mid-campaign ICE flags an advance rather than a win",
 		_kill_ice(r), false)
-	_check("and the advance is pending, not applied inside the drain",
-		r._advance_pending, true)
-	r._advance_subnet()
+	_check("and the subnet is cleared, not advanced", r.phase, r.Phase.CLEARED)
+	_check("the gate is what opens instead", r.terrain.gate_open, true)
 
 	var r2 := await _fresh_run()
 	r2.subnet = SpawnDirector.CAMPAIGN_SUBNETS
 	_check("ICE on the last subnet wins the run", _kill_ice(r2), true)
-	_check("no advance is queued past the last subnet", r2._advance_pending, false)
+	_check("the last subnet never enters transit", r2.phase, r2.Phase.FIGHTING)
 	r.free()
 	r2.free()
 
+	finished["last_subnet_wins"] = true
 func _kill_ice(r: Node2D) -> bool:
 	var b = r.enemy_types[EnemyTable.ICE]
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
