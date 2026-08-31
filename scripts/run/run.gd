@@ -80,6 +80,18 @@ var terrain: Terrain
 var _slow_left: PackedFloat32Array
 var _slow_factor: PackedFloat32Array
 
+## Per-enemy AI memory. Sized MAX_ENEMIES and reset on every spawn, because
+## Population.spawn recycles slots and a stale phase is a live bug — an enemy
+## that inherits a mid-dash timer commits to a dash it never wound up for.
+var _ai_phase: PackedInt32Array
+var _ai_timer: PackedFloat32Array
+var _ai_aim: PackedVector2Array
+## The ceiling on healing: an enemy may never be healed above what its type and
+## subnet gave it at spawn.
+var _spawn_hp: PackedFloat32Array
+## Out of the entity grid, and therefore untouchable and harmless.
+var _submerged: PackedByteArray
+
 ## Set by the zone pass each tick and read by _eff_clock_speed, so a slow zone
 ## affects the player without a second timer: standing in it IS the duration.
 var _zone_slow_player := false
@@ -222,6 +234,11 @@ func _ready() -> void:
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_proj_dist_left = PackedFloat32Array(); _proj_dist_left.resize(MAX_PROJECTILES)
 	_slow_left = PackedFloat32Array(); _slow_left.resize(MAX_ENEMIES)
+	_ai_phase = PackedInt32Array(); _ai_phase.resize(MAX_ENEMIES)
+	_ai_timer = PackedFloat32Array(); _ai_timer.resize(MAX_ENEMIES)
+	_ai_aim = PackedVector2Array(); _ai_aim.resize(MAX_ENEMIES)
+	_spawn_hp = PackedFloat32Array(); _spawn_hp.resize(MAX_ENEMIES)
+	_submerged = PackedByteArray(); _submerged.resize(MAX_ENEMIES)
 	_slow_factor = PackedFloat32Array(); _slow_factor.resize(MAX_ENEMIES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
@@ -327,13 +344,13 @@ func _step1_spawn(dt: float) -> void:
 				director.dropped += 1
 			continue
 		var t = enemy_types[ti]
+		var hp: float = t.integrity * _hp_mult()
 		var idx := enemies.spawn(field().nearest_open(s[1]), Vector2.ZERO,
-			t.integrity * _hp_mult(), ENEMY_RADIUS, ti)
+			hp, ENEMY_RADIUS, ti)
 		if idx < 0:
 			director.dropped += 1
 		else:
-			_worm_id[idx] = 0
-			_clear_slow(idx)
+			_spawn_enemy_state(idx, hp)
 			director.spawned += 1
 	if director.should_spawn_boss():
 		director.boss_spawned = true
@@ -374,13 +391,15 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_trail[id] = trail
 	_worm_cursor[id] = 0
 	for k in n:
+		var whp: float = t.integrity * _hp_mult()
 		var idx := enemies.spawn(field().nearest_open(at), Vector2.ZERO,
-			t.integrity * _hp_mult(), ENEMY_RADIUS, WORM_TYPE)
+			whp, ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
 			return k > 0
+		# After _spawn_enemy_state, which zeroes _worm_id.
+		_spawn_enemy_state(idx, whp)
 		_worm_id[idx] = id
 		_worm_seg[idx] = k
-		_clear_slow(idx)
 	return true
 
 func _worm_sample(id: int, steps_back: int) -> Vector2:
@@ -439,11 +458,7 @@ func _step2_integrate(dt: float) -> void:
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
 			continue
 		var t = enemy_types[enemies.type_index[i]]
-		var to := (player_pos - enemies.pos[i]).normalized()
-		var sp: float = t.speed
-		if _slow_left[i] > 0.0:
-			sp *= _slow_factor[i]
-		enemies.vel[i] = to * sp + enemies.force[i]
+		enemies.vel[i] = _behave(i, t, dt) + enemies.force[i]
 		# Worms phase through terrain, HEADS INCLUDED. Segments are sampled from
 		# the head's trail rather than integrated, so colliding the head alone
 		# would stretch the body through the wall the head is stuck against.
@@ -754,6 +769,37 @@ func _die() -> void:
 ## Population.spawn recycles slots, so a fresh enemy can land on an index whose
 ## previous occupant was slowed. A stale slow is a live bug, not a cosmetic one:
 ## it makes a newly spawned enemy crawl for no reason the player can see.
+func _clear_ai(i: int) -> void:
+	_ai_phase[i] = 0
+	_ai_timer[i] = 0.0
+	_ai_aim[i] = Vector2.ZERO
+	_submerged[i] = 0
+
+## Everything a freshly spawned enemy slot needs, in one place, so that adding a
+## per-enemy array later cannot leave one spawn site behind — which is exactly
+## how a stale-slot bug gets in.
+func _spawn_enemy_state(i: int, hp: float) -> void:
+	_worm_id[i] = 0
+	_clear_slow(i)
+	_clear_ai(i)
+	_spawn_hp[i] = hp
+
+## The desired velocity for one enemy, before separation and avoidance forces.
+##
+## A match in a loop that already runs, so a CHASE enemy costs one branch. The
+## alternative — an object per enemy with a virtual step — would put six hundred
+## allocations and six hundred virtual calls in the hot path to express six
+## cases.
+func _behave(i: int, t, dt: float) -> Vector2:
+	var sp: float = t.speed
+	if _slow_left[i] > 0.0:
+		sp *= _slow_factor[i]
+	var to_player := player_pos - enemies.pos[i]
+	match t.behaviour:
+		_:
+			return to_player.normalized() * sp
+	return to_player.normalized() * sp
+
 func _clear_slow(i: int) -> void:
 	_slow_left[i] = 0.0
 	_slow_factor[i] = 1.0
