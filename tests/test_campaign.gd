@@ -123,14 +123,14 @@ func advance_clears_the_field() -> void:
 	r.free()
 
 	finished["advance_clears_the_field"] = true
-## Clear the subnet, step into the gate, cross the corridor, come out the far
-## side — the whole transition, driven the way a player drives it.
+## Clear the subnet, open the gate, and step out at the far end of the corridor
+## — the whole transition, driven the way a player drives it.
 func _walk_the_gate(r: Node2D) -> void:
 	r.phase = r.Phase.CLEARED
-	r.terrain.gate_open = true
-	# One step now: the corridor is part of the arena, so reaching its far end is
-	# the whole transition.
-	r.player_pos = r.terrain.corridor_end
+	r.terrain.open_gate()
+	# One step: the corridor is part of the same map as both arenas, so the
+	# first pace onto the next arena's floor IS arriving on the next subnet.
+	r.player_pos = r.terrain.gate().end + r.terrain.gate().dir * 8.0
 	r._physics_process(1.0 / 60.0)
 
 
@@ -166,7 +166,7 @@ func last_subnet_wins() -> void:
 	_check("mid-campaign ICE flags an advance rather than a win",
 		_kill_ice(r), false)
 	_check("and the subnet is cleared, not advanced", r.phase, r.Phase.CLEARED)
-	_check("the gate is what opens instead", r.terrain.gate_open, true)
+	_check("the gate is what opens instead", r.terrain.gate().open, true)
 
 	var r2 := await _fresh_run()
 	r2.subnet = SpawnDirector.CAMPAIGN_SUBNETS

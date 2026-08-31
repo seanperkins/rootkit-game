@@ -8,6 +8,10 @@ const CASES := ["the_schedule_fires_each_once", "the_four_exist_and_ice_is_still
 	"armour_is_directional", "killing_one_offers_a_card", "afterimages_are_bounded_and_expire",
 	"the_pulse_is_blocked_by_walls"]
 
+## A whole even number of Terrain.TILE either way, which is what lets a lone
+## arena be centred on the origin and still land on tile boundaries.
+const ARENA := Vector2(3072, 1920)
+
 func _initialize() -> void:
 	print("ROOTKIT — mini-bosses\n")
 	the_schedule_fires_each_once()
@@ -111,10 +115,14 @@ func the_four_exist_and_ice_is_still_last() -> void:
 	_check("and it is the final row", EnemyTable.ICE, all.size() - 1)
 
 	# The schedule resolves to the real types, not to daemon by fallback.
+	#
+	# The step has to CROSS the time, not start on it: due_minibosses wants
+	# `elapsed < t and elapsed + dt >= t`, so parking the clock exactly on the
+	# boundary fires nothing and the assertion below indexed an empty array.
 	var d := SpawnDirector.new()
-	var fired: Array = []
-	d.elapsed = SpawnDirector.MINIBOSS_TIMES[0]
-	fired = d.due_minibosses(0.1)
+	d.elapsed = SpawnDirector.MINIBOSS_TIMES[0] - 0.05
+	var fired: Array = d.due_minibosses(0.1)
+	_check("the schedule fires one at its time", fired.size(), 1)
 	_check("the schedule resolves a real mini-boss",
 		all[fired[0]].id, SpawnDirector.MINIBOSS_IDS[0])
 	finished["the_four_exist_and_ice_is_still_last"] = true
@@ -205,8 +213,8 @@ func killing_one_offers_a_card() -> void:
 	finished["killing_one_offers_a_card"] = true
 
 func afterimages_are_bounded_and_expire() -> void:
-	var t := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
-	t.generate(4, 1, Vector2.ZERO)
+	var t := Terrain.new(ARENA)
+	t.generate(4, Vector2.ZERO)
 	t.add_temp_zone(Vector2.ZERO, 60.0, Terrain.Kind.HAZARD, 2.0)
 	_check("an afterimage is felt", t.temp_zone_at(Vector2(10, 0)),
 		Terrain.Kind.HAZARD)
@@ -237,8 +245,8 @@ func afterimages_are_bounded_and_expire() -> void:
 	finished["afterimages_are_bounded_and_expire"] = true
 
 func the_pulse_is_blocked_by_walls() -> void:
-	var t := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
-	t.generate(6, 1, Vector2.ZERO)
+	var t := Terrain.new(ARENA)
+	t.generate(6, Vector2.ZERO)
 	t.solid.fill(0)
 	_check("open ground sees across itself",
 		t.has_line_of_sight(Vector2(-300, 0), Vector2(300, 0)), true)
@@ -255,8 +263,8 @@ func the_pulse_is_blocked_by_walls() -> void:
 
 	# It must terminate on every seed, however awkward the geometry.
 	for sd in range(40):
-		var u := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
-		u.generate(sd, 1, Vector2.ZERO)
+		var u := Terrain.new(ARENA)
+		u.generate(sd, Vector2.ZERO)
 		u.has_line_of_sight(Vector2(-1500, -900), Vector2(1500, 900))
 	_check("the walk always terminates on every seed", true, true)
 	finished["the_pulse_is_blocked_by_walls"] = true

@@ -1,14 +1,21 @@
 class_name Terrain extends RefCounted
 
-## The subnet's static arena: blocking walls and non-blocking effect zones,
-## generated per subnet from the run seed.
+## The campaign's ground: EVERY subnet's arena, and the corridors between them,
+## on ONE grid, plotted before the first frame.
+##
+## One grid, and all of it up front, because the transition between subnets is a
+## walk. A corridor is only continuous with the arena it leads to if that arena
+## already exists and is the same array the player is already standing on;
+## anything regenerated under their feet at the far end is a teleport wearing a
+## corridor. So the map is planned once, the arenas are laid out end to end with
+## a corridor spanning each gap, and `current` is the only thing that moves.
 ##
 ## Two representations of one fact, deliberately. `rects` is what the generator
 ## writes and what the renderer draws — a few dozen entries. The two byte grids
 ## are what the RUNTIME asks, and they exist so that nothing on the hot path
 ## ever iterates a rect list: every question is one array index. The grids are
-## baked once when a subnet begins and never mutated, which is what lets them
-## stay a bare index with no bookkeeping.
+## baked once and never mutated, which is what lets them stay a bare index with
+## no bookkeeping.
 ##
 ## Pure: no nodes, no tree, no signals. Driven directly by tests.
 
@@ -16,11 +23,53 @@ enum Kind { WALL, HAZARD, SLOW, CORRUPTION }
 
 const CELL := 32.0
 
+## The lattice the backdrop draws, in world units. Every arena edge, every
+## corridor and the grid's own origin are whole multiples of it, so the ground
+## reads as tiles laid end to end rather than as a texture the world stops part
+## way through.
+const TILE := CELL * 3.0
+
 ## Per second, so they are frame-rate independent. Starting values, expected to
 ## move once the arena has been played rather than reasoned about.
 const HAZARD_DPS := 12.0
 const SLOW_FACTOR := 0.6
 const CORRUPTION_PER_SEC := 8.0
+
+## The rock border around the whole map. Small on purpose: it is only there to
+## stop the player walking off the plotted world, and the corridors no longer
+## live in it — they run between arenas, not out into nothing.
+const MARGIN := TILE * 4.0
+
+## The gap between one arena's edge and the next one's, spanned by the corridor.
+const CORRIDOR_LENGTH := TILE * 12.0
+## Half-width in whole cells either side of the gate's own cell, so the walkway
+## is an odd number of cells and its rect lands on cell boundaries.
+const CORRIDOR_HALF_CELLS := 3
+const CORRIDOR_HALF_WIDTH := (float(CORRIDOR_HALF_CELLS) + 0.5) * CELL
+
+## How close to the corridor's far end counts as arriving.
+const GATE_RADIUS := 48.0
+
+
+## The way out of one arena and into the next: one per LINK, so a three-subnet
+## campaign has two and clearing the last arena wins outright.
+class Gate extends RefCounted:
+	var pos: Vector2
+	## Outward from the arena it leaves, so the corridor, the posts and the
+	## block all know which way "through" is. Always axis-aligned.
+	var dir: Vector2
+	var open := false
+	## The walkway, as a rect, so it can be drawn as floor. It runs from the
+	## arena's own edge to the NEXT arena's edge with nothing in between — that
+	## flushness is the whole of "no teleport".
+	var corridor: Rect2
+	## Where the corridor meets the next arena. On its edge, not near it.
+	var end: Vector2
+	## What a SHUT gate stops. A bounded rect rather than the half-plane this
+	## used to be: outward of the gate plane is now the NEXT ARENA, and an
+	## unbounded test laid an invisible wall clean across it.
+	var block: Rect2
+
 
 var origin: Vector2
 var size: Vector2
@@ -31,22 +80,18 @@ var solid: PackedByteArray
 var zone: PackedByteArray
 var rects: Array = []          # [Rect2, Kind] pairs, for generation and drawing
 
-## The way out. Present from generation and shut; opened by clearing ICE.
-var has_gate := false
-var gate_pos := Vector2.ZERO
-var gate_open := false
-## Outward from the arena, so the corridor and the gate's posts know which way
-## "through" is.
-var gate_dir := Vector2.ZERO
-var corridor_end := Vector2.ZERO
-## The walkway beyond the gate, as a rect, so it can be drawn as floor. It is
-## carved into the margin rather than placed as a rect, so nothing else records
-## where it went.
-var corridor_rect := Rect2()
+## Every subnet's arena, in walk order.
+var arenas: Array = []
+## One per link, so `gates.size() == arenas.size() - 1`.
+var gates: Array = []
+## Which arena the run is in. Everything that used to be a single fact — the
+## gate, the corridor, the collapse — reads through this.
+var current := 0
 
-## The playable arena, which is now SMALLER than the grid. Collapse and wall
-## placement work in here; the corridor lives outside it.
-var arena_rect: Rect2
+## The block rects of the gates that are currently SHUT, cached because
+## `is_solid` asks on every enemy step and every projectile step and the answer
+## only changes when a gate does.
+var _blocks: Array[Rect2] = []
 
 ## Distance in cells from the gate over open ground, -1 where unreachable.
 ## Built once on the boss kill; drives both the collapse order and the route.
@@ -58,30 +103,86 @@ var voided: PackedByteArray
 var _collapse_order: PackedInt32Array
 var _collapse_idx := 0
 
-func _init(p_origin: Vector2, p_size: Vector2) -> void:
-	arena_rect = Rect2(p_origin, p_size)
-	origin = p_origin - Vector2(MARGIN, MARGIN)
-	size = p_size + Vector2(MARGIN, MARGIN) * 2.0
-	w = int(ceil(size.x / CELL))
-	h = int(ceil(size.y / CELL))
+## Where each arena is plotted, in walk order.
+##
+## Axis-aligned links only, and never the reverse of the last one, which for a
+## three-arena campaign is exactly enough to guarantee no two arenas overlap: an
+## L or a straight line, and nothing else is reachable. A longer campaign would
+## need a real placement search; assert rather than let it silently self-collide.
+static func plan(arena_size: Vector2, count: int, seed_value: int) -> Array:
+	assert(count <= 3, "the no-reverse rule only bounds overlap up to three arenas")
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(str(seed_value, ":layout"))
+	# The first arena is centred on the world origin, because that is where the
+	# player starts and the spawn-safe margin is measured from where they stand.
+	var out: Array = [Rect2(-arena_size * 0.5, arena_size)]
+	var last := Vector2.ZERO
+	for i in range(1, count):
+		var choices: Array[Vector2] = []
+		for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+			if d != -last:
+				choices.append(d)
+		var dir: Vector2 = choices[rng.randi_range(0, choices.size() - 1)]
+		var prev: Rect2 = out[out.size() - 1]
+		out.append(Rect2(prev.position + dir * (arena_size + Vector2(
+			CORRIDOR_LENGTH, CORRIDOR_LENGTH)), arena_size))
+		last = dir
+	return out
+
+func _init(arena_size: Vector2, count: int = 1, layout_seed: int = 0) -> void:
+	assert(is_equal_approx(fposmod(arena_size.x, TILE * 2.0), 0.0)
+		and is_equal_approx(fposmod(arena_size.y, TILE * 2.0), 0.0),
+		"an arena is a whole EVEN number of tiles, so its half — and therefore "
+		+ "the grid origin — lands on a tile boundary too")
+	arenas = plan(arena_size, count, layout_seed)
+	var bounds: Rect2 = arenas[0]
+	for i in range(1, arenas.size()):
+		bounds = bounds.merge(arenas[i])
+	origin = bounds.position - Vector2(MARGIN, MARGIN)
+	size = bounds.size + Vector2(MARGIN, MARGIN) * 2.0
+	# round, not ceil: everything is tile-aligned by construction, so a fraction
+	# of a cell here would mean the assert above is wrong.
+	w = int(round(size.x / CELL))
+	h = int(round(size.y / CELL))
 	solid = PackedByteArray()
 	solid.resize(w * h)
 	zone = PackedByteArray()
 	zone.resize(w * h)
 
-## The arena's own cell bounds inside the enlarged grid.
-var _ax0: int
-var _ay0: int
-var _ax1: int
-var _ay1: int
+# ------------------------------------------------------------- the current ---
 
-func _arena_cells() -> void:
-	var a := cell_xy(arena_rect.position)
-	var b := cell_xy(arena_rect.position + arena_rect.size)
-	_ax0 = a.x + 1
-	_ay0 = a.y + 1
-	_ax1 = b.x - 1
-	_ay1 = b.y - 1
+func arena() -> Rect2:
+	return arenas[current]
+
+## The gate out of the current arena, or null on the last one.
+func gate() -> Gate:
+	return gates[current] if current < gates.size() else null
+
+func has_gate() -> bool:
+	return current < gates.size()
+
+func open_gate() -> void:
+	var g := gate()
+	if g != null:
+		g.open = true
+		_rebuild_blocks()
+
+## Walking in. The gate shuts behind, because the ground back there is coming
+## apart and a way back is a way to die in it.
+func enter_next() -> void:
+	var g := gate()
+	if g != null:
+		g.open = false
+	current = mini(current + 1, arenas.size() - 1)
+	_rebuild_blocks()
+
+func _rebuild_blocks() -> void:
+	_blocks.clear()
+	for g in gates:
+		if not g.open:
+			_blocks.append(g.block)
+
+# ------------------------------------------------------------------ lookup ---
 
 func cell_xy(p: Vector2) -> Vector2i:
 	return Vector2i(int(floor((p.x - origin.x) / CELL)),
@@ -90,7 +191,7 @@ func cell_xy(p: Vector2) -> Vector2i:
 func in_bounds(c: Vector2i) -> bool:
 	return c.x >= 0 and c.y >= 0 and c.x < w and c.y < h
 
-## -1 when the point is outside the arena, so callers can tell "no cell" from
+## -1 when the point is outside the grid, so callers can tell "no cell" from
 ## "cell zero" without a second bounds call.
 func cell_index(p: Vector2) -> int:
 	var c := cell_xy(p)
@@ -98,17 +199,36 @@ func cell_index(p: Vector2) -> int:
 		return -1
 	return c.y * w + c.x
 
-## Outside the arena is OPEN, never solid. Enemies spawn on a 720-unit ring
-## around the player, which sits partly outside the bounds whenever the player
-## is near an edge; solid-outside would reject every one of those spawns and
-## starve the wave.
+## An arena's own cells: position is its first cell, end is one PAST its last.
+##
+## Exact, never approximate: every arena edge is a whole number of tiles from
+## the grid origin and a tile is three cells, so an arena covers whole cells and
+## nothing straddles its boundary.
+func arena_cells(i: int) -> Rect2i:
+	return _cells_of(arenas[i])
+
+func _cells_of(r: Rect2) -> Rect2i:
+	return Rect2i(
+		int(round((r.position.x - origin.x) / CELL)),
+		int(round((r.position.y - origin.y) / CELL)),
+		int(round(r.size.x / CELL)),
+		int(round(r.size.y / CELL)))
+
+## Outside the grid is OPEN, never solid. Enemies spawn on a ring around the
+## player, which can sit partly outside the bounds; solid-outside would reject
+## every one of those spawns and starve the wave.
+##
+## The shut-gate test is inlined rather than calling gate_blocks: this runs for
+## every enemy step and every projectile step, and _blocks holds at most two
+## rects, so the call would cost more than the loop it saves.
 func is_solid(p: Vector2) -> bool:
-	if gate_blocks(p):
-		return true
-	var i := cell_index(p)
-	if i < 0:
+	for i in _blocks.size():
+		if _blocks[i].has_point(p):
+			return true
+	var i2 := cell_index(p)
+	if i2 < 0:
 		return false
-	return solid[i] != 0
+	return solid[i2] != 0
 
 ## A CLOSED gate still has to stop you.
 ##
@@ -118,16 +238,13 @@ func is_solid(p: Vector2) -> bool:
 ## the whole subnet could be skipped by strolling out.
 ##
 ## Tested geometrically rather than baked into `solid`, because `solid` is
-## static by design: baking would mean mutating the grid when the gate opens,
-## and the distance field and collapse order are both built off it.
+## static by design: baking would mean mutating the grid when a gate opens, and
+## the distance field and collapse order are both built off it.
 func gate_blocks(p: Vector2) -> bool:
-	if not has_gate or gate_open:
-		return false
-	var d := p - gate_pos
-	# Only from the gate plane OUTWARD, so the arena side is unaffected.
-	if d.dot(gate_dir) < -CELL * 1.5:
-		return false
-	return absf(d.dot(Vector2(-gate_dir.y, gate_dir.x))) < CORRIDOR_HALF_WIDTH + CELL * 2.0
+	for i in _blocks.size():
+		if _blocks[i].has_point(p):
+			return true
+	return false
 
 func zone_at(p: Vector2) -> int:
 	var i := cell_index(p)
@@ -135,8 +252,10 @@ func zone_at(p: Vector2) -> int:
 		return -1
 	return int(zone[i]) - 1
 
-## Walls are kept clear of the player's start by this much, so the opening
-## seconds are never spent wedged against rock.
+# -------------------------------------------------------------- generation ---
+
+## Walls are kept clear of wherever the player ENTERS an arena by this much, so
+## neither the opening seconds nor an arrival is spent wedged against rock.
 const WALL_MARGIN := 260.0
 
 ## Flat across subnets. This was 8% rising to 18%, and the ramp was the wrong
@@ -146,13 +265,13 @@ const DENSITY_BASE := 0.03
 const DENSITY_PER_SUBNET := 0.0
 
 ## The floor the generator's own output is held to in test. Filling unreachable
-## pockets cannot fail, but it CAN eat the arena on a pathological seed, and a
+## pockets cannot fail, but it CAN eat an arena on a pathological seed, and a
 ## closet is as unplayable as a sealed pocket.
 const REACHABLE_FLOOR := 0.70
 
 ## Bounded, not "until the target is met". An unbounded placement loop on a
 ## dense subnet with an unlucky seed is a hang, and a hang in generation is a
-## hang before the first frame of the subnet.
+## hang before the first frame of the run.
 const PLACE_ATTEMPTS := 4000
 
 const ZONES_MIN := 2
@@ -165,33 +284,132 @@ const ZONE_KINDS := [Kind.HAZARD, Kind.SLOW, Kind.CORRUPTION]
 static func density_for(subnet: int) -> float:
 	return DENSITY_BASE + DENSITY_PER_SUBNET * float(maxi(subnet, 1) - 1)
 
-func generate(seed_value: int, subnet: int, player_start: Vector2,
-		with_gate: bool = true) -> void:
-	var rng := RandomNumberGenerator.new()
-	# The subnet is mixed in, not added, so subnet 2 of one run is not subnet 1
-	# of the run seeded one higher.
-	rng.seed = hash(str(seed_value, ":", subnet))
-	solid.fill(0)
-	zone.fill(0)
+## Plots the whole campaign in one pass.
+##
+## Order matters and is load-bearing. Gates are sited before the walls so that
+## walls can be kept clear of where the player arrives; corridors are carved
+## after them so nothing placed can seal the way out; the connectivity fill runs
+## after the corridors so that all three arenas read as ONE reachable region and
+## none of them is filled in as a pocket; zones go down last so they can never
+## be sealed behind rock or overwritten.
+func generate(seed_value: int, player_start: Vector2) -> void:
 	rects.clear()
 	dist_from_gate = PackedInt32Array()
 	voided = PackedByteArray()
 	max_dist = 0
+	current = 0
 
-	# Everything outside the arena is rock. The corridor is the ONLY way out,
-	# and the player is now allowed to leave the arena rect, so the margin has to
-	# actually stop them.
-	for y in h:
-		for x in w:
-			var p := origin + Vector2(float(x) + 0.5, float(y) + 0.5) * CELL
-			if not arena_rect.has_point(p):
-				solid[y * w + x] = 1
+	# Rock everywhere, then each arena cut back out of it. Filling and clearing
+	# whole cell ranges rather than asking `has_point` per cell: the grid spans
+	# three arenas and the gaps between them, and the point test was the one
+	# part of generation that scaled with the whole map rather than the ground.
+	solid.fill(1)
+	zone.fill(0)
+	for i in arenas.size():
+		_clear_cells(arena_cells(i))
 
-	_arena_cells()
-	# Density is a fraction of the ARENA, not of the enlarged grid — the margin
-	# is solid by construction and counting it would quietly halve the walls.
-	var arena_cells := (_ax1 - _ax0) * (_ay1 - _ay0)
-	var target := int(float(arena_cells) * density_for(subnet))
+	# Where the player ENTERS each arena: their start for the first, the mouth
+	# they walk out of for the rest. Both the gates and the walls are sited
+	# against it — walls because an arena whose mouth was walled off would be
+	# flood-filled solid as an unreachable pocket, and gates because a SHUT one
+	# bars its own mouth, and a shut gate sited beside the arrival is an
+	# invisible wall in the doorway you just came through.
+	var entry := _place_gates(hash(str(seed_value, ":gates")), player_start)
+
+	for i in arenas.size():
+		_place_walls(hash(str(seed_value, ":w:", i)), i, entry[i])
+	for i in gates.size():
+		_cut_corridor(gates[i])
+		_carve_to(gates[i].pos, arenas[i].get_center(), arena_cells(i))
+	_fill_unreachable(player_start)
+	for i in arenas.size():
+		_place_zones(hash(str(seed_value, ":z:", i)), i, entry[i])
+	_rebuild_blocks()
+
+func _clear_cells(c: Rect2i) -> void:
+	for y in range(c.position.y, c.end.y):
+		var row := y * w
+		for x in range(c.position.x, c.end.x):
+			solid[row + x] = 0
+
+## One gate per link, on the edge of the arena that FACES the next one. There is
+## no choice of edge any more: the corridor has to arrive somewhere, and the
+## somewhere is fixed by the layout — only the position along that edge is
+## rolled.
+##
+## Returns where the player enters each arena, which is the corridor mouths this
+## produced with their start in front. Computed here rather than afterwards
+## because the roll depends on it: an arena entered near a corner can have its
+## exit gate on the adjoining edge, and a SHUT gate bars its own mouth, so
+## rolling blind put an invisible wall in the doorway on one seed in twenty.
+func _place_gates(rng_seed: int, player_start: Vector2) -> PackedVector2Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = rng_seed
+	gates.clear()
+	var entry := PackedVector2Array([player_start])
+	for i in range(arenas.size() - 1):
+		var d: Vector2 = arenas[i + 1].get_center() - arenas[i].get_center()
+		var g := Gate.new()
+		g.dir = Vector2(signf(d.x), 0.0) if absf(d.x) > absf(d.y) \
+			else Vector2(0.0, signf(d.y))
+		var c := arena_cells(i)
+		var across := g.dir.x != 0.0
+		var fixed := 0
+		var lo := 0
+		var hi := 0
+		if across:
+			fixed = (c.end.x - 1) if g.dir.x > 0.0 else c.position.x
+			lo = c.position.y + CORRIDOR_HALF_CELLS + 1
+			hi = c.end.y - CORRIDOR_HALF_CELLS - 2
+		else:
+			fixed = (c.end.y - 1) if g.dir.y > 0.0 else c.position.y
+			lo = c.position.x + CORRIDOR_HALF_CELLS + 1
+			hi = c.end.x - CORRIDOR_HALF_CELLS - 2
+		# Bounded retries, then take what came: the edge is ninety-odd cells and
+		# the exclusion is fourteen, so this lands first try almost always — and
+		# a loop that ran until it fit would be a hang on a shape that cannot.
+		var clearance := WALL_MARGIN + CORRIDOR_HALF_WIDTH + CELL * 2.0
+		for _try in 16:
+			var k := rng.randi_range(lo, hi)
+			var cell := Vector2(float(fixed) + 0.5, float(k) + 0.5) if across \
+				else Vector2(float(k) + 0.5, float(fixed) + 0.5)
+			g.pos = origin + cell * CELL
+			if g.pos.distance_to(entry[i]) >= clearance:
+				break
+		# The gate cell is the outermost cell INSIDE the arena, so its centre is
+		# half a cell short of the edge the corridor starts from.
+		g.end = g.pos + g.dir * (CELL * 0.5 + CORRIDOR_LENGTH)
+		var mouth := g.pos - g.dir * (CELL * 0.5)
+		var side := Vector2(-g.dir.y, g.dir.x)
+		g.corridor = Rect2(mouth, Vector2.ZERO) \
+			.expand(mouth + side * CORRIDOR_HALF_WIDTH) \
+			.expand(mouth - side * CORRIDOR_HALF_WIDTH) \
+			.expand(g.end + side * CORRIDOR_HALF_WIDTH) \
+			.expand(g.end - side * CORRIDOR_HALF_WIDTH)
+		# Two cells back into the arena so the mouth's shoulders are barred too,
+		# and NOT one unit past the far end, which is the next arena's floor.
+		var back := CELL * 2.0
+		var lat := CELL * 2.0
+		g.block = g.corridor.grow_individual(
+			lat if g.dir.x == 0.0 else (back if g.dir.x > 0.0 else 0.0),
+			lat if g.dir.y == 0.0 else (back if g.dir.y > 0.0 else 0.0),
+			lat if g.dir.x == 0.0 else (0.0 if g.dir.x > 0.0 else back),
+			lat if g.dir.y == 0.0 else (0.0 if g.dir.y > 0.0 else back))
+		gates.append(g)
+		entry.append(g.end)
+	return entry
+
+func _place_walls(rng_seed: int, index: int, entry: Vector2) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = rng_seed
+	var c := arena_cells(index)
+	# One cell in from every edge: a gate mouth sits ON the edge, and a wall
+	# there is a wall across the only way out.
+	var x0 := c.position.x + 1
+	var y0 := c.position.y + 1
+	var x1 := c.end.x - 1
+	var y1 := c.end.y - 1
+	var target := int(float((x1 - x0) * (y1 - y0)) * density_for(index + 1))
 	var placed := 0
 	var attempts := 0
 	while placed < target and attempts < PLACE_ATTEMPTS:
@@ -201,12 +419,12 @@ func generate(seed_value: int, subnet: int, player_start: Vector2,
 		# wants at 3% coverage.
 		var rw := rng.randi_range(1, 3)
 		var rh := rng.randi_range(1, 3)
-		var cx := rng.randi_range(_ax0, _ax1 - rw)
-		var cy := rng.randi_range(_ay0, _ay1 - rh)
+		var cx := rng.randi_range(x0, x1 - rw)
+		var cy := rng.randi_range(y0, y1 - rh)
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
-		# grow() by the margin and ask whether the start is inside: that is
-		# exactly "this rect comes within WALL_MARGIN of the player".
-		if r.grow(WALL_MARGIN).has_point(player_start):
+		# grow() by the margin and ask whether the entry is inside: that is
+		# exactly "this rect comes within WALL_MARGIN of where the player lands".
+		if r.grow(WALL_MARGIN).has_point(entry):
 			continue
 		for y in range(cy, cy + rh):
 			for x in range(cx, cx + rw):
@@ -216,67 +434,14 @@ func generate(seed_value: int, subnet: int, player_start: Vector2,
 					placed += 1
 		rects.append([r, Kind.WALL])
 
-	_fill_unreachable(player_start)
-	_place_zones(rng, player_start)
-	has_gate = with_gate
-	gate_open = false
-	if with_gate:
-		_place_gate(rng, player_start)
-
-## Flood-fill the open cells from the player's start; anything the fill does not
-## reach becomes rock.
-##
-## Filling rather than carving, because filling CANNOT FAIL. Carving a corridor
-## to a stranded pocket needs its own pathfinding and can itself leave a second
-## pocket; filling terminates in one pass and leaves exactly one open region by
-## construction. The cost is that a bad seed could eat the arena, which is why
-## reachable_fraction has a floor asserted in test.
-func _fill_unreachable(player_start: Vector2) -> void:
-	var start := cell_index(player_start)
-	if start < 0 or solid[start] != 0:
-		return
-	var seen := _reach(start)
-	for i in solid.size():
-		if solid[i] == 0 and seen[i] == 0:
-			solid[i] = 1
-
-func _reach(start: int) -> PackedByteArray:
-	var seen := PackedByteArray()
-	seen.resize(w * h)
-	var stack := PackedInt32Array([start])
-	while stack.size() > 0:
-		var i := stack[stack.size() - 1]
-		stack.remove_at(stack.size() - 1)
-		if seen[i] != 0 or solid[i] != 0:
-			continue
-		seen[i] = 1
-		var x := i % w
-		var y := i / w
-		if x > 0: stack.append(i - 1)
-		if x < w - 1: stack.append(i + 1)
-		if y > 0: stack.append(i - w)
-		if y < h - 1: stack.append(i + w)
-	return seen
-
-## As a fraction of the ARENA, not of the grid. The grid now extends a margin
-## past the arena on every side and that margin is solid by construction, so
-## dividing by w * h would report a healthy arena as a closet.
-func reachable_fraction(player_start: Vector2) -> float:
-	var start := cell_index(player_start)
-	if start < 0 or solid[start] != 0:
-		return 0.0
-	var seen := _reach(start)
-	var n := 0
-	for i in seen.size():
-		if seen[i] != 0:
-			n += 1
-	_arena_cells()
-	var arena_cells := (_ax1 - _ax0) * (_ay1 - _ay0)
-	return float(n) / float(maxi(arena_cells, 1))
-
-## Zones go down AFTER walls and after the connectivity fill, so a zone can
-## never be sealed behind rock or overwritten by a pocket being filled in.
-func _place_zones(rng: RandomNumberGenerator, player_start: Vector2) -> void:
+func _place_zones(rng_seed: int, index: int, entry: Vector2) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = rng_seed
+	var c := arena_cells(index)
+	var x0 := c.position.x + 1
+	var y0 := c.position.y + 1
+	var x1 := c.end.x - 1
+	var y1 := c.end.y - 1
 	var n := rng.randi_range(ZONES_MIN, ZONES_MAX)
 	var attempts := 0
 	var made := 0
@@ -284,10 +449,10 @@ func _place_zones(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 		attempts += 1
 		var rw := rng.randi_range(3, 7)
 		var rh := rng.randi_range(3, 7)
-		var cx := rng.randi_range(_ax0, _ax1 - rw)
-		var cy := rng.randi_range(_ay0, _ay1 - rh)
+		var cx := rng.randi_range(x0, x1 - rw)
+		var cy := rng.randi_range(y0, y1 - rh)
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
-		if r.grow(WALL_MARGIN).has_point(player_start):
+		if r.grow(WALL_MARGIN).has_point(entry):
 			continue
 		var kind: int = ZONE_KINDS[rng.randi_range(0, ZONE_KINDS.size() - 1)]
 		var wrote := false
@@ -302,6 +467,101 @@ func _place_zones(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 		if wrote:
 			rects.append([r, kind])
 			made += 1
+
+## Open ground from the arena's edge to the next arena's edge, walled by the
+## solid margin either side. This is the whole of "no teleport": the corridor is
+## cells on the same grid as both arenas, so walking through is walking.
+func _cut_corridor(g: Gate) -> void:
+	_clear_cells(_cells_of(g.corridor))
+
+## Flood-fill the open cells from the player's start; anything the fill does not
+## reach becomes rock.
+##
+## Filling rather than carving, because filling CANNOT FAIL. Carving a corridor
+## to a stranded pocket needs its own pathfinding and can itself leave a second
+## pocket; filling terminates in one pass and leaves exactly one open region by
+## construction. The cost is that a bad seed could eat an arena, which is why
+## reachable_fraction has a floor asserted in test.
+func _fill_unreachable(player_start: Vector2) -> void:
+	var start := cell_index(player_start)
+	if start < 0 or solid[start] != 0:
+		return
+	var seen := _reach(start)
+	for i in solid.size():
+		if solid[i] == 0 and seen[i] == 0:
+			solid[i] = 1
+
+## `bounds` in CELLS, or an empty rect for the whole grid. The bounded form is
+## what keeps the gate's connectivity check to one arena: the map is one region
+## by design, so an unbounded fill from a gate would walk all three of them.
+func _reach(start: int, bounds := Rect2i()) -> PackedByteArray:
+	var seen := PackedByteArray()
+	seen.resize(w * h)
+	var limited := bounds.size.x > 0
+	var stack := PackedInt32Array([start])
+	while stack.size() > 0:
+		var i := stack[stack.size() - 1]
+		stack.remove_at(stack.size() - 1)
+		if seen[i] != 0 or solid[i] != 0:
+			continue
+		var x := i % w
+		var y := i / w
+		if limited and (x < bounds.position.x or x >= bounds.end.x
+				or y < bounds.position.y or y >= bounds.end.y):
+			continue
+		seen[i] = 1
+		if x > 0: stack.append(i - 1)
+		if x < w - 1: stack.append(i + 1)
+		if y > 0: stack.append(i - w)
+		if y < h - 1: stack.append(i + w)
+	return seen
+
+## As a fraction of the ARENAS, not of the grid. The grid spans the corridors
+## and a rock margin as well, and dividing by w * h would report a healthy map
+## as a closet.
+func reachable_fraction(player_start: Vector2) -> float:
+	var start := cell_index(player_start)
+	if start < 0 or solid[start] != 0:
+		return 0.0
+	var seen := _reach(start)
+	var n := 0
+	var total := 0
+	for k in arenas.size():
+		var c := arena_cells(k)
+		for y in range(c.position.y, c.end.y):
+			var row := y * w
+			for x in range(c.position.x, c.end.x):
+				total += 1
+				if seen[row + x] != 0:
+					n += 1
+	return float(n) / float(maxi(total, 1))
+
+## Join the gate to its arena by carving a straight line toward the centre.
+##
+## Carving, which _fill_unreachable deliberately refuses to do for pockets — and
+## that objection does not carry here. A straight line toward a point already
+## known to be reachable always terminates and cannot leave a second region
+## behind; the general pocket case had neither property.
+func _carve_to(from: Vector2, to: Vector2, bounds := Rect2i()) -> void:
+	var start := cell_index(to)
+	if start < 0:
+		return
+	var seen := _reach(start, bounds)
+	var i := cell_index(from)
+	if i >= 0 and seen[i] != 0:
+		return          # already connected; nothing to carve
+	var steps := int(from.distance_to(to) / (CELL * 0.5)) + 1
+	for k in range(steps + 1):
+		var p := from.lerp(to, float(k) / float(steps))
+		var c := cell_xy(p)
+		if not in_bounds(c):
+			continue
+		var j := c.y * w + c.x
+		solid[j] = 0
+		if seen[j] != 0:
+			return      # met the reachable region; stop carving
+
+# -------------------------------------------------------------- collision ---
 
 ## Resolve a step per AXIS rather than all at once.
 ##
@@ -353,18 +613,6 @@ func avoid(at: Vector2, heading: Vector2) -> Vector2:
 ## How far out nearest_open will look, in cells.
 const OPEN_SEARCH_RINGS := 8
 
-## How close you must be to step through.
-const GATE_RADIUS := 48.0
-
-const CORRIDOR_LENGTH := 1100.0
-const CORRIDOR_HALF_WIDTH := 70.0
-
-## The grid extends past the arena on every side, so the corridor beyond a gate
-## is ordinary ground on the SAME grid. That is what makes walking out
-## continuous instead of a teleport into a second Terrain — and it means
-## collision, zones and rendering need no idea the corridor exists.
-const MARGIN := 1400.0
-
 ## The nearest open point to `p`, or `p` itself if none is found within the bound.
 ##
 ## Bounded on purpose. "Loop until you find open ground" is a hang the moment a
@@ -384,98 +632,53 @@ func nearest_open(p: Vector2) -> Vector2:
 				return q
 	return p
 
-## The gate goes down AFTER the connectivity fill, and is joined to the
-## reachable region by carving a straight line toward the player's start.
+## Can `a` see `b`, or is there rock between them?
 ##
-## Carving, which _fill_unreachable deliberately refuses to do for pockets — and
-## that objection does not carry here. A straight line toward a point already
-## known to be reachable always terminates and cannot leave a second region
-## behind; the general pocket case had neither property. Running after the fill
-## rather than before is what makes that true: the reachable set already exists
-## to aim at.
-func _place_gate(rng: RandomNumberGenerator, player_start: Vector2) -> void:
-	var edge := rng.randi_range(0, 3)
-	var cx := 0
-	var cy := 0
-	match edge:
-		0: cx = rng.randi_range(_ax0 + 2, _ax1 - 2); cy = _ay0; gate_dir = Vector2(0, -1)
-		1: cx = rng.randi_range(_ax0 + 2, _ax1 - 2); cy = _ay1 - 1; gate_dir = Vector2(0, 1)
-		2: cx = _ax0; cy = rng.randi_range(_ay0 + 2, _ay1 - 2); gate_dir = Vector2(-1, 0)
-		_: cx = _ax1 - 1; cy = rng.randi_range(_ay0 + 2, _ay1 - 2); gate_dir = Vector2(1, 0)
-	gate_pos = origin + Vector2(float(cx) + 0.5, float(cy) + 0.5) * CELL
+## A DDA walk over the occupancy grid, run once per pulse rather than per tick.
+## Bounded by the cell distance, so it terminates on any geometry.
+func has_line_of_sight(a: Vector2, b: Vector2) -> bool:
+	var d := b - a
+	var steps := int(d.length() / (CELL * 0.5)) + 1
+	if steps <= 1:
+		return true
+	for k in range(1, steps):
+		var p := a + d * (float(k) / float(steps))
+		var i := cell_index(p)
+		if i >= 0 and solid[i] != 0:
+			return false
+	return true
 
-	# Clear the gate's own cell and its neighbours, so it is a mouth rather than
-	# a pinhole you have to hit exactly.
-	for y in range(cy - 1, cy + 2):
-		for x in range(cx - 1, cx + 2):
-			if x >= 0 and y >= 0 and x < w and y < h:
-				solid[y * w + x] = 0
+# --------------------------------------------------------------- collapse ---
 
-	corridor_end = gate_pos + gate_dir * CORRIDOR_LENGTH
-	_cut_corridor()
-	_carve_to(gate_pos, player_start)
-
-## Open ground from the gate outward, walled by the solid margin either side.
-## This is the whole of "no teleport": the corridor is cells on this grid, so
-## walking into it is walking.
-func _cut_corridor() -> void:
-	var side := Vector2(-gate_dir.y, gate_dir.x)
-	var far := gate_pos + gate_dir * CORRIDOR_LENGTH
-	corridor_rect = Rect2(gate_pos, Vector2.ZERO) \
-		.expand(gate_pos + side * CORRIDOR_HALF_WIDTH) \
-		.expand(gate_pos - side * CORRIDOR_HALF_WIDTH) \
-		.expand(far + side * CORRIDOR_HALF_WIDTH) \
-		.expand(far - side * CORRIDOR_HALF_WIDTH)
-	var steps := int(CORRIDOR_LENGTH / (CELL * 0.5))
-	var across := int(CORRIDOR_HALF_WIDTH / (CELL * 0.5))
-	for k in range(steps + 1):
-		var along := gate_pos + gate_dir * (CELL * 0.5 * k)
-		for j in range(-across, across + 1):
-			var c := cell_xy(along + side * (CELL * 0.5 * j))
-			if in_bounds(c):
-				solid[c.y * w + c.x] = 0
-
-func _carve_to(from: Vector2, to: Vector2) -> void:
-	var start := cell_index(to)
-	if start < 0:
-		return
-	var seen := _reach(start)
-	var i := cell_index(from)
-	if i >= 0 and seen[i] != 0:
-		return          # already connected; nothing to carve
-	var steps := int(from.distance_to(to) / (CELL * 0.5)) + 1
-	for k in range(steps + 1):
-		var p := from.lerp(to, float(k) / float(steps))
-		var c := cell_xy(p)
-		if not in_bounds(c):
-			continue
-		var j := c.y * w + c.x
-		solid[j] = 0
-		if seen[j] != 0:
-			return      # met the reachable region; stop carving
-
-
-## Distance in cells from the gate, over open ground. -1 where unreachable.
+## Distance in cells from the CURRENT arena's gate, over open ground. -1
+## elsewhere.
 ##
 ## Computed ONCE, on the boss kill, and it earns its keep twice over: the
 ## largest distances are exactly "farthest from the gate", which is the order the
 ## arena falls apart in, and the descending gradient from any cell is a route
 ## home that follows walkable space rather than pointing through a wall.
+##
+## Bounded to the current arena's cells. The whole campaign is one connected
+## region by design, so an unbounded fill would measure the subnet already left
+## and hand the collapse a max distance from ground nobody can reach.
 func build_distance_field() -> void:
 	dist_from_gate = PackedInt32Array()
 	dist_from_gate.resize(w * h)
-	for i in dist_from_gate.size():
-		dist_from_gate[i] = -1
+	dist_from_gate.fill(-1)
 	voided = PackedByteArray()
 	voided.resize(w * h)
 	max_dist = 0
 	_collapse_order = PackedInt32Array()
 	_collapse_idx = 0
-	var start := cell_index(gate_pos)
+	var g := gate()
+	if g == null:
+		return
+	var start := cell_index(g.pos)
 	if start < 0 or solid[start] != 0:
 		return
+	var c := arena_cells(current)
 	# A queue with a read head rather than pop_front on an Array: pop_front is
-	# O(n) and this walks six thousand cells.
+	# O(n) and this walks thirty thousand cells.
 	var queue := PackedInt32Array([start])
 	var head := 0
 	dist_from_gate[start] = 0
@@ -486,10 +689,10 @@ func build_distance_field() -> void:
 		var x := i % w
 		var y := i / w
 		for nb in [
-				(i - 1) if x > 0 else -1,
-				(i + 1) if x < w - 1 else -1,
-				(i - w) if y > 0 else -1,
-				(i + w) if y < h - 1 else -1]:
+				(i - 1) if x > c.position.x else -1,
+				(i + 1) if x < c.end.x - 1 else -1,
+				(i - w) if y > c.position.y else -1,
+				(i + w) if y < c.end.y - 1 else -1]:
 			if nb < 0 or solid[nb] != 0 or dist_from_gate[nb] >= 0:
 				continue
 			dist_from_gate[nb] = d
@@ -500,15 +703,24 @@ func build_distance_field() -> void:
 
 ## Arena cells by distance, farthest first. A counting sort on distance: O(n),
 ## where a comparison sort of thirty thousand cells would not be.
+##
+## Walks the arena's own cell range, which is both faster than scanning the grid
+## and exactly the collapse's remit — the corridor lies outside it and is
+## therefore exempt, and voiding the way out would make the deadline unwinnable
+## rather than tense.
 func _build_collapse_order() -> void:
+	var c := arena_cells(current)
 	var counts := PackedInt32Array()
 	counts.resize(max_dist + 2)
 	var total := 0
-	for i in dist_from_gate.size():
-		if not _collapsible(i):
-			continue
-		counts[dist_from_gate[i]] += 1
-		total += 1
+	for y in range(c.position.y, c.end.y):
+		var row := y * w
+		for x in range(c.position.x, c.end.x):
+			var i := row + x
+			if solid[i] != 0 or dist_from_gate[i] < 0:
+				continue
+			counts[dist_from_gate[i]] += 1
+			total += 1
 	# Prefix sums, descending: distance max_dist lands first.
 	var starts := PackedInt32Array()
 	starts.resize(max_dist + 2)
@@ -518,36 +730,29 @@ func _build_collapse_order() -> void:
 		acc += counts[d]
 	_collapse_order = PackedInt32Array()
 	_collapse_order.resize(total)
-	for i in dist_from_gate.size():
-		if not _collapsible(i):
-			continue
-		var d := dist_from_gate[i]
-		_collapse_order[starts[d]] = i
-		starts[d] += 1
-
-func _collapsible(i: int) -> bool:
-	if solid[i] != 0 or dist_from_gate[i] < 0:
-		return false
-	var p := origin + Vector2(float(i % w) + 0.5, float(i / w) + 0.5) * CELL
-	return arena_rect.has_point(p)
+	for y in range(c.position.y, c.end.y):
+		var row := y * w
+		for x in range(c.position.x, c.end.x):
+			var i := row + x
+			if solid[i] != 0 or dist_from_gate[i] < 0:
+				continue
+			var d := dist_from_gate[i]
+			_collapse_order[starts[d]] = i
+			starts[d] += 1
 
 ## Void every open ARENA cell farther from the gate than `threshold`.
 ##
 ## Walks a PRE-SORTED order rather than scanning the grid. The scan was O(cells)
-## every tick, which was tolerable at 28,000 cells and is not at five times the
-## arena; this is O(cells newly voided), so the whole collapse costs one pass in
-## total rather than one pass per tick.
-##
-## The corridor is exempt because it lies outside the arena rect. Voiding the
-## way out would make the deadline unwinnable rather than tense.
+## every tick, which was tolerable at 28,000 cells and is not at a whole
+## campaign's worth; this is O(cells newly voided), so the collapse costs one
+## pass in total rather than one pass per tick.
 func collapse_to(threshold: int) -> void:
 	if _collapse_order.is_empty():
 		return
 	# Thresholds only fall during a collapse, but a caller may reset one; rewind
 	# rather than silently leaving voided ground behind.
 	if _collapse_idx > 0 and threshold >= dist_from_gate[_collapse_order[_collapse_idx - 1]]:
-		for i in voided.size():
-			voided[i] = 0
+		voided.fill(0)
 		_collapse_idx = 0
 	while _collapse_idx < _collapse_order.size():
 		var c := _collapse_order[_collapse_idx]
@@ -597,14 +802,15 @@ func route_from(p: Vector2, limit: int = 400) -> PackedInt32Array:
 		out.append(i)
 	return out
 
+# ------------------------------------------------------------- temp zones ---
 
 ## A bounded overlay of TIMED zones, checked after the baked lookup.
 ##
-## The baked zone grid is written once per subnet and never mutated — that
-## immutability is what makes it a bare array index with no bookkeeping. Timed
-## effects like null_ptr's afterimages cannot live there, so they live here: a
-## short parallel-array list with a hard cap, so a long fight stops producing
-## new ones rather than growing without limit.
+## The baked zone grid is written once and never mutated — that immutability is
+## what makes it a bare array index with no bookkeeping. Timed effects like
+## null_ptr's afterimages cannot live there, so they live here: a short
+## parallel-array list with a hard cap, so a long fight stops producing new ones
+## rather than growing without limit.
 const MAX_TEMP_ZONES := 24
 
 var _tz_pos: PackedVector2Array
@@ -647,19 +853,3 @@ func clear_temp_zones() -> void:
 	_tz_r2 = PackedFloat32Array()
 	_tz_kind = PackedInt32Array()
 	_tz_left = PackedFloat32Array()
-
-## Can `a` see `b`, or is there rock between them?
-##
-## A DDA walk over the occupancy grid, run once per pulse rather than per tick.
-## Bounded by the cell distance, so it terminates on any geometry.
-func has_line_of_sight(a: Vector2, b: Vector2) -> bool:
-	var d := b - a
-	var steps := int(d.length() / (CELL * 0.5)) + 1
-	if steps <= 1:
-		return true
-	for k in range(1, steps):
-		var p := a + d * (float(k) / float(steps))
-		var i := cell_index(p)
-		if i >= 0 and solid[i] != 0:
-			return false
-	return true

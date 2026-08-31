@@ -46,10 +46,10 @@ func _kill_ice(r: Node2D) -> void:
 func ice_opens_the_gate() -> void:
 	var r := await _fresh_run()
 	_check("a run starts fighting", r.phase, r.Phase.FIGHTING)
-	_check("and its gate is shut", r.terrain.gate_open, false)
+	_check("and its gate is shut", r.terrain.gate().open, false)
 	_kill_ice(r)
 	_check("killing ICE clears the subnet", r.phase, r.Phase.CLEARED)
-	_check("which opens the gate", r.terrain.gate_open, true)
+	_check("which opens the gate", r.terrain.gate().open, true)
 	_check("but does not win the run", r.won, false)
 	_check("and does not advance the subnet on its own", r.subnet, 1)
 
@@ -57,13 +57,13 @@ func ice_opens_the_gate() -> void:
 	var before: int = r.spawned_total()
 	var elapsed_before: float = r.director.elapsed
 	# Away from the gate, so lingering is what is being measured.
-	r.player_pos = r.terrain.gate_pos + Vector2(0, 900)
+	r.player_pos = r.terrain.gate().pos - r.terrain.gate().dir * 900.0
 	for k in 600:
 		r._physics_process(1.0 / 60.0)
 	_check("no spawns while cleared", r.spawned_total(), before)
 	_check("and the wave clock is halted", r.director.elapsed, elapsed_before)
 	_check("lingering does not advance anything", r.subnet, 1)
-	_check("and the gate stays open", r.terrain.gate_open, true)
+	_check("and the gate stays open", r.terrain.gate().open, true)
 	r.free()
 	finished["ice_opens_the_gate"] = true
 
@@ -74,34 +74,53 @@ func walking_out_is_continuous() -> void:
 	r.level = 9
 	r.xp = 4
 	var mods: int = r.loadout.exploits[0].equipped().size()
-	var arena_before: PackedByteArray = r.terrain.solid.duplicate()
+	var ground_before: PackedByteArray = r.terrain.solid.duplicate()
 	_kill_ice(r)
 	var t: Terrain = r.terrain
+	var g: Terrain.Gate = t.gate()
 
-	# The corridor is open ground on the SAME grid, running outward from the
-	# gate past the arena edge. No second Terrain, so no teleport.
-	_check("the gate mouth is open", t.is_solid(t.gate_pos), false)
+	# The corridor is open ground on the SAME grid, running from the arena's
+	# edge to the NEXT arena's edge. No second Terrain, so no teleport.
+	_check("the gate mouth is open", t.is_solid(g.pos), false)
 	_check("and so is the ground beyond it",
-		t.is_solid(t.gate_pos + t.gate_dir * 200.0), false)
-	_check("out to the corridor end", t.is_solid(t.corridor_end), false)
-	_check("but not to the side of it",
-		t.is_solid(t.gate_pos + t.gate_dir * 200.0
-			+ Vector2(-t.gate_dir.y, t.gate_dir.x) * 260.0), true)
+		t.is_solid(g.pos + g.dir * 200.0), false)
+	_check("out to the corridor end", t.is_solid(g.end), false)
+	_check("which lands on the next arena's edge",
+		t.arenas[1].grow(0.5).has_point(g.end), true)
+	_check("and the floor carries on inside it",
+		t.is_solid(g.end + g.dir * 200.0), false)
+	_check("but not to the side of the corridor",
+		t.is_solid(g.pos + g.dir * 200.0
+			+ Vector2(-g.dir.y, g.dir.x) * 260.0), true)
 
 	# Stepping into the gate does NOT relocate the player.
-	r.player_pos = t.gate_pos
+	r.player_pos = g.pos
 	var before: Vector2 = r.player_pos
 	r._physics_process(1.0 / 60.0)
 	_check("touching the gate does not teleport", r.player_pos, before)
 	_check("and the subnet has not advanced", r.subnet, 1)
 
-	# Reaching the far end is what advances.
-	r.player_pos = t.corridor_end
+	# Nor does standing exactly ON the threshold. The advance shuts the gate,
+	# and shutting it around a player still in the corridor would wall them in.
+	r.player_pos = g.end
 	r._physics_process(1.0 / 60.0)
-	_check("the corridor's end advances the subnet", r.subnet, 2)
+	_check("stopping on the threshold does not advance", r.subnet, 1)
+	_check("and does not strand the player",
+		r.terrain.is_solid(r.player_pos), false)
+
+	# The first step onto the next arena's own floor is what advances — and it
+	# advances in place.
+	var arrived: Vector2 = g.end + g.dir * 8.0
+	r.player_pos = arrived
+	r._physics_process(1.0 / 60.0)
+	_check("the first step onto the next arena advances", r.subnet, 2)
 	_check("and stays fighting", r.phase, r.Phase.FIGHTING)
-	_check("with a new arena", r.terrain.solid == arena_before, false)
-	_check("the gate shut behind us", r.terrain.gate_open, false)
+	_check("the player is exactly where they walked to", r.player_pos, arrived)
+	_check("standing on the next arena", r.terrain.current, 1)
+	_check("whose ground was already plotted, not rebuilt",
+		r.terrain.solid, ground_before)
+	_check("the gate shut behind us", g.open, false)
+	_check("and bars the way back", r.terrain.is_solid(g.pos + g.dir * 200.0), true)
 	_check("the build came through", r.loadout.exploits[0].equipped().size(), mods)
 	_check("level carried", r.level, 9)
 	_check("xp carried", r.xp, 4)
@@ -112,8 +131,11 @@ func walking_out_is_continuous() -> void:
 func the_last_subnet_just_wins() -> void:
 	var r := await _fresh_run()
 	r.subnet = SpawnDirector.CAMPAIGN_SUBNETS
-	r.terrain.generate(1, r.subnet, r.player_pos, false)
-	_check("the last arena has no gate", r.terrain.has_gate, false)
+	# Walk the whole way through, so `subnet` and the terrain's own idea of
+	# where the player is stay the one fact they are supposed to be.
+	r.terrain.enter_next()
+	r.terrain.enter_next()
+	_check("the last arena has no gate", r.terrain.has_gate(), false)
 	_kill_ice(r)
 	_check("its ICE wins the run outright", r.won, true)
 	_check("without entering transit", r.phase, r.Phase.FIGHTING)

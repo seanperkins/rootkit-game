@@ -17,11 +17,17 @@ subnets**: survive five minutes, then kill the ICE that follows.
 
 Clearing ICE does not move you on by itself. A **gate** stands at the arena's
 edge from the moment it generates, shut — you fight past it for the whole
-subnet. Killing ICE halts the spawns, opens it, and lights the grid toward it.
-Walk in, cross the corridor, and you arrive on the next subnet with your build,
-level and XP intact and 30% of your integrity back, the gate shutting behind
-you. Take as long as you like getting there: nothing is spawning. Clearing the
-last subnet wins outright — it has no gate.
+subnet. Killing ICE halts the spawns, opens it, and starts the collapse behind
+you. Walk in, cross the corridor, and the far end puts you on the next subnet's
+own floor with your build, level and XP intact and 30% of your integrity back,
+the gate shutting behind you. Take as long as you like getting there: nothing is
+spawning. Clearing the last subnet wins outright — it has no gate.
+
+All three subnets are **plotted before the first frame**, on one grid: three
+arenas laid out end to end and a corridor spanning each gap, running from one
+arena's edge to the next one's. Nothing is generated under your feet and nothing
+moves you — the transition is the walk, and the ground is the same array the
+whole way. Which arena is *current* is the only thing that changes.
 
 Enemy integrity scales on both axes — up through each subnet, and again with
 the subnet number — because a rank buys damage linearly and constant HP meant
@@ -30,11 +36,17 @@ salvage, so dying on subnet 03 keeps what 01 and 02 paid out; only salvage
 earned since the last clear is lost. Kills and flips always count toward
 unlocks.
 
-Each subnet generates its own **arena** from the run seed: walls that stop you,
-your shots and the swarm, plus hazard, slow and corruption zones. Later subnets
-are denser. Generation guarantees the arena is fully connected — an unreachable
-pocket would be an unwinnable run — by filling any sealed region rather than
-carving into it.
+Every arena gets its own **terrain** from the run seed: walls that stop you,
+your shots and the swarm, plus hazard, slow and corruption zones. Density is
+flat across subnets — a late arena with less room to kite reads as cramped
+rather than hard, so difficulty escalates through enemy HP and the wave table
+instead. Generation guarantees the whole map is fully connected — an unreachable
+pocket would be an unwinnable run, and an arena whose mouth was walled off would
+be one too — by filling any sealed region rather than carving into it.
+
+Arenas, corridors and the grid itself all snap to the lattice the ground is
+drawn on, so the tiles run edge to edge instead of stopping part way through one
+at the arena wall.
 
 ## Triggers
 
@@ -131,6 +143,9 @@ godot --headless -s res://tests/test_run.gd          # a full autopiloted campai
 godot --headless -s res://tests/test_campaign.gd     # subnet advance, banking, the win
 godot --headless -s res://tests/test_terrain.gd      # generation, connectivity, collision
 godot --headless -s res://tests/test_terrain_run.gd  # zones and terrain in a live run
+godot --headless -s res://tests/test_gates.gd        # the gate, the corridor, the walk through
+godot --headless -s res://tests/test_collapse.gd     # distance field, collapse order, the route
+godot --headless -s res://tests/test_minibosses.gd   # the schedule and the four mechanics
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum

@@ -114,6 +114,11 @@ func ward_moves_the_player() -> void:
 	run._recompile()
 	var base: float = run._sheet[&"clock_speed"]
 
+	# Open ground, so this measures the ward and not what the generator rolled.
+	# The player covers about 840 units here; a wall anywhere along that line
+	# stops them dead and the case fails saying nothing about wards.
+	run.terrain.solid.fill(0)
+
 	run.input_override = Vector2.RIGHT
 	var start: Vector2 = run.player_pos
 	for tick in 180:

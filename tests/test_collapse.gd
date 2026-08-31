@@ -38,8 +38,8 @@ func _fresh_run() -> Node2D:
 	return r
 
 func _built(seed_value: int = 9) -> Terrain:
-	var t := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
-	t.generate(seed_value, 1, Vector2.ZERO)
+	var t := Terrain.new(Vector2(3072, 1920), 3, seed_value)
+	t.generate(seed_value, Vector2.ZERO)
 	t.build_distance_field()
 	return t
 
@@ -52,13 +52,28 @@ func _void_count(t: Terrain) -> int:
 func the_field_measures_from_the_gate() -> void:
 	var t := _built()
 	_check("the gate itself is distance zero",
-		t.dist_from_gate[t.cell_index(t.gate_pos)], 0)
+		t.dist_from_gate[t.cell_index(t.gate().pos)], 0)
 	_check("somewhere is far away", t.max_dist > 20, true)
+	# Every open cell of the CURRENT arena, and only those. The campaign is one
+	# connected map, so an unbounded fill would measure the subnets ahead as
+	# well and hand the collapse a max distance from ground nobody is on.
 	var unmeasured := 0
-	for i in t.solid.size():
-		if t.solid[i] == 0 and t.dist_from_gate[i] < 0:
-			unmeasured += 1
-	_check("every open cell is measured", unmeasured, 0)
+	var c := t.arena_cells(0)
+	for y in range(c.position.y, c.end.y):
+		for x in range(c.position.x, c.end.x):
+			var i := y * t.w + x
+			if t.solid[i] == 0 and t.dist_from_gate[i] < 0:
+				unmeasured += 1
+	_check("every open cell of this arena is measured", unmeasured, 0)
+
+	var beyond := 0
+	for k in range(1, t.arenas.size()):
+		var c2 := t.arena_cells(k)
+		for y in range(c2.position.y, c2.end.y):
+			for x in range(c2.position.x, c2.end.x):
+				if t.dist_from_gate[y * t.w + x] >= 0:
+					beyond += 1
+	_check("and no cell of the subnets ahead is", beyond, 0)
 	finished["the_field_measures_from_the_gate"] = true
 
 func collapse_eats_the_far_side_first() -> void:
@@ -74,11 +89,14 @@ func collapse_eats_the_far_side_first() -> void:
 	_check("only the far side has gone", bad, 0)
 	_check("and some of it has", _void_count(t) > 0, true)
 
-	# The corridor is never voided: it is the way out.
+	# The corridor is never voided: it is the way out. Nor is the arena beyond
+	# it, which is the subnet still to be fought.
 	t.collapse_to(0)
 	_check("the corridor survives to the end",
-		t.voided[t.cell_index(t.corridor_end)], 0)
-	_check("and so does the gate", t.voided[t.cell_index(t.gate_pos)], 0)
+		t.voided[t.cell_index(t.gate().end - t.gate().dir * Terrain.CELL)], 0)
+	_check("and so does the gate", t.voided[t.cell_index(t.gate().pos)], 0)
+	_check("and so does the subnet ahead",
+		t.voided[t.cell_index(t.arenas[1].get_center())], 0)
 	finished["collapse_eats_the_far_side_first"] = true
 
 func the_route_follows_open_ground() -> void:

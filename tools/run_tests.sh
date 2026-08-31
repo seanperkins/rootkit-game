@@ -16,9 +16,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 SUITES=(
-  test_terrain test_terrain_run test_gates test_campaign
+  test_terrain test_terrain_run test_gates test_campaign test_collapse
   test_build test_slots test_cadence test_drain test_corruption test_dispatch
   test_triggers test_worms test_wards test_multipliers test_travel
+  test_behaviour test_effects test_minibosses
   test_player_stats test_player_sheet test_meta test_meta_layout test_run
 )
 [ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)

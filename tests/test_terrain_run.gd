@@ -6,14 +6,14 @@ extends SceneTree
 var failures := 0
 var finished := {}
 
-const CASES := ["projectiles_die_on_walls", "hazard_zones_hurt", "slow_zones_slow", "advancing_regenerates_the_arena"]
+const CASES := ["projectiles_die_on_walls", "hazard_zones_hurt", "slow_zones_slow", "advancing_moves_the_player_on_not_the_ground"]
 
 func _initialize() -> void:
 	print("ROOTKIT — terrain in the run\n")
 	await projectiles_die_on_walls()
 	await hazard_zones_hurt()
 	await slow_zones_slow()
-	await advancing_regenerates_the_arena()
+	await advancing_moves_the_player_on_not_the_ground()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -122,20 +122,39 @@ func slow_zones_slow() -> void:
 	r.free()
 	finished["slow_zones_slow"] = true
 
-func advancing_regenerates_the_arena() -> void:
+## The whole campaign is plotted before the first frame, so the advance moves
+## which arena is CURRENT and nothing else. This case used to assert the
+## opposite — that the arena was rebuilt — which is exactly the teleport the
+## corridor replaced.
+func advancing_moves_the_player_on_not_the_ground() -> void:
 	var r := await _fresh_run()
 	var before: PackedByteArray = r.terrain.solid.duplicate()
+	var arena_before: Rect2 = r.terrain.arena()
+	var was: Vector2 = r.player_pos
 	r._advance_subnet()
-	_check("the arena is rebuilt for the new subnet", r.terrain.solid == before, false)
-	_check("and the player is not left standing in rock",
-		r.terrain.is_solid(r.player_pos), false)
+	_check("the ground is untouched", r.terrain.solid, before)
+	_check("the player is not moved", r.player_pos, was)
+	_check("but the current arena is the next one", r.terrain.arena() == arena_before, false)
+	_check("and it is where the corridor pointed",
+		r.terrain.arena(), r.terrain.arenas[1])
 
-	var n_before := 0
-	for i in before.size():
-		if before[i] != 0: n_before += 1
-	var n_after := 0
-	for i in r.terrain.solid.size():
-		if r.terrain.solid[i] != 0: n_after += 1
-	_check("subnet 02 is denser than subnet 01", n_after > n_before, true)
+	# Every arena is generated, not just the one being fought in.
+	var walls := PackedInt32Array()
+	walls.resize(r.terrain.arenas.size())
+	for k in r.terrain.arenas.size():
+		var c: Rect2i = r.terrain.arena_cells(k)
+		var n := 0
+		for y in range(c.position.y, c.end.y):
+			for x in range(c.position.x, c.end.x):
+				if r.terrain.solid[y * r.terrain.w + x] != 0:
+					n += 1
+		walls[k] = n
+	var all_built := true
+	for n in walls:
+		if n == 0:
+			all_built = false
+	_check("all three arenas have terrain in them", all_built, true)
+	_check("and they are not the same arena three times",
+		walls[0] == walls[1] and walls[1] == walls[2], false)
 	r.free()
-	finished["advancing_regenerates_the_arena"] = true
+	finished["advancing_moves_the_player_on_not_the_ground"] = true

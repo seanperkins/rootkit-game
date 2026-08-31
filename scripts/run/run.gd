@@ -2,11 +2,15 @@ extends Node2D
 
 ## The run. Owns the 9-step tick from the spec and every population in it.
 
-## Five times the area of the original 3200x2000, so each side grows by sqrt(5).
-## Area rather than each-side-x5, which would have been twenty-five times the
-## ground and put 156,000 cells in a grid the tick clears every frame.
-const ARENA_ORIGIN := Vector2(-3578, -2236)
-const ARENA_SIZE := Vector2(7156, 4472)
+## Five times the area of the original 3200x2000, so each side grows by sqrt(5),
+## then rounded to a whole EVEN number of Terrain.TILE either way. Even, because
+## the first arena is centred on the world origin and a half-size that landed
+## mid-tile would put every arena edge part way through a lattice cell — which
+## is exactly the seam the backdrop used to draw.
+##
+## 74 x 46 tiles. ARENA_ORIGIN is derived, never written twice.
+const ARENA_SIZE := Vector2(7104, 4416)
+const ARENA_ORIGIN := -ARENA_SIZE * 0.5
 const CELL := 32.0
 
 ## The grid window's side, in world units. Must comfortably exceed the largest
@@ -345,11 +349,11 @@ func _ready() -> void:
 	_hostile_life = PackedFloat32Array(); _hostile_life.resize(MAX_HOSTILES)
 	queue = HitQueue.new(EVENT_BUDGET, MAX_ENEMIES)
 	director = SpawnDirector.new()
-	# Generated from the player's start, because the spawn-safe margin is
-	# measured from wherever they actually are.
-	terrain = Terrain.new(ARENA_ORIGIN, ARENA_SIZE)
-	terrain.generate(_rng.seed, subnet, player_pos,
-		subnet < SpawnDirector.CAMPAIGN_SUBNETS)
+	# The WHOLE campaign, plotted before the first frame: three arenas and the
+	# corridors between them on one grid. Generated from the player's start,
+	# because the spawn-safe margin is measured from wherever they actually are.
+	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, _rng.seed)
+	terrain.generate(_rng.seed, player_pos)
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_counts = PackedInt32Array(); _counts.resize(4)
@@ -471,15 +475,21 @@ func _physics_process(dt: float) -> void:
 	_camera.global_position = to_iso(player_pos)
 	queue_redraw()
 
+## Open ground inside the CURRENT arena.
+##
+## The spawn ring is centred on the player and knows nothing about the arena, so
+## near an edge it placed enemies outside it — invisible against the void in the
+## isometric view, and unreachable in either. That matters more now the map is a
+## whole campaign: unclamped, a player who has just walked in through a corridor
+## gets half their wave spawned in the subnet behind them.
+func _spawn_at(p: Vector2) -> Vector2:
+	var a: Rect2 = terrain.arena().grow(-24.0)
+	return terrain.nearest_open(p.clamp(a.position, a.end))
+
 func _step1_spawn(dt: float) -> void:
 	for s in director.step(dt, player_pos, SPAWN_RING):
 		var ti: int = s[0]
-		# The spawn ring is centred on the player and does not know about the
-		# arena, so near an edge it placed enemies outside the map — invisible
-		# against the void in the isometric view, and unreachable in either.
-		s[1] = (s[1] as Vector2).clamp(
-			ARENA_ORIGIN + Vector2(24, 24),
-			ARENA_ORIGIN + ARENA_SIZE - Vector2(24, 24))
+		s[1] = _spawn_at(s[1])
 		if ti == WORM_TYPE:
 			if _spawn_worm(s[1]):
 				director.spawned += 1
@@ -488,7 +498,7 @@ func _step1_spawn(dt: float) -> void:
 			continue
 		var t = enemy_types[ti]
 		var hp: float = t.integrity * _hp_mult()
-		var idx := enemies.spawn(terrain.nearest_open(s[1]), Vector2.ZERO,
+		var idx := enemies.spawn(s[1], Vector2.ZERO,
 			hp, ENEMY_RADIUS, ti)
 		if idx < 0:
 			director.dropped += 1
@@ -512,7 +522,7 @@ func _step1_spawn(dt: float) -> void:
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(
-			terrain.nearest_open(player_pos + Vector2(cos(a), sin(a)) * 420.0),
+			_spawn_at(player_pos + Vector2(cos(a), sin(a)) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		emit_signal("stats_changed")
@@ -539,7 +549,7 @@ func _step9b_splits() -> void:
 				_card_rng.randf_range(-34.0, 34.0),
 				_card_rng.randf_range(-34.0, 34.0))
 			var hp: float = entry[2]
-			var idx := enemies.spawn(terrain.nearest_open(at), Vector2.ZERO, hp,
+			var idx := enemies.spawn(_spawn_at(at), Vector2.ZERO, hp,
 				20.0, _fork_bomb_index)
 			if idx < 0:
 				continue        # pool full: drop the child rather than overflow
@@ -558,7 +568,7 @@ func _leave_afterimage(at: Vector2) -> void:
 func _spawn_miniboss(type_index: int) -> void:
 	var t = enemy_types[type_index]
 	var a := _card_rng.randf() * TAU
-	var at := terrain.nearest_open(player_pos + Vector2(cos(a), sin(a)) * 620.0)
+	var at := _spawn_at(player_pos + Vector2(cos(a), sin(a)) * 620.0)
 	var hp: float = t.integrity * _hp_mult()
 	var idx := enemies.spawn(at, Vector2.ZERO, hp, 26.0, type_index)
 	if idx < 0:
@@ -582,7 +592,7 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_cursor[id] = 0
 	for k in n:
 		var whp: float = t.integrity * _hp_mult()
-		var idx := enemies.spawn(terrain.nearest_open(at), Vector2.ZERO,
+		var idx := enemies.spawn(_spawn_at(at), Vector2.ZERO,
 			whp, ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
 			return k > 0
@@ -1463,7 +1473,7 @@ func _on_death(i: int) -> void:
 			# to the gate. Safe to set inside the drain because it is a flag and
 			# a bool — nothing is spawned, freed, or moved.
 			phase = Phase.CLEARED
-			terrain.gate_open = true
+			terrain.open_gate()
 			terrain.build_distance_field()
 			collapse_left = COLLAPSE_SECONDS
 			_bank_progress(true)
@@ -1611,13 +1621,25 @@ func _step2d_collapse(dt: float) -> void:
 		if terrain.is_void(enemies.pos[i]):
 			enemies.despawn(i)
 
-## Reaching the corridor's END is the advance. The gate itself is just a mouth
+## Crossing into the NEXT arena is the advance. The gate itself is just a mouth
 ## you walk through; touching it does nothing, which is the whole point of the
 ## rework — the transition is a walk, not a trigger.
+##
+## A HALF-PLANE crossing, not a distance or a rect. The plane is the next
+## arena's edge, which is exactly where the corridor ends, so a long frame can
+## carry the player past it but never over it.
+##
+## Strictly past, by half a unit, because the advance shuts the gate behind and
+## a shut gate bars the whole corridor up to and including that plane — firing
+## ON it sealed the player inside the block, where every axis of every step is
+## refused and they stand in the doorway forever.
 func _step2c_gate() -> void:
-	if phase != Phase.CLEARED or not terrain.has_gate or not terrain.gate_open:
+	if phase != Phase.CLEARED:
 		return
-	if player_pos.distance_to(terrain.corridor_end) > Terrain.GATE_RADIUS * 2.0:
+	var g := terrain.gate()
+	if g == null or not g.open:
+		return
+	if (player_pos - g.end).dot(g.dir) <= 0.5:
 		return
 	_advance_subnet()
 
@@ -1646,12 +1668,10 @@ func _advance_subnet() -> void:
 		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
 	director.reset()
 	_refresh_thresholds()
-	# The player arrives at the arena's centre, and the arena is generated around
-	# them so the spawn-safe margin lands where they actually stand. The last
-	# subnet gets no gate: clearing its ICE wins outright.
-	player_pos = ARENA_ORIGIN + ARENA_SIZE * 0.5
-	terrain.generate(_rng.seed, subnet, player_pos,
-		subnet < SpawnDirector.CAMPAIGN_SUBNETS)
+	# No teleport and no regeneration: the next arena was plotted before the
+	# first frame and the player already walked into it. All that moves is which
+	# arena the terrain calls current — and the gate, which shuts behind them.
+	terrain.enter_next()
 	emit_signal("stats_changed")
 
 # ------------------------------------------------------------ progression ---
@@ -1918,7 +1938,7 @@ func _draw() -> void:
 	# is legible before the first tile actually goes.
 	if phase == Phase.CLEARED:
 		var heat := 1.0 - collapse_left / COLLAPSE_SECONDS
-		var ar := terrain.arena_rect
+		var ar := terrain.arena()
 		draw_colored_polygon(PackedVector2Array([
 			to_iso(ar.position), to_iso(ar.position + Vector2(ar.size.x, 0)),
 			to_iso(ar.position + ar.size), to_iso(ar.position + Vector2(0, ar.size.y))]),
@@ -1947,47 +1967,54 @@ func _draw() -> void:
 			Terrain.Kind.CORRUPTION:
 				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
 
-	# The walkway beyond the gate: floor, then a raised rail either side, so the
-	# way out is visibly somewhere you can go rather than a gap in the dark.
-	if terrain.has_gate and view.intersects(terrain.corridor_rect):
-		var cr := terrain.corridor_rect
+	# Every corridor and every gate, culled to the view rather than limited to
+	# the current subnet: the whole campaign is one map now, and the walkway you
+	# are standing in belongs to the arena BEHIND you the moment you cross.
+	#
+	# The walkway is floor first, then a raised rail either side, so the way out
+	# is visibly somewhere you can go rather than a gap in the dark.
+	for gi in terrain.gates.size():
+		var g: Terrain.Gate = terrain.gates[gi]
+		var along := Vector2(absf(g.dir.x), absf(g.dir.y))
+		# Lapped one cell into the room at EACH end. The arena's own bright edge
+		# runs right across the doorway otherwise, and a line across the mouth
+		# reads as a barrier — which is the exact opposite of the point.
+		var lap := along * Terrain.CELL
+		var cr := Rect2(g.corridor.position - lap, g.corridor.size + lap * 2.0)
+		if not view.intersects(cr):
+			continue
 		draw_colored_polygon(PackedVector2Array([
 			to_iso(cr.position), to_iso(Vector2(cr.end.x, cr.position.y)),
 			to_iso(cr.end), to_iso(Vector2(cr.position.x, cr.end.y))]),
 			Color(0.035, 0.085, 0.075))
-		var along := Vector2(absf(terrain.gate_dir.x), absf(terrain.gate_dir.y))
-		var rail := Vector2(along.y, along.x) * 22.0 + along * cr.size
-		_draw_box(Rect2(cr.position, rail.max(Vector2(22, 22))), WALL_HEIGHT,
+		var rail := (Vector2(along.y, along.x) * 22.0
+			+ along * cr.size).max(Vector2(22, 22))
+		_draw_box(Rect2(cr.position, rail), WALL_HEIGHT,
 			Color(0.08, 0.20, 0.17), Color(0.045, 0.13, 0.11),
 			Color(0.025, 0.08, 0.07), Color(0.30, 0.72, 0.55))
-		_draw_box(Rect2(cr.end - rail.max(Vector2(22, 22)),
-			rail.max(Vector2(22, 22))), WALL_HEIGHT,
+		_draw_box(Rect2(cr.end - rail, rail), WALL_HEIGHT,
 			Color(0.08, 0.20, 0.17), Color(0.045, 0.13, 0.11),
 			Color(0.025, 0.08, 0.07), Color(0.30, 0.72, 0.55))
 
-	# The gate itself: two standing posts and a lintel across them. A ring lay
-	# flat on the ground in a world drawn as solid objects, which is why it read
-	# as a marking rather than as a doorway.
-	if terrain.has_gate:
-		var gside := Vector2(-terrain.gate_dir.y, terrain.gate_dir.x)
-		var lit := terrain.gate_open
+		# The gate itself: two standing posts and a lintel across them. A ring
+		# lay flat on the ground in a world drawn as solid objects, which is why
+		# it read as a marking rather than as a doorway.
+		var gside := Vector2(-g.dir.y, g.dir.x)
 		var gcol := Color(0.30, 0.50, 0.44)
 		var gtop := Color(0.07, 0.17, 0.15)
-		if lit:
+		if g.open:
 			var gp := 0.7 + 0.3 * sin(Time.get_ticks_msec() * 0.004)
 			gcol = Color(0.45 * gp, 1.7 * gp, 1.1 * gp)
 			gtop = Color(0.12 * gp, 0.42 * gp, 0.30 * gp)
+		var reach := Terrain.CORRIDOR_HALF_WIDTH + 16.0
 		for sgn in [1.0, -1.0]:
-			var centre: Vector2 = terrain.gate_pos \
-				+ gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0) * sgn
+			var centre: Vector2 = g.pos + gside * reach * sgn
 			_draw_box(Rect2(centre - Vector2(15, 15), Vector2(30, 30)),
 				POST_HEIGHT, gtop, gtop.darkened(0.3), gtop.darkened(0.5), gcol)
 		# The lintel, spanning post top to post top.
 		var up := Vector2(0.0, -POST_HEIGHT)
-		var l1 := to_iso(terrain.gate_pos
-			+ gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0)) + up
-		var l2 := to_iso(terrain.gate_pos
-			- gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0)) + up
+		var l1 := to_iso(g.pos + gside * reach) + up
+		var l2 := to_iso(g.pos - gside * reach) + up
 		draw_line(l1, l2, gcol, 3.0)
 		draw_line(l1 + Vector2(0, 8), l2 + Vector2(0, 8), gcol.darkened(0.4), 2.0)
 
@@ -2045,17 +2072,13 @@ func _draw() -> void:
 			pts.append(to_iso(fx[0] + Vector2(cos(a2), sin(a2)) * fx[1] * (1.0 - f2 * 0.25)))
 		draw_polyline(pts, Color(c2.r, c2.g, c2.b, f2 * 0.85), 1.0 + 2.0 * f2)
 
-	# The ship is drawn screen-aligned at the projected position: a glyph that
+	# The player, drawn screen-aligned at the projected position: a glyph that
 	# tilts with the ground plane reads as debris, not as the thing you steer.
+	#
+	# A disc at PLAYER_RADIUS, so what you see is exactly what collides. The
+	# arrow this replaced pointed somewhere — and the movement has no facing, so
+	# the direction it pointed was never the direction anything happened in.
 	var o := to_iso(player_pos)
-	var pts := PackedVector2Array([
-		o + Vector2(0, -14), o + Vector2(12, 8),
-		o + Vector2(0, 3), o + Vector2(-12, 8)])
 	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
-	draw_polyline(pts + PackedVector2Array([pts[0]]), c, 2.0)
-	# The pickup ring lies ON the ground plane, so it projects to an ellipse.
-	var ring := PackedVector2Array()
-	for k in 41:
-		var a := TAU * k / 40.0
-		ring.append(to_iso(player_pos + Vector2(cos(a), sin(a)) * pickup_radius))
-	draw_polyline(ring, Color(0.35, 0.9, 0.7, 0.22), 1.0)
+	draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22))
+	draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, c, 2.0)

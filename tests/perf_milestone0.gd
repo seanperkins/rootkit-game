@@ -149,9 +149,9 @@ func _kite(g: Node2D) -> Vector2:
 	# did once, and a perf gate that measures less whenever the game changes is
 	# not gating anything.
 	if g.phase == g.Phase.CLEARED:
-		var f: Terrain = g.terrain
-		if f.has_gate and f.gate_open:
-			return _around_walls(g, (f.corridor_end - g.player_pos).normalized())
+		var gate = g.terrain.gate()
+		if gate != null and gate.open:
+			return _around_walls(g, (gate.end - g.player_pos).normalized())
 	var flee := Vector2.ZERO
 	var k := 0
 	for i in g.enemies.count:
@@ -161,7 +161,9 @@ func _kite(g: Node2D) -> Vector2:
 			flee += d / dl * (190.0 - dl)
 			k += 1
 	var dir := flee.normalized() if k > 0 else Vector2.ZERO
-	var c: Vector2 = Vector2.ZERO - g.player_pos
+	# The CURRENT arena's centre, not the world origin: the campaign is three
+	# arenas laid out end to end now, and only the first is centred on zero.
+	var c: Vector2 = g.terrain.arena().get_center() - g.player_pos
 	if c.length() > 1100.0:
 		dir = (dir + c.normalized() * 1.6).normalized()
 	return _around_walls(g, dir)

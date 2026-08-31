@@ -108,9 +108,9 @@ func _autopilot() -> Vector2:
 	# the tick budget runs out and every campaign assertion times out rather
 	# than failing — which reads as a hang, not as a result.
 	if run.phase == run.Phase.CLEARED:
-		var f: Terrain = run.terrain
-		if f.has_gate and f.gate_open:
-			return _around_walls((f.corridor_end - run.player_pos).normalized())
+		var gate = run.terrain.gate()
+		if gate != null and gate.open:
+			return _around_walls((gate.end - run.player_pos).normalized())
 	var flee := Vector2.ZERO
 	var n := 0
 	for i in run.enemies.count:
@@ -122,7 +122,9 @@ func _autopilot() -> Vector2:
 	var dir := flee.normalized() if n > 0 else Vector2.ZERO
 	if n == 0 and run.shards.count > 0:
 		dir = (run.shards.pos[0] - run.player_pos).normalized()
-	var to_centre: Vector2 = Vector2.ZERO - run.player_pos
+	# The CURRENT arena's centre, not the world origin: the campaign is three
+	# arenas laid out end to end now, and only the first is centred on zero.
+	var to_centre: Vector2 = run.terrain.arena().get_center() - run.player_pos
 	if to_centre.length() > 1100.0:
 		dir = (dir + to_centre.normalized() * 1.6).normalized()
 	return _around_walls(dir)

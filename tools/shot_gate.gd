@@ -11,13 +11,13 @@ func _process(_d: float) -> bool:
 		return false
 	if frames == 20:
 		# Clear the subnet and stand a little way off the gate, so the frame has
-		# the open gate, the wayfinding wash and the HUD note all at once.
+		# the open gate, the corridor beyond it and the HUD note all at once.
+		run.terrain.open_gate()
+		run.phase = run.Phase.CLEARED
+		run.collapse_left = run.COLLAPSE_SECONDS * 0.5
 		run.terrain.build_distance_field()
-		# Stand just inside the collapse frontier, so the edge of the void is in
-		# frame: safe ground at 0.40 of max distance against a 0.50 threshold.
-		var t = run.terrain
-		var ter = run.terrain
-		run.player_pos = ter.gate_pos - ter.gate_dir * 300.0
+		var g = run.terrain.gate()
+		run.player_pos = g.pos - g.dir * 300.0
 	if frames == 60:
 		root.get_texture().get_image().save_png("/tmp/rootkit_gate.png")
 		return true

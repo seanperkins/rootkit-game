@@ -47,7 +47,24 @@ def consts(rel: str) -> dict:
 
 
 def num(d: dict, key: str) -> float:
-    return float(re.sub(r"[^0-9.\-]", "", d[key]))
+    """A constant's numeric value, resolving references to other constants.
+
+    `const CORRIDOR_LENGTH := TILE * 12.0` is a clearer statement of the
+    invariant than the literal 1152, but a scraper that only strips non-digits
+    reads it as 12 and silently prints a twelve-unit corridor in the manual. So
+    substitute names, then evaluate the arithmetic.
+    """
+    expr = d[key]
+    for _ in range(8):                      # bounded: constants do not recurse
+        names = set(re.findall(r"[A-Z_][A-Z_0-9]*", expr))
+        resolvable = names & d.keys()
+        if not resolvable:
+            break
+        for n in resolvable:
+            expr = re.sub(r"\b%s\b" % n, "(%s)" % d[n], expr)
+    if re.fullmatch(r"[0-9.+\-*/() ]+", expr):
+        return float(eval(expr))            # digits and operators only
+    return float(re.sub(r"[^0-9.\-]", "", expr))
 
 
 def read_modules() -> list:
