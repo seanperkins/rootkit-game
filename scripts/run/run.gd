@@ -427,6 +427,8 @@ func _step1_spawn(dt: float) -> void:
 		else:
 			_spawn_enemy_state(idx, hp, t.behaviour)
 			director.spawned += 1
+	for mb in director.due_minibosses(dt):
+		_spawn_miniboss(mb)
 	if director.should_spawn_boss():
 		director.boss_spawned = true
 		# The network purges its own processes to make room for ICE. Mechanically
@@ -452,6 +454,21 @@ func _step1_spawn(dt: float) -> void:
 func _worm_length() -> int:
 	return mini(WORM_MAX_SEGMENTS,
 		WORM_BASE_SEGMENTS + int(director.elapsed / WORM_GROWTH_SECONDS))
+
+## Mini-bosses arrive on the spawn ring like anything else, but announced: an
+## arrival the player does not notice is not a set-piece.
+func _spawn_miniboss(type_index: int) -> void:
+	var t = enemy_types[type_index]
+	var a := _card_rng.randf() * TAU
+	var at := terrain.nearest_open(player_pos + Vector2(cos(a), sin(a)) * 620.0)
+	var hp: float = t.integrity * _hp_mult()
+	var idx := enemies.spawn(at, Vector2.ZERO, hp, 26.0, type_index)
+	if idx < 0:
+		return
+	_spawn_enemy_state(idx, hp, t.behaviour)
+	director.spawned += 1
+	_fx_ring.append([at, 150.0, FX_LIFE * 6.0, Color(2.0, 0.7, 0.3)])
+	emit_signal("stats_changed")
 
 func _spawn_worm(at: Vector2) -> bool:
 	var t = enemy_types[WORM_TYPE]

@@ -66,6 +66,22 @@ void fragment() {
 		// probe — a boxed sight, distinct from the packet plus
 		a = max(ring(max(abs(p.x), abs(p.y)), 0.31, 0.09),
 			1.0 - smoothstep(0.05, 0.11, length(p)));
+	} else if (g == 10) {
+		// fork_bomb — a diamond inside a diamond, reading as "there is more here"
+		float dd = abs(p.x) + abs(p.y);
+		a = max(ring(dd, 0.40, 0.10), ring(dd, 0.20, 0.08));
+	} else if (g == 11) {
+		// packet_filter — a shield arc, open at the back it does not protect
+		float sh = ring(length(p), 0.36, 0.13);
+		a = sh * step(-0.12, -p.y);
+	} else if (g == 12) {
+		// null_ptr — a hollow square outline with nothing at all inside
+		a = ring(max(abs(p.x), abs(p.y)), 0.36, 0.08);
+	} else if (g == 13) {
+		// kernel_panic — a jagged burst
+		float ang2 = atan(p.y, p.x);
+		float spikes = 0.30 + 0.10 * cos(ang2 * 8.0);
+		a = ring(length(p), spikes, 0.11);
 	} else {
 		// data shard — solid pip
 		a = 1.0 - smoothstep(0.22, 0.34, length(p));

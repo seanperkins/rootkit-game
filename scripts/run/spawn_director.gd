@@ -59,6 +59,13 @@ var spawned: int = 0
 var dropped: int = 0        # pool was full; counted, never silently ignored
 var boss_spawned: bool = false
 
+## One a minute, and never in the last: ICE arrives at SUBNET_SECONDS and the
+## subnet's ending is not a stage to share.
+const MINIBOSS_TIMES := [60.0, 120.0, 180.0, 240.0]
+const MINIBOSS_IDS := [&"fork_bomb", &"packet_filter", &"null_ptr", &"kernel_panic"]
+
+var miniboss_fired: PackedByteArray
+
 ## Wave rows address enemy TYPES BY INDEX, so a bare number breaks silently the
 ## moment a type is inserted above it. Resolved from the table by id instead.
 static func _idx(id: StringName) -> int:
@@ -88,12 +95,31 @@ func _init(seed_value: int = 20260829) -> void:
 		# and it is meant to be a target you dig for, not a crowd.
 		Wave.new(210.0, 300.0, _idx(&"watchdog"), 0.25, Formation.FLANK),
 	]
+	miniboss_fired = PackedByteArray()
+	miniboss_fired.resize(MINIBOSS_TIMES.size())
 	_milli.resize(waves.size())
 	for i in _milli.size():
 		_milli[i] = 0
 
+## Which mini-bosses this step crosses.
+##
+## Records each as fired, because a step is a RANGE: testing `elapsed > time`
+## alone fires every tick after the boundary rather than once at it.
+func due_minibosses(dt: float) -> Array:
+	var out := []
+	for k in MINIBOSS_TIMES.size():
+		if miniboss_fired[k] != 0:
+			continue
+		if elapsed + dt >= MINIBOSS_TIMES[k]:
+			miniboss_fired[k] = 1
+			out.append(_idx(MINIBOSS_IDS[k]))
+	return out
+
 func reset() -> void:
 	elapsed = 0.0
+	# Rearmed, or subnet 02 would get no mini-bosses at all.
+	for k in miniboss_fired.size():
+		miniboss_fired[k] = 0
 	spawned = 0
 	dropped = 0
 	boss_spawned = false

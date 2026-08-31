@@ -43,10 +43,19 @@ static func all() -> Array:
 			22.0, 18.0, 3, Behaviour.AMBUSHER),
 		EnemyType.new(&"probe",    9, Color(1.00, 0.55, 0.55), 16.0, 52.0,
 			14.0,  3.0, 2, Behaviour.RANGED),
+		# --- mini-bosses. Between firewall and ICE: set-pieces, not bosses. ---
+		EnemyType.new(&"fork_bomb",     10, Color(1.00, 0.60, 0.20), 170.0, 82.0,
+			90.0, 20.0, 12, Behaviour.CHARGER),
+		EnemyType.new(&"packet_filter", 11, Color(0.60, 0.90, 1.00), 260.0, 40.0,
+			120.0, 14.0, 14, Behaviour.SUPPORT),
+		EnemyType.new(&"null_ptr",      12, Color(0.80, 0.40, 1.00), 190.0, 104.0,
+			100.0, 22.0, 13, Behaviour.AMBUSHER),
+		EnemyType.new(&"kernel_panic",  13, Color(1.00, 0.35, 0.35), 240.0, 48.0,
+			110.0, 18.0, 16, Behaviour.RANGED),
 		# ICE stays LAST: EnemyTable.ICE is an index into this list, and the boss
 		# spawn, the win condition and the flip guard all read it.
 		EnemyType.new(&"ice",      3, Color(1.00, 0.25, 0.85), 700.0, 46.0, 1e18, 22.0, 0),
 	]
 
-const ICE := 8   # the boss. corruption_threshold is effectively infinite:
+const ICE := 12  # the boss. corruption_threshold is effectively infinite:
                  # flipping it would bypass the kill-to-win condition.
