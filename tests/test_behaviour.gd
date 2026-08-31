@@ -7,7 +7,8 @@ var finished := {}
 
 const CASES := ["chase_is_unchanged_and_state_resets", "spawning_clears_ai_state",
 	"charger_commits_to_its_dash", "flanker_leads_the_player",
-	"player_velocity_is_tracked"]
+	"player_velocity_is_tracked", "support_heals_but_never_past_spawn",
+	"ambusher_is_untouchable_while_under"]
 
 func _initialize() -> void:
 	print("ROOTKIT — enemy behaviour\n")
@@ -16,6 +17,8 @@ func _initialize() -> void:
 	await charger_commits_to_its_dash()
 	await flanker_leads_the_player()
 	await player_velocity_is_tracked()
+	await support_heals_but_never_past_spawn()
+	await ambusher_is_untouchable_while_under()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -157,3 +160,69 @@ func player_velocity_is_tracked() -> void:
 	_check("standing still gives zero", r.player_vel, Vector2.ZERO)
 	r.free()
 	finished["player_velocity_is_tracked"] = true
+
+func support_heals_but_never_past_spawn() -> void:
+	var r := await _fresh_run()
+	var t := EnemyTable.EnemyType.new(&"t_supp", 0, Color.WHITE, 60.0, 40.0,
+		30.0, 2.0, 3, EnemyTable.Behaviour.SUPPORT)
+	r.player_pos = Vector2.ZERO
+	var sp: int = r.enemies.spawn(Vector2(400, 0), Vector2.ZERO, 60.0, 12.0, 0)
+	r._spawn_enemy_state(sp, 60.0)
+	var hurt: int = r.enemies.spawn(Vector2(430, 0), Vector2.ZERO, 10.0, 12.0, 0)
+	r._spawn_enemy_state(hurt, 30.0)          # spawned at 30, currently on 10
+	r._step3_rebuild()
+
+	r._behave(sp, t, 1.0)
+	_check("a nearby wounded enemy is healed", r.enemies.integrity[hurt] > 10.0, true)
+	_check("but never above its spawn HP",
+		r.enemies.integrity[hurt] <= r._spawn_hp[hurt], true)
+
+	r.enemies.integrity[hurt] = r._spawn_hp[hurt]
+	r._behave(sp, t, 1.0)
+	_check("healing a full enemy changes nothing",
+		r.enemies.integrity[hurt], r._spawn_hp[hurt])
+
+	# It keeps its distance rather than closing.
+	r.enemies.pos[sp] = r.player_pos + Vector2(80, 0)
+	var v: Vector2 = r._behave(sp, t, 1.0 / 60.0)
+	_check("too close, it backs away", v.x > 0.0, true)
+	r.enemies.pos[sp] = r.player_pos + Vector2(900, 0)
+	v = r._behave(sp, t, 1.0 / 60.0)
+	_check("too far, it closes", v.x < 0.0, true)
+	r.free()
+	finished["support_heals_but_never_past_spawn"] = true
+
+func ambusher_is_untouchable_while_under() -> void:
+	var r := await _fresh_run()
+	var t := EnemyTable.EnemyType.new(&"t_amb", 0, Color.WHITE, 30.0, 90.0,
+		20.0, 14.0, 2, EnemyTable.Behaviour.AMBUSHER)
+	r.player_pos = Vector2.ZERO
+	var i: int = r.enemies.spawn(Vector2(300, 0), Vector2.ZERO, 30.0, 12.0, 0)
+	r._spawn_enemy_state(i, 30.0, EnemyTable.Behaviour.AMBUSHER)
+
+	var v: Vector2 = r._behave(i, t, 1.0 / 60.0)
+	_check("it begins submerged", r._submerged[i], 1)
+	_check("and travels faster while under", v.length() > t.speed, true)
+
+	# Submerged means OUT OF THE GRID, which is the whole implementation of
+	# untouchable: every hit path and the contact check read the grid.
+	r._step3_rebuild()
+	var n: int = r.grid.query_radius_into(r.enemies.pos[i], 60.0, r._buf, Grid.M_ENEMY)
+	_check("a submerged enemy is not in the grid", n, 0)
+
+	for k in 130:
+		r._behave(i, t, 1.0 / 60.0)
+	_check("it surfaces after its run", r._ai_phase[i], r.AM_SURFACING)
+	_check("still untouchable during the tell", r._submerged[i], 1)
+	_check("and stationary, so the tell can be read",
+		r._behave(i, t, 1.0 / 60.0), Vector2.ZERO)
+
+	for k in 60:
+		r._behave(i, t, 1.0 / 60.0)
+	_check("then it is active", r._ai_phase[i], r.AM_ACTIVE)
+	_check("and targetable again", r._submerged[i], 0)
+	r._step3_rebuild()
+	var n2: int = r.grid.query_radius_into(r.enemies.pos[i], 60.0, r._buf, Grid.M_ENEMY)
+	_check("back in the grid", n2 > 0, true)
+	r.free()
+	finished["ambusher_is_untouchable_while_under"] = true

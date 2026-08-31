@@ -88,7 +88,16 @@ func _cell_index(p: Vector2) -> int:
 
 ## pos_arrays[p] is the position array for population p; counts[p] is its live
 ## count. Population index IS the tag, so the caller passes them in Pop order.
-func rebuild(pos_arrays: Array, counts: PackedInt32Array) -> void:
+## `skips` is an optional array of PackedByteArray, one per population (or null
+## for a population with nothing to skip). A non-zero byte keeps that index OUT
+## of the grid entirely.
+##
+## This exists so an enemy can be made untouchable by simply not being here:
+## every hit path, proximity query and the player contact check all read the
+## grid, so absence from it IS immunity — with no flag threaded through the
+## drain and no third Population state.
+func rebuild(pos_arrays: Array, counts: PackedInt32Array,
+		skips: Array = []) -> void:
 	var npops := counts.size()
 
 	for c in _ncells:
@@ -97,8 +106,11 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array) -> void:
 	# Pass 1 — count per cell.
 	for p in npops:
 		var pa: PackedVector2Array = pos_arrays[p]
+		var sk = skips[p] if p < skips.size() else null
 		var n := counts[p]
 		for i in n:
+			if sk != null and sk[i] != 0:
+				continue
 			if not in_window(pa[i]):
 				continue
 			_cursor[_cell_index(pa[i])] += 1
@@ -118,7 +130,10 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array) -> void:
 		var n := counts[p]
 		var tag := p << TAG_SHIFT
 		var m := 1 << p
+		var sk2 = skips[p] if p < skips.size() else null
 		for i in n:
+			if sk2 != null and sk2[i] != 0:
+				continue
 			var q := pa[i]
 			if not in_window(q):
 				continue

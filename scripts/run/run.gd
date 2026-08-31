@@ -101,6 +101,18 @@ const CHARGE_DASH := 0.5
 const CHARGE_RECOVER := 0.8
 const CHARGE_SPEED := 3.0
 
+const SUPPORT_STANDOFF := 300.0
+const SUPPORT_RADIUS := 180.0
+const SUPPORT_HEAL := 6.0        # per second
+
+const AM_SUBMERGED := 0
+const AM_SURFACING := 1
+const AM_ACTIVE := 2
+const AMBUSH_UNDER := 2.0
+const AMBUSH_SURFACING := 0.6
+const AMBUSH_ACTIVE := 4.0
+const AMBUSH_SPEED := 2.0
+
 const FLANK_LEAD := 0.9
 const FLANK_TANGENT := 0.55
 
@@ -225,6 +237,7 @@ var _botnet_life: PackedFloat32Array
 var _buf: PackedInt32Array
 var _counts: PackedInt32Array
 var _pos_arrays: Array
+var _skips: Array
 var _unlocked: Array = []
 ## Headless tests drive the player through this instead of the keyboard.
 var input_override = null
@@ -267,6 +280,7 @@ func _ready() -> void:
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_counts = PackedInt32Array(); _counts.resize(4)
 	_pos_arrays = [null, null, null, null]
+	_skips = [null, null, null, null]
 	_fire_acc = PackedFloat32Array(); _fire_acc.resize(Loadout.MAX_EXPLOITS)
 	_fire_cd = PackedFloat32Array(); _fire_cd.resize(Loadout.MAX_EXPLOITS)
 	_ward_left = PackedFloat32Array(); _ward_left.resize(Loadout.MAX_EXPLOITS)
@@ -392,7 +406,7 @@ func _step1_spawn(dt: float) -> void:
 		if idx < 0:
 			director.dropped += 1
 		else:
-			_spawn_enemy_state(idx, hp)
+			_spawn_enemy_state(idx, hp, t.behaviour)
 			director.spawned += 1
 	if director.should_spawn_boss():
 		director.boss_spawned = true
@@ -580,8 +594,9 @@ func _step3_rebuild() -> void:
 	_counts[Grid.Pop.PROJECTILE] = projectiles.count
 	_counts[Grid.Pop.BOTNET] = botnet.count
 	_counts[Grid.Pop.SHARD] = shards.count
+	_skips[Grid.Pop.ENEMY] = _submerged
 	grid.set_centre(player_pos)
-	grid.rebuild(_pos_arrays, _counts)
+	grid.rebuild(_pos_arrays, _counts, _skips)
 
 ## Steering is time-sliced across STEER_SLICES ticks: each tick recomputes one
 ## slice and every other enemy keeps the force it was last given. At 60 Hz a
@@ -825,11 +840,17 @@ func _clear_ai(i: int) -> void:
 ## Everything a freshly spawned enemy slot needs, in one place, so that adding a
 ## per-enemy array later cannot leave one spawn site behind — which is exactly
 ## how a stale-slot bug gets in.
-func _spawn_enemy_state(i: int, hp: float) -> void:
+func _spawn_enemy_state(i: int, hp: float,
+		behaviour: int = EnemyTable.Behaviour.CHASE) -> void:
 	_worm_id[i] = 0
 	_clear_slow(i)
 	_clear_ai(i)
 	_spawn_hp[i] = hp
+	if behaviour == EnemyTable.Behaviour.AMBUSHER:
+		# A fresh ambusher owes a full submerged run before its first surface;
+		# a zero timer would have it breaching on the tick it spawned.
+		_ai_timer[i] = AMBUSH_UNDER
+		_submerged[i] = 1
 
 ## The desired velocity for one enemy, before separation and avoidance forces.
 ##
@@ -847,6 +868,10 @@ func _behave(i: int, t, dt: float) -> Vector2:
 			return _charge(i, sp, to_player, dt)
 		EnemyTable.Behaviour.FLANKER:
 			return _flank(i, sp, to_player)
+		EnemyTable.Behaviour.SUPPORT:
+			return _support(i, sp, to_player, dt)
+		EnemyTable.Behaviour.AMBUSHER:
+			return _ambush(i, sp, to_player, dt)
 		_:
 			return to_player.normalized() * sp
 	return to_player.normalized() * sp
@@ -885,6 +910,67 @@ func _charge(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 			if _ai_timer[i] <= 0.0:
 				_ai_phase[i] = CH_APPROACH
 			return to_player.normalized() * sp * 0.5
+
+## Hangs back and heals the swarm, which makes it a priority target you have to
+## dig for — a target-selection decision the game does not otherwise have.
+##
+## Healing rather than shielding, deliberately. A damage-reduction shield has to
+## be read inside HitQueue.drain_pass for EVERY enemy on every hit, whether or
+## not a support is alive; healing is a bounded write from the support's own
+## step and touches nothing else. Both produce the same decision for the player
+## and only one of them taxes the drain.
+func _support(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+	var n := grid.query_radius_into(enemies.pos[i], SUPPORT_RADIUS, _buf,
+		Grid.M_ENEMY)
+	for k in mini(n, _buf.size()):
+		var j := Grid.index_of(_buf[k])
+		if j == i or enemies.state[j] != Population.ALIVE:
+			continue
+		# The cap is the HP its type and subnet gave it at spawn, so a healer can
+		# restore an enemy but never inflate one.
+		enemies.integrity[j] = minf(_spawn_hp[j],
+			enemies.integrity[j] + SUPPORT_HEAL * dt)
+	var d := to_player.length()
+	if d < 0.001:
+		return Vector2.ZERO
+	var toward := to_player / d
+	if d > SUPPORT_STANDOFF + 40.0:
+		return toward * sp
+	if d < SUPPORT_STANDOFF - 40.0:
+		return -toward * sp
+	return Vector2.ZERO
+
+## Drops out of the field, travels unseen, surfaces on you.
+##
+## The SURFACING tell is not decoration. An enemy that appears on top of you
+## with no warning is the thing players correctly call cheap; the tell is what
+## makes it a punishment for tunnel vision rather than an ambush nobody could
+## have avoided.
+func _ambush(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+	_ai_timer[i] -= dt
+	match _ai_phase[i]:
+		AM_SUBMERGED:
+			_submerged[i] = 1
+			if _ai_timer[i] <= 0.0:
+				_ai_phase[i] = AM_SURFACING
+				_ai_timer[i] = AMBUSH_SURFACING
+				return Vector2.ZERO
+			return to_player.normalized() * sp * AMBUSH_SPEED
+		AM_SURFACING:
+			_submerged[i] = 1
+			if _ai_timer[i] <= 0.0:
+				_ai_phase[i] = AM_ACTIVE
+				_ai_timer[i] = AMBUSH_ACTIVE
+				_submerged[i] = 0
+			# Still, and visible as a tell, while it comes up.
+			return Vector2.ZERO
+		_:
+			_submerged[i] = 0
+			if _ai_timer[i] <= 0.0:
+				_ai_phase[i] = AM_SUBMERGED
+				_ai_timer[i] = AMBUSH_UNDER
+				_submerged[i] = 1
+			return to_player.normalized() * sp
 
 ## Steer at where the player is GOING, plus a tangential bias so it arcs around
 ## rather than converging head-on.
