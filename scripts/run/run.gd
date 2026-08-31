@@ -9,6 +9,11 @@ const ARENA_ORIGIN := Vector2(-3578, -2236)
 const ARENA_SIZE := Vector2(7156, 4472)
 const CELL := 32.0
 
+## The grid window's side, in world units. Must comfortably exceed the largest
+## distance from the player at which anything is queried: steering is gated at
+## 820, and a packet travels 640 before expiring (x1.4 with a maxed reach).
+const GRID_WINDOW := 3200.0
+
 const MAX_ENEMIES := 600
 const MAX_PROJECTILES := 400
 const MAX_SHARDS := 1500
@@ -221,7 +226,10 @@ func _ready() -> void:
 	for i in enemy_types.size():
 		thresholds[i] = enemy_types[i].corruption_threshold
 
-	grid = Grid.new(ARENA_ORIGIN, ARENA_SIZE, CELL,
+	# A fixed window that follows the player, NOT the arena. See Grid._init:
+	# every query in this game is near the player, so indexing the whole map
+	# spends per-tick work on ground nobody is standing on.
+	grid = Grid.new(Vector2.ZERO, Vector2(GRID_WINDOW, GRID_WINDOW), CELL,
 		MAX_ENEMIES + MAX_PROJECTILES + MAX_SHARDS + MAX_BOTNET + 1)
 	enemies = Population.new(MAX_ENEMIES)
 	projectiles = Population.new(MAX_PROJECTILES)
@@ -549,6 +557,7 @@ func _step3_rebuild() -> void:
 	_counts[Grid.Pop.PROJECTILE] = projectiles.count
 	_counts[Grid.Pop.BOTNET] = botnet.count
 	_counts[Grid.Pop.SHARD] = shards.count
+	grid.set_centre(player_pos)
 	grid.rebuild(_pos_arrays, _counts)
 
 ## Steering is time-sliced across STEER_SLICES ticks: each tick recomputes one
@@ -1296,7 +1305,23 @@ func _depth_sort() -> void:
 		_order[_band_count[key2]] = i
 		_band_count[key2] += 1
 
+## The world rectangle the camera can actually see, plus a margin.
+##
+## Everything below draws from map-sized data — terrain rects, voided row-runs,
+## the route — and at five times the arena most of that is off-screen. Culling
+## to this is the difference between drawing what the player can see and drawing
+## the whole subnet every frame.
+##
+## Derived by unprojecting the viewport's half-diagonal: to_iso shears, so a
+## screen rectangle is a rotated rectangle in world space, and its bounding box
+## is what a cheap test needs.
+func _visible_world_rect() -> Rect2:
+	var vp := get_viewport_rect().size
+	var half := from_iso(vp * 0.6).abs() + from_iso(Vector2(vp.x, -vp.y) * 0.6).abs()
+	return Rect2(player_pos - half, half * 2.0)
+
 func _draw() -> void:
+	var view := _visible_world_rect()
 	# Terrain first, so it sits under every entity.
 	#
 	# Drawn from `rects` rather than per-cell: the draw count is the number of
@@ -1315,6 +1340,8 @@ func _draw() -> void:
 
 	for entry in terrain.rects:
 		var tr: Rect2 = entry[0]
+		if not view.intersects(tr):
+			continue
 		var kind: int = entry[1]
 		var quad := PackedVector2Array([
 			to_iso(tr.position),
@@ -1342,14 +1369,20 @@ func _draw() -> void:
 	# cell grid; runs cut that by roughly an order of magnitude for one extra
 	# loop.
 	if not terrain.voided.is_empty():
-		for vy in terrain.h:
-			var vx := 0
-			while vx < terrain.w:
+		# Only the rows the camera can see. At 5x the arena this is a few dozen
+		# rows out of two hundred.
+		var vy0 := clampi(terrain.cell_xy(view.position).y, 0, terrain.h - 1)
+		var vy1 := clampi(terrain.cell_xy(view.end).y, 0, terrain.h - 1)
+		var vx0 := clampi(terrain.cell_xy(view.position).x, 0, terrain.w - 1)
+		var vx1 := clampi(terrain.cell_xy(view.end).x, 0, terrain.w - 1)
+		for vy in range(vy0, vy1 + 1):
+			var vx := vx0
+			while vx <= vx1:
 				if terrain.voided[vy * terrain.w + vx] == 0:
 					vx += 1
 					continue
 				var x0 := vx
-				while vx < terrain.w and terrain.voided[vy * terrain.w + vx] != 0:
+				while vx <= vx1 and terrain.voided[vy * terrain.w + vx] != 0:
 					vx += 1
 				var q0 := terrain.origin + Vector2(x0, vy) * Terrain.CELL
 				var q1 := terrain.origin + Vector2(vx, vy + 1) * Terrain.CELL
@@ -1367,6 +1400,8 @@ func _draw() -> void:
 			var ci: int = _route[k]
 			var cq := terrain.origin + Vector2(ci % terrain.w, ci / terrain.w) \
 				* Terrain.CELL
+			if not view.has_point(cq):
+				continue
 			var cq1 := cq + Vector2(Terrain.CELL, Terrain.CELL)
 			var travel := fmod(pulse - float(k) * 0.06, 1.0)
 			draw_colored_polygon(PackedVector2Array([

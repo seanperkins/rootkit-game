@@ -41,6 +41,22 @@ var _items: PackedInt32Array        # tagged indices, bucketed
 var _item_pos: PackedVector2Array   # positions parallel to _items
 var _item_mask: PackedInt32Array    # 1 << population, parallel to _items
 
+## The grid is a WINDOW that follows the player, not a map-sized structure.
+##
+## Rebuild is a counting sort: it clears a cursor and runs a prefix sum over
+## every cell, so its cost is O(cells) whether six hundred entities are out
+## there or none. Sizing that to the arena meant a five-times-larger map cost
+## five times as much per tick to index empty ground nobody was near.
+##
+## Every query in this game happens close to the player — steering is gated at
+## 820 units, weapons fire from the player, contact is at the player — so the
+## window only has to cover that neighbourhood, and cell count becomes a
+## constant the arena size cannot touch.
+##
+## The trade, stated plainly: an entity further than half the window from the
+## player is not in the grid, so a projectile out there passes through enemies.
+## At a 3200-unit window that is far off-screen in every direction, and those
+## enemies are already too far away to be steering.
 func _init(origin: Vector2, size: Vector2, p_cell_size: float, capacity: int) -> void:
 	cell_size = p_cell_size
 	_origin = origin
@@ -52,6 +68,18 @@ func _init(origin: Vector2, size: Vector2, p_cell_size: float, capacity: int) ->
 	_items.resize(capacity)
 	_item_pos.resize(capacity)
 	_item_mask.resize(capacity)
+
+## Re-centre the window. Snapped to the cell size so cell boundaries do not
+## slide under entities as the player moves, which would let an entity change
+## cell without moving.
+func set_centre(c: Vector2) -> void:
+	var half := Vector2(float(_cols), float(_rows)) * cell_size * 0.5
+	_origin = ((c - half) / cell_size).floor() * cell_size
+
+func in_window(p: Vector2) -> bool:
+	return p.x >= _origin.x and p.y >= _origin.y \
+		and p.x < _origin.x + float(_cols) * cell_size \
+		and p.y < _origin.y + float(_rows) * cell_size
 
 func _cell_index(p: Vector2) -> int:
 	var cx := clampi(int((p.x - _origin.x) / cell_size), 0, _cols - 1)
@@ -71,6 +99,8 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array) -> void:
 		var pa: PackedVector2Array = pos_arrays[p]
 		var n := counts[p]
 		for i in n:
+			if not in_window(pa[i]):
+				continue
 			_cursor[_cell_index(pa[i])] += 1
 
 	# Prefix sum. _cursor is rewritten in place to each bucket's write head.
@@ -90,6 +120,8 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array) -> void:
 		var m := 1 << p
 		for i in n:
 			var q := pa[i]
+			if not in_window(q):
+				continue
 			var c := _cell_index(q)
 			var w := _cursor[c]
 			_items[w] = tag | i
