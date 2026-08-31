@@ -101,6 +101,13 @@ const CHARGE_DASH := 0.5
 const CHARGE_RECOVER := 0.8
 const CHARGE_SPEED := 3.0
 
+## How many times a fork_bomb may divide. Three generations, then the leaves die
+## for good — the leaf check is what stops one death becoming an unbounded
+## cascade that fills the enemy pool.
+const SPLIT_GENERATIONS := 3
+const FILTER_FRONT_SCALE := 0.10
+const MINIBOSS_SALVAGE := 120
+
 const MAX_HOSTILES := 200
 const HOSTILE_SPEED := 260.0
 const HOSTILE_DAMAGE := 6.0
@@ -139,6 +146,15 @@ var _ai_aim: PackedVector2Array
 var _spawn_hp: PackedFloat32Array
 ## Out of the entity grid, and therefore untouchable and harmless.
 var _submerged: PackedByteArray
+## How many times this enemy's line has already divided.
+var _split_gen: PackedInt32Array
+## Paid out already, so a re-dispatched death cannot pay twice.
+var _rewarded: PackedByteArray
+var _pending_splits: Array = []
+## Resolved once: these are table INDICES and looking them up per hit would put
+## a linear scan of the enemy table in the damage path.
+var _fork_bomb_index := -1
+var _packet_filter_index := -1
 
 ## Set by the zone pass each tick and read by _eff_clock_speed, so a slow zone
 ## affects the player without a second timer: standing in it IS the duration.
@@ -312,6 +328,13 @@ func _ready() -> void:
 	_ai_aim = PackedVector2Array(); _ai_aim.resize(MAX_ENEMIES)
 	_spawn_hp = PackedFloat32Array(); _spawn_hp.resize(MAX_ENEMIES)
 	_submerged = PackedByteArray(); _submerged.resize(MAX_ENEMIES)
+	_split_gen = PackedInt32Array(); _split_gen.resize(MAX_ENEMIES)
+	_rewarded = PackedByteArray(); _rewarded.resize(MAX_ENEMIES)
+	for _k in enemy_types.size():
+		if enemy_types[_k].id == &"fork_bomb":
+			_fork_bomb_index = _k
+		elif enemy_types[_k].id == &"packet_filter":
+			_packet_filter_index = _k
 	_slow_factor = PackedFloat32Array(); _slow_factor.resize(MAX_ENEMIES)
 	_worm_id = PackedInt32Array(); _worm_id.resize(MAX_ENEMIES)
 	_worm_seg = PackedInt32Array(); _worm_seg.resize(MAX_ENEMIES)
@@ -398,6 +421,7 @@ func _physics_process(dt: float) -> void:
 	_step6b_hostiles(dt)
 	_steps78_drain()
 	_step9_recycle()
+	_step9b_splits()
 
 	_update_renderers()
 	_camera.global_position = to_iso(player_pos)
@@ -457,6 +481,30 @@ func _worm_length() -> int:
 
 ## Mini-bosses arrive on the spawn ring like anything else, but announced: an
 ## arrival the player does not notice is not a set-piece.
+func _is_miniboss(type_index: int) -> bool:
+	return enemy_types[type_index].id in SpawnDirector.MINIBOSS_IDS
+
+## Splits land AFTER step 9, never inside the drain — the same once-per-tick
+## discipline the subnet advance keeps.
+func _step9b_splits() -> void:
+	if _pending_splits.is_empty():
+		return
+	for entry in _pending_splits:
+		for k in 2:
+			var at: Vector2 = entry[0] + Vector2(
+				_card_rng.randf_range(-34.0, 34.0),
+				_card_rng.randf_range(-34.0, 34.0))
+			var hp: float = entry[2]
+			var idx := enemies.spawn(terrain.nearest_open(at), Vector2.ZERO, hp,
+				20.0, _fork_bomb_index)
+			if idx < 0:
+				continue        # pool full: drop the child rather than overflow
+			_spawn_enemy_state(idx, hp, EnemyTable.Behaviour.CHARGER)
+			_split_gen[idx] = entry[1]
+			# Children are not a second payday.
+			_rewarded[idx] = 1
+	_pending_splits.clear()
+
 func _spawn_miniboss(type_index: int) -> void:
 	var t = enemy_types[type_index]
 	var a := _card_rng.randf() * TAU
@@ -765,12 +813,41 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_last[pi] = -1
 				_proj_dist_left[pi] = maxf(r.travel, 1.0)
 
-func _hit(ei: int, r: ResolvedExploit, target: int) -> void:
+## `from` is where the shot came from. Defaults to the player, which is true for
+## broadcast, chain and beam; packets pass their own position, because a packet
+## that flew round behind something did not hit it from the front.
+func _hit(ei: int, r: ResolvedExploit, target: int,
+		from: Vector2 = Vector2.INF) -> void:
 	if target < 0 or target >= enemies.count:
 		return
-	queue.append(HitQueue.Kind.DAMAGE, ei, target, enemies.generation[target], r.damage)
+	if from == Vector2.INF:
+		from = player_pos
+	queue.append(HitQueue.Kind.DAMAGE, ei, target, enemies.generation[target],
+		r.damage * _facing_scale(target, from))
 	if r.corruption > 0.0 and r.has_tag(&"corruption"):
 		queue.append(HitQueue.Kind.CORRUPTION, ei, target, enemies.generation[target], r.corruption)
+
+## How much of a hit lands, given where it came from.
+##
+## packet_filter is the first enemy whose POSITION relative to you matters more
+## than your damage: flanking it is a manoeuvre rather than a stat check. Facing
+## is its movement direction, so it turns as it repositions.
+##
+## Here, where the source is known — not in the drain, which would have to read
+## facing for every enemy on every hit whether or not one of these is alive.
+func _facing_scale(i: int, from: Vector2) -> float:
+	if i < 0 or i >= enemies.count or enemies.type_index[i] != _packet_filter_index:
+		return 1.0
+	var facing := enemies.vel[i]
+	if facing.length_squared() < 0.01:
+		return 1.0
+	# The half-plane: everything in front of its shoulders, not a narrow cone.
+	# POSITIVE dot means the shot arrived from the direction it is facing — that
+	# is its front. The reverse reading armours its back and leaves the shield
+	# side open, which plays as the exact opposite mechanic.
+	if (from - enemies.pos[i]).normalized().dot(facing.normalized()) > 0.0:
+		return FILTER_FRONT_SCALE
+	return 1.0
 
 func _nearest_enemy(within: float) -> int:
 	var n := grid.query_radius_into(player_pos, within, _buf, Grid.M_ENEMY)
@@ -802,7 +879,7 @@ func _step6_detect(dt: float) -> void:
 				continue
 			var ei := _proj_owner[i]
 			if ei < resolved.size():
-				_hit(ei, resolved[ei], j)
+				_hit(ei, resolved[ei], j, projectiles.pos[i])
 			_proj_last[i] = j
 			_proj_pierce[i] -= 1
 			if _proj_pierce[i] < 0:
@@ -868,6 +945,8 @@ func _die() -> void:
 ## previous occupant was slowed. A stale slow is a live bug, not a cosmetic one:
 ## it makes a newly spawned enemy crawl for no reason the player can see.
 func _clear_ai(i: int) -> void:
+	_split_gen[i] = 0
+	_rewarded[i] = 0
 	_ai_phase[i] = 0
 	_ai_timer[i] = 0.0
 	_ai_aim[i] = Vector2.ZERO
@@ -1153,6 +1232,21 @@ func _steps78_drain() -> void:
 
 func _on_death(i: int) -> void:
 	kills += 1
+	if enemies.type_index[i] == _fork_bomb_index \
+			and _split_gen[i] < SPLIT_GENERATIONS:
+		# Flagged, not spawned: this runs inside the drain, and spawning here
+		# pulls entities out from under a pass still adjudicating them.
+		_pending_splits.append([enemies.pos[i], _split_gen[i] + 1,
+			maxf(_spawn_hp[i] * 0.5, 8.0)])
+	if _is_miniboss(enemies.type_index[i]) and _rewarded[i] == 0:
+		# The strongest reward the game has, and deliberately so: it makes
+		# engaging a real decision, and hands a struggling build the thing it
+		# actually needs, which is more build.
+		_rewarded[i] = 1
+		salvage += MINIBOSS_SALVAGE
+		pending_levels += 1
+		if not paused:
+			_offer_cards()
 	if enemies.type_index[i] == EnemyTable.ICE and not won:
 		# kills is incremented FIRST: banking before it meant the kill that ends
 		# a winning run was never persisted, so entering the boss at 399 kills

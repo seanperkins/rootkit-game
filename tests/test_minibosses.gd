@@ -4,12 +4,16 @@ extends SceneTree
 
 var failures := 0
 var finished := {}
-const CASES := ["the_schedule_fires_each_once", "the_four_exist_and_ice_is_still_last"]
+const CASES := ["the_schedule_fires_each_once", "the_four_exist_and_ice_is_still_last", "splitting_is_bounded_and_deferred",
+	"armour_is_directional", "killing_one_offers_a_card"]
 
 func _initialize() -> void:
 	print("ROOTKIT — mini-bosses\n")
 	the_schedule_fires_each_once()
 	the_four_exist_and_ice_is_still_last()
+	await splitting_is_bounded_and_deferred()
+	await armour_is_directional()
+	await killing_one_offers_a_card()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -102,3 +106,88 @@ func the_four_exist_and_ice_is_still_last() -> void:
 	_check("the schedule resolves a real mini-boss",
 		all[fired[0]].id, SpawnDirector.MINIBOSS_IDS[0])
 	finished["the_four_exist_and_ice_is_still_last"] = true
+
+func splitting_is_bounded_and_deferred() -> void:
+	var r := await _fresh_run()
+	var idx := _type_index(&"fork_bomb")
+	var i: int = r.enemies.spawn(Vector2(300, 0), Vector2.ZERO, 100.0, 26.0, idx)
+	r._spawn_enemy_state(i, 100.0)
+	var before: int = r.enemies.count
+
+	r._on_death(i)
+	# Deferred: _on_death runs inside the drain, and spawning there pulls
+	# entities out from under a pass still adjudicating them.
+	_check("nothing spawned during the drain", r.enemies.count, before)
+	_check("a split is queued", r._pending_splits.size(), 1)
+
+	r._step9b_splits()
+	_check("two children after the tick", r.enemies.count, before + 2)
+	_check("the queue is drained", r._pending_splits.size(), 0)
+
+	# THE BOUND. Kill everything repeatedly; without a leaf check this is an
+	# unbounded cascade that fills the pool.
+	for gen in range(8):
+		for k in range(r.enemies.count - 1, -1, -1):
+			if r.enemies.type_index[k] == idx:
+				r._on_death(k)
+				r.enemies.despawn(k)
+		r._step9b_splits()
+	var alive := 0
+	for k in r.enemies.count:
+		if r.enemies.type_index[k] == idx:
+			alive += 1
+	_check("the cascade terminates", alive, 0)
+	_check("and never overflowed the pool", r.enemies.count < r.MAX_ENEMIES, true)
+	r.free()
+	finished["splitting_is_bounded_and_deferred"] = true
+
+func armour_is_directional() -> void:
+	var r := await _fresh_run()
+	var idx := _type_index(&"packet_filter")
+	var i: int = r.enemies.spawn(Vector2(400, 0), Vector2.ZERO, 200.0, 26.0, idx)
+	r._spawn_enemy_state(i, 200.0)
+	r.enemies.vel[i] = Vector2(-1, 0) * 40.0        # facing -x
+
+	_check("a hit from the front is reduced",
+		r._facing_scale(i, r.enemies.pos[i] + Vector2(-100, 0)) < 0.2, true)
+	_check("a hit from behind is not",
+		r._facing_scale(i, r.enemies.pos[i] + Vector2(100, 0)), 1.0)
+	# The boundary is the HALF-PLANE, not an arbitrary cone.
+	_check("a hit from the side is full",
+		r._facing_scale(i, r.enemies.pos[i] + Vector2(0, 100)), 1.0)
+	# A stationary one has no facing to speak of, so it is not armoured.
+	r.enemies.vel[i] = Vector2.ZERO
+	_check("a still one is not armoured",
+		r._facing_scale(i, r.enemies.pos[i] + Vector2(-100, 0)), 1.0)
+
+	var j: int = r.enemies.spawn(Vector2(500, 0), Vector2.ZERO, 10.0, 12.0, 0)
+	r._spawn_enemy_state(j, 10.0)
+	r.enemies.vel[j] = Vector2(-1, 0) * 40.0
+	_check("an ordinary enemy has no facing armour",
+		r._facing_scale(j, r.enemies.pos[j] + Vector2(-100, 0)), 1.0)
+	r.free()
+	finished["armour_is_directional"] = true
+
+func killing_one_offers_a_card() -> void:
+	var r := await _fresh_run()
+	var idx := _type_index(&"packet_filter")
+	var i: int = r.enemies.spawn(Vector2(300, 0), Vector2.ZERO, 100.0, 26.0, idx)
+	r._spawn_enemy_state(i, 100.0)
+	var salvage_before: int = r.salvage
+	var levels_before: int = r.pending_levels
+	r._on_death(i)
+	_check("it pays salvage", r.salvage > salvage_before, true)
+	_check("and offers a card", r.pending_levels, levels_before + 1)
+
+	# Exactly once, even if the death dispatches twice.
+	r._on_death(i)
+	_check("and only once", r.pending_levels, levels_before + 1)
+
+	# An ordinary enemy pays neither.
+	var j: int = r.enemies.spawn(Vector2(400, 0), Vector2.ZERO, 10.0, 12.0, 0)
+	r._spawn_enemy_state(j, 10.0)
+	var s2: int = r.salvage
+	r._on_death(j)
+	_check("an ordinary kill pays no bonus salvage", r.salvage, s2)
+	r.free()
+	finished["killing_one_offers_a_card"] = true
