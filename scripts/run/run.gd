@@ -1386,10 +1386,17 @@ func _draw() -> void:
 					vx += 1
 				var q0 := terrain.origin + Vector2(x0, vy) * Terrain.CELL
 				var q1 := terrain.origin + Vector2(vx, vy + 1) * Terrain.CELL
-				draw_colored_polygon(PackedVector2Array([
+				# Near-black, not dark red. At (0.16, 0.02, 0.03) a hole was
+				# almost exactly the colour of the red-tinted floor around it,
+				# so the ground falling away read as nothing at all. A hole
+				# should be the absence of floor, with a hot rim where it is
+				# still coming apart.
+				var quad := PackedVector2Array([
 					to_iso(q0), to_iso(Vector2(q1.x, q0.y)),
-					to_iso(q1), to_iso(Vector2(q0.x, q1.y))]),
-					Color(0.16, 0.02, 0.03, 0.94))
+					to_iso(q1), to_iso(Vector2(q0.x, q1.y))])
+				draw_colored_polygon(quad, Color(0.015, 0.0, 0.01, 1.0))
+				draw_polyline(quad + PackedVector2Array([quad[0]]),
+					Color(1.6, 0.35, 0.2, 0.55), 1.5)
 
 	# The way out, lit as TILES on walkable ground rather than a line pointed at
 	# the gate. With a lethal deadline, a line that crosses a wall is a line that
