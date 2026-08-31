@@ -271,6 +271,9 @@ const OPEN_SEARCH_RINGS := 8
 ## How close you must be to step through.
 const GATE_RADIUS := 48.0
 
+const CORRIDOR_LENGTH := 1200.0
+const CORRIDOR_HALF_WIDTH := 90.0
+
 ## The nearest open point to `p`, or `p` itself if none is found within the bound.
 ##
 ## Bounded on purpose. "Loop until you find open ground" is a hang the moment a
@@ -337,3 +340,26 @@ func _carve_to(from: Vector2, to: Vector2) -> void:
 		solid[j] = 0
 		if seen[j] != 0:
 			return      # met the reachable region; stop carving
+
+## A walled strip with nothing in it, generated on entering a gate and thrown
+## away on leaving. A Terrain rather than a bespoke corridor type, so collision,
+## the occupancy grid and rendering all work here for free.
+static func corridor(length: float = CORRIDOR_LENGTH) -> Terrain:
+	var size := Vector2(length + 400.0, 640.0)
+	var t := Terrain.new(-size * 0.5, size)
+	# Solid everywhere, then cut the walkable strip out of it.
+	t.solid.fill(1)
+	for y in range(t.h):
+		for x in range(t.w):
+			var p := t.origin + Vector2(float(x) + 0.5, float(y) + 0.5) * CELL
+			if absf(p.y) <= CORRIDOR_HALF_WIDTH:
+				t.solid[y * t.w + x] = 0
+	t.rects.append([Rect2(Vector2(-length * 0.5, -CORRIDOR_HALF_WIDTH),
+		Vector2(length, CORRIDOR_HALF_WIDTH * 2.0)), Kind.WALL])
+	t.has_gate = true
+	t.gate_open = true
+	t.gate_pos = Vector2(length * 0.5, 0.0)
+	return t
+
+func corridor_entrance() -> Vector2:
+	return Vector2(origin.x + CELL * 3.0, 0.0)

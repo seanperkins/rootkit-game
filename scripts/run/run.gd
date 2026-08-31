@@ -107,6 +107,7 @@ var subnet := 1
 ## property the old triple kept getting wrong.
 enum Phase { FIGHTING, CLEARED, TRANSIT }
 var phase := Phase.FIGHTING
+var corridor: Terrain = null
 ## director.spawned is per-SUBNET, because director.reset() zeroes it on every
 ## advance. The campaign total has to survive that.
 var _spawned_before := 0
@@ -207,7 +208,8 @@ func _ready() -> void:
 	# Generated from the player's start, because the spawn-safe margin is
 	# measured from wherever they actually are.
 	terrain = Terrain.new(ARENA_ORIGIN, ARENA_SIZE)
-	terrain.generate(_rng.seed, subnet, player_pos)
+	terrain.generate(_rng.seed, subnet, player_pos,
+		subnet < SpawnDirector.CAMPAIGN_SUBNETS)
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_counts = PackedInt32Array(); _counts.resize(4)
@@ -296,6 +298,7 @@ func _physics_process(dt: float) -> void:
 	if phase == Phase.FIGHTING:
 		_step1_spawn(dt)
 	_step2_integrate(dt)
+	_step2c_gate()
 	_step2b_zones(dt)
 	_step3_rebuild()
 	_step4_steer()
@@ -324,7 +327,7 @@ func _step1_spawn(dt: float) -> void:
 				director.dropped += 1
 			continue
 		var t = enemy_types[ti]
-		var idx := enemies.spawn(terrain.nearest_open(s[1]), Vector2.ZERO,
+		var idx := enemies.spawn(field().nearest_open(s[1]), Vector2.ZERO,
 			t.integrity * _hp_mult(), ENEMY_RADIUS, ti)
 		if idx < 0:
 			director.dropped += 1
@@ -347,7 +350,7 @@ func _step1_spawn(dt: float) -> void:
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(
-			terrain.nearest_open(player_pos + Vector2(cos(a), sin(a)) * 420.0),
+			field().nearest_open(player_pos + Vector2(cos(a), sin(a)) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		emit_signal("stats_changed")
@@ -371,7 +374,7 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_trail[id] = trail
 	_worm_cursor[id] = 0
 	for k in n:
-		var idx := enemies.spawn(terrain.nearest_open(at), Vector2.ZERO,
+		var idx := enemies.spawn(field().nearest_open(at), Vector2.ZERO,
 			t.integrity * _hp_mult(), ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
 			return k > 0
@@ -420,7 +423,7 @@ func _step2_integrate(dt: float) -> void:
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
-		player_pos = terrain.slide(player_pos,
+		player_pos = field().slide(player_pos,
 			world_dir * _eff_clock_speed() * dt)
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
@@ -450,7 +453,7 @@ func _step2_integrate(dt: float) -> void:
 			# Hard rejection, not a hope. Avoidance is steering and can fail on a
 			# concave wall; this is what makes "no enemy ends a tick inside rock"
 			# true for every enemy on every tick regardless of how steering did.
-			enemies.pos[i] = terrain.slide(enemies.pos[i], enemies.vel[i] * dt)
+			enemies.pos[i] = field().slide(enemies.pos[i], enemies.vel[i] * dt)
 		if _worm_id[i] != 0:
 			var id := _worm_id[i]
 			var c: int = (_worm_cursor[id] + 1) % WORM_TRAIL_LEN
@@ -478,7 +481,7 @@ func _step2_integrate(dt: float) -> void:
 			projectiles.state[i] = Population.DEAD
 		# Terrain stops shots. This is what makes a wall cover rather than
 		# decoration, and it is the same O(1) lookup the player's movement uses.
-		elif terrain.is_solid(projectiles.pos[i]):
+		elif field().is_solid(projectiles.pos[i]):
 			projectiles.state[i] = Population.DEAD
 	for i in botnet.count:
 		_botnet_life[i] -= dt
@@ -544,7 +547,7 @@ func _step4_steer() -> void:
 			var dl := d.length()
 			if dl > 0.001:
 				push += d / dl * (SEPARATION_RADIUS - dl)
-		enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos - here)
+		enemies.force[i] = push * 2.2 + field().avoid(here, player_pos - here)
 		i += STEER_SLICES
 
 ## Event triggers respond only when off cooldown. Returns false when the
@@ -763,7 +766,7 @@ func apply_slow(i: int, factor: float, seconds: float) -> void:
 ## Zone effects, one array index per entity per tick.
 func _step2b_zones(dt: float) -> void:
 	_zone_slow_player = false
-	var pz := terrain.zone_at(player_pos)
+	var pz := field().zone_at(player_pos)
 	if pz == Terrain.Kind.HAZARD:
 		# Deliberately NOT through the contact-damage path: iframes exist to stop
 		# a swarm chewing through you on touch, and a hazard you are standing in
@@ -776,7 +779,7 @@ func _step2b_zones(dt: float) -> void:
 	for i in enemies.count:
 		if _slow_left[i] > 0.0:
 			_slow_left[i] -= dt
-		match terrain.zone_at(enemies.pos[i]):
+		match field().zone_at(enemies.pos[i]):
 			Terrain.Kind.HAZARD:
 				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i],
 					Terrain.HAZARD_DPS * dt)
@@ -964,6 +967,44 @@ func _bank_progress(with_salvage: bool) -> void:
 ## did, so chip damage still accumulates across a campaign.
 const SUBNET_CLEAR_HEAL := 0.30
 
+## The terrain currently underfoot. Everything that collides or draws asks this
+## rather than `terrain`, so the corridor needs no special cases anywhere.
+func field() -> Terrain:
+	return corridor if phase == Phase.TRANSIT else terrain
+
+## Stepping into an open gate is the advance. Checked after movement so it reads
+## the position the player actually reached this tick.
+func _step2c_gate() -> void:
+	var f := field()
+	if not f.has_gate or not f.gate_open:
+		return
+	if player_pos.distance_to(f.gate_pos) > Terrain.GATE_RADIUS:
+		return
+	if phase == Phase.CLEARED:
+		_enter_corridor()
+	elif phase == Phase.TRANSIT:
+		_leave_corridor()
+
+func _enter_corridor() -> void:
+	phase = Phase.TRANSIT
+	corridor = Terrain.corridor()
+	player_pos = corridor.corridor_entrance()
+	# The clear heal lands HERE rather than on the ICE kill, so it rewards
+	# leaving rather than killing — and exactly once, because the phase has
+	# already changed by the time this could be reached again.
+	player_health = minf(_eff_integrity(),
+		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
+	for i in range(enemies.count - 1, -1, -1):
+		enemies.despawn(i)
+	for i in range(projectiles.count - 1, -1, -1):
+		projectiles.despawn(i)
+	emit_signal("stats_changed")
+
+func _leave_corridor() -> void:
+	phase = Phase.FIGHTING
+	corridor = null
+	_advance_subnet()
+
 func spawned_total() -> int:
 	return _spawned_before + director.spawned
 
@@ -972,17 +1013,12 @@ func _advance_subnet() -> void:
 	subnet += 1
 	director.reset()
 	_refresh_thresholds()
-	# A new subnet is a new arena. Generated AFTER the subnet increments so the
-	# density scales, and from the player's CURRENT position so the spawn-safe
-	# margin is measured where they actually are — they do not teleport home on
-	# an advance, and generating around the origin could bury them.
-	terrain.generate(_rng.seed, subnet, player_pos)
-	for i in range(enemies.count - 1, -1, -1):
-		enemies.despawn(i)
-	for i in range(projectiles.count - 1, -1, -1):
-		projectiles.despawn(i)
-	player_health = minf(_eff_integrity(),
-		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
+	# The player arrives at the arena's centre, and the arena is generated around
+	# them so the spawn-safe margin lands where they actually stand. The last
+	# subnet gets no gate: clearing its ICE wins outright.
+	player_pos = ARENA_ORIGIN + ARENA_SIZE * 0.5
+	terrain.generate(_rng.seed, subnet, player_pos,
+		subnet < SpawnDirector.CAMPAIGN_SUBNETS)
 	emit_signal("stats_changed")
 
 # ------------------------------------------------------------ progression ---
@@ -990,9 +1026,11 @@ func _advance_subnet() -> void:
 ## XP to clear ONE level. Level 1 seeds `xp_needed` from the same function, so
 ## the first level costs what the curve says it costs rather than a literal that
 ## drifts out of step with it.
-## 2.4, not the 1.5 this started at: a build now matures across a whole campaign
+##
+## 1.8, not the 1.0 this started at: a build now matures across a whole campaign
 ## rather than inside one five-minute subnet, so the curve has three times the
-## wall-clock to spend itself over.
+## wall-clock to spend itself over. It was briefly 2.4, which starved the build
+## badly enough that the autopiloted run died in subnet 01 every time.
 const XP_SLOWDOWN := 1.8
 
 static func _xp_for(lvl: int) -> int:
@@ -1193,7 +1231,7 @@ func _draw() -> void:
 	# obstacles (a few dozen) rather than the number of solid cells (up to
 	# eleven hundred). A world-space AABB under to_iso is a sheared
 	# parallelogram, never a rect, so each is its four projected corners.
-	for entry in terrain.rects:
+	for entry in field().rects:
 		var tr: Rect2 = entry[0]
 		var kind: int = entry[1]
 		var quad := PackedVector2Array([
