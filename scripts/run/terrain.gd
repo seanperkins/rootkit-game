@@ -39,6 +39,10 @@ var gate_open := false
 ## "through" is.
 var gate_dir := Vector2.ZERO
 var corridor_end := Vector2.ZERO
+## The walkway beyond the gate, as a rect, so it can be drawn as floor. It is
+## carved into the margin rather than placed as a rect, so nothing else records
+## where it went.
+var corridor_rect := Rect2()
 
 ## The playable arena, which is now SMALLER than the grid. Collapse and wall
 ## placement work in here; the corridor lives outside it.
@@ -99,10 +103,31 @@ func cell_index(p: Vector2) -> int:
 ## is near an edge; solid-outside would reject every one of those spawns and
 ## starve the wave.
 func is_solid(p: Vector2) -> bool:
+	if gate_blocks(p):
+		return true
 	var i := cell_index(p)
 	if i < 0:
 		return false
 	return solid[i] != 0
+
+## A CLOSED gate still has to stop you.
+##
+## The mouth and the corridor beyond it are carved open at generation — that is
+## what makes them visible from the first second and walkable the moment the
+## gate opens. Without this, they were walkable from the first second too, and
+## the whole subnet could be skipped by strolling out.
+##
+## Tested geometrically rather than baked into `solid`, because `solid` is
+## static by design: baking would mean mutating the grid when the gate opens,
+## and the distance field and collapse order are both built off it.
+func gate_blocks(p: Vector2) -> bool:
+	if not has_gate or gate_open:
+		return false
+	var d := p - gate_pos
+	# Only from the gate plane OUTWARD, so the arena side is unaffected.
+	if d.dot(gate_dir) < -CELL * 1.5:
+		return false
+	return absf(d.dot(Vector2(-gate_dir.y, gate_dir.x))) < CORRIDOR_HALF_WIDTH + CELL * 2.0
 
 func zone_at(p: Vector2) -> int:
 	var i := cell_index(p)
@@ -395,6 +420,12 @@ func _place_gate(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 ## walking into it is walking.
 func _cut_corridor() -> void:
 	var side := Vector2(-gate_dir.y, gate_dir.x)
+	var far := gate_pos + gate_dir * CORRIDOR_LENGTH
+	corridor_rect = Rect2(gate_pos, Vector2.ZERO) \
+		.expand(gate_pos + side * CORRIDOR_HALF_WIDTH) \
+		.expand(gate_pos - side * CORRIDOR_HALF_WIDTH) \
+		.expand(far + side * CORRIDOR_HALF_WIDTH) \
+		.expand(far - side * CORRIDOR_HALF_WIDTH)
 	var steps := int(CORRIDOR_LENGTH / (CELL * 0.5))
 	var across := int(CORRIDOR_HALF_WIDTH / (CELL * 0.5))
 	for k in range(steps + 1):

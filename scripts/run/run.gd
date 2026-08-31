@@ -1320,6 +1320,35 @@ func _visible_world_rect() -> Rect2:
 	var half := from_iso(vp * 0.6).abs() + from_iso(Vector2(vp.x, -vp.y) * 0.6).abs()
 	return Rect2(player_pos - half, half * 2.0)
 
+## Terrain heights. The arena slab hangs DEPTH below its surface; these stand
+## above it, so the world reads as one solid object with things on top of it
+## rather than as markings painted on a floor.
+const WALL_HEIGHT := 26.0
+const POST_HEIGHT := 78.0
+
+## One extruded box, drawn with the same face convention as the arena slab in
+## backdrop.gd: the y = max edge is the lit near face and the x = max edge is
+## the darker one turned away. Sharing that convention is what stops a wall
+## looking like it is lit from a different sun than the ground it stands on.
+func _draw_box(r: Rect2, height: float, top: Color, near: Color, side: Color,
+		edge: Color) -> void:
+	var up := Vector2(0.0, -height)
+	var g00 := to_iso(r.position)
+	var g10 := to_iso(Vector2(r.end.x, r.position.y))
+	var g11 := to_iso(r.end)
+	var g01 := to_iso(Vector2(r.position.x, r.end.y))
+	# Faces first, top last, so the top edge reads as the near silhouette.
+	draw_colored_polygon(PackedVector2Array([g01, g11, g11 + up, g01 + up]), near)
+	draw_colored_polygon(PackedVector2Array([g10, g11, g11 + up, g10 + up]), side)
+	draw_colored_polygon(PackedVector2Array([
+		g00 + up, g10 + up, g11 + up, g01 + up]), top)
+	draw_polyline(PackedVector2Array([
+		g00 + up, g10 + up, g11 + up, g01 + up, g00 + up]), edge, 1.5)
+	# The three verticals that read as corners.
+	draw_line(g01, g01 + up, edge, 1.0)
+	draw_line(g11, g11 + up, edge, 1.5)
+	draw_line(g10, g10 + up, edge, 1.0)
+
 func _draw() -> void:
 	var view := _visible_world_rect()
 	# Terrain first, so it sits under every entity.
@@ -1343,20 +1372,17 @@ func _draw() -> void:
 		if not view.intersects(tr):
 			continue
 		var kind: int = entry[1]
+		if kind == Terrain.Kind.WALL:
+			_draw_box(tr, WALL_HEIGHT, Color(0.10, 0.26, 0.21),
+				Color(0.055, 0.16, 0.13), Color(0.03, 0.10, 0.085),
+				Color(0.40, 0.95, 0.70))
+			continue
+		# Zones stay FLAT. They are conditions of the floor, not objects on it,
+		# and giving them height would say you can stand behind one.
 		var quad := PackedVector2Array([
-			to_iso(tr.position),
-			to_iso(tr.position + Vector2(tr.size.x, 0)),
-			to_iso(tr.position + tr.size),
-			to_iso(tr.position + Vector2(0, tr.size.y))])
+			to_iso(tr.position), to_iso(Vector2(tr.end.x, tr.position.y)),
+			to_iso(tr.end), to_iso(Vector2(tr.position.x, tr.end.y))])
 		match kind:
-			Terrain.Kind.WALL:
-				# Light enough to read as MASS against a near-black ground. At
-				# 0.05 the fill was indistinguishable from the arena floor and a
-				# wall registered only as its outline, which reads as a marking
-				# on the ground rather than as something you cannot walk through.
-				draw_colored_polygon(quad, Color(0.10, 0.21, 0.17))
-				draw_polyline(quad + PackedVector2Array([quad[0]]),
-					Color(0.45, 1.0, 0.72), 1.5)
 			Terrain.Kind.HAZARD:
 				draw_colored_polygon(quad, Color(1.0, 0.30, 0.28, 0.15))
 			Terrain.Kind.SLOW:
@@ -1364,72 +1390,49 @@ func _draw() -> void:
 			Terrain.Kind.CORRUPTION:
 				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
 
-	# Ground that has fallen away, merged into horizontal row-runs before
-	# drawing. Per-cell quads would be thousands of draw calls across a 6,300
-	# cell grid; runs cut that by roughly an order of magnitude for one extra
-	# loop.
-	if not terrain.voided.is_empty():
-		# Only the rows the camera can see. At 5x the arena this is a few dozen
-		# rows out of two hundred.
-		var vy0 := clampi(terrain.cell_xy(view.position).y, 0, terrain.h - 1)
-		var vy1 := clampi(terrain.cell_xy(view.end).y, 0, terrain.h - 1)
-		var vx0 := clampi(terrain.cell_xy(view.position).x, 0, terrain.w - 1)
-		var vx1 := clampi(terrain.cell_xy(view.end).x, 0, terrain.w - 1)
-		for vy in range(vy0, vy1 + 1):
-			var vx := vx0
-			while vx <= vx1:
-				if terrain.voided[vy * terrain.w + vx] == 0:
-					vx += 1
-					continue
-				var x0 := vx
-				while vx <= vx1 and terrain.voided[vy * terrain.w + vx] != 0:
-					vx += 1
-				var q0 := terrain.origin + Vector2(x0, vy) * Terrain.CELL
-				var q1 := terrain.origin + Vector2(vx, vy + 1) * Terrain.CELL
-				# Near-black, not dark red. At (0.16, 0.02, 0.03) a hole was
-				# almost exactly the colour of the red-tinted floor around it,
-				# so the ground falling away read as nothing at all. A hole
-				# should be the absence of floor, with a hot rim where it is
-				# still coming apart.
-				var quad := PackedVector2Array([
-					to_iso(q0), to_iso(Vector2(q1.x, q0.y)),
-					to_iso(q1), to_iso(Vector2(q0.x, q1.y))])
-				draw_colored_polygon(quad, Color(0.015, 0.0, 0.01, 1.0))
-				draw_polyline(quad + PackedVector2Array([quad[0]]),
-					Color(1.6, 0.35, 0.2, 0.55), 1.5)
+	# The walkway beyond the gate: floor, then a raised rail either side, so the
+	# way out is visibly somewhere you can go rather than a gap in the dark.
+	if terrain.has_gate and view.intersects(terrain.corridor_rect):
+		var cr := terrain.corridor_rect
+		draw_colored_polygon(PackedVector2Array([
+			to_iso(cr.position), to_iso(Vector2(cr.end.x, cr.position.y)),
+			to_iso(cr.end), to_iso(Vector2(cr.position.x, cr.end.y))]),
+			Color(0.035, 0.085, 0.075))
+		var along := Vector2(absf(terrain.gate_dir.x), absf(terrain.gate_dir.y))
+		var rail := Vector2(along.y, along.x) * 22.0 + along * cr.size
+		_draw_box(Rect2(cr.position, rail.max(Vector2(22, 22))), WALL_HEIGHT,
+			Color(0.08, 0.20, 0.17), Color(0.045, 0.13, 0.11),
+			Color(0.025, 0.08, 0.07), Color(0.30, 0.72, 0.55))
+		_draw_box(Rect2(cr.end - rail.max(Vector2(22, 22)),
+			rail.max(Vector2(22, 22))), WALL_HEIGHT,
+			Color(0.08, 0.20, 0.17), Color(0.045, 0.13, 0.11),
+			Color(0.025, 0.08, 0.07), Color(0.30, 0.72, 0.55))
 
-	# The way out, lit as TILES on walkable ground rather than a line pointed at
-	# the gate. With a lethal deadline, a line that crosses a wall is a line that
-	# gets people killed.
-	if phase == Phase.CLEARED and _route.size() > 1:
-		var pulse := Time.get_ticks_msec() * 0.0016
-		for k in _route.size():
-			var ci: int = _route[k]
-			var cq := terrain.origin + Vector2(ci % terrain.w, ci / terrain.w) \
-				* Terrain.CELL
-			if not view.has_point(cq):
-				continue
-			var cq1 := cq + Vector2(Terrain.CELL, Terrain.CELL)
-			var travel := fmod(pulse - float(k) * 0.06, 1.0)
-			draw_colored_polygon(PackedVector2Array([
-				to_iso(cq), to_iso(Vector2(cq1.x, cq.y)),
-				to_iso(cq1), to_iso(Vector2(cq.x, cq1.y))]),
-				Color(0.45, 1.6, 1.1, 0.10 + 0.30 * travel))
-
-	# The gate reads as a doorway, not a marker: two posts and a lintel, square
-	# to the way out. A ring said "something is here" and nothing more.
+	# The gate itself: two standing posts and a lintel across them. A ring lay
+	# flat on the ground in a world drawn as solid objects, which is why it read
+	# as a marking rather than as a doorway.
 	if terrain.has_gate:
 		var gside := Vector2(-terrain.gate_dir.y, terrain.gate_dir.x)
-		var m1 := terrain.gate_pos + gside * 74.0
-		var m2 := terrain.gate_pos - gside * 74.0
-		var post := terrain.gate_dir * 30.0
-		var gcol := Color(0.30, 0.45, 0.40)
-		if terrain.gate_open:
-			var gp := 0.65 + 0.35 * sin(Time.get_ticks_msec() * 0.004)
-			gcol = Color(0.55 * gp, 1.9 * gp, 1.2 * gp)
-		draw_line(to_iso(m1 - post), to_iso(m1 + post), gcol, 4.0)
-		draw_line(to_iso(m2 - post), to_iso(m2 + post), gcol, 4.0)
-		draw_line(to_iso(m1), to_iso(m2), gcol, 2.0)
+		var lit := terrain.gate_open
+		var gcol := Color(0.30, 0.50, 0.44)
+		var gtop := Color(0.07, 0.17, 0.15)
+		if lit:
+			var gp := 0.7 + 0.3 * sin(Time.get_ticks_msec() * 0.004)
+			gcol = Color(0.45 * gp, 1.7 * gp, 1.1 * gp)
+			gtop = Color(0.12 * gp, 0.42 * gp, 0.30 * gp)
+		for sgn in [1.0, -1.0]:
+			var centre: Vector2 = terrain.gate_pos \
+				+ gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0) * sgn
+			_draw_box(Rect2(centre - Vector2(15, 15), Vector2(30, 30)),
+				POST_HEIGHT, gtop, gtop.darkened(0.3), gtop.darkened(0.5), gcol)
+		# The lintel, spanning post top to post top.
+		var up := Vector2(0.0, -POST_HEIGHT)
+		var l1 := to_iso(terrain.gate_pos
+			+ gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0)) + up
+		var l2 := to_iso(terrain.gate_pos
+			- gside * (Terrain.CORRIDOR_HALF_WIDTH + 16.0)) + up
+		draw_line(l1, l2, gcol, 3.0)
+		draw_line(l1 + Vector2(0, 8), l2 + Vector2(0, 8), gcol.darkened(0.4), 2.0)
 
 	# Shot visuals, oldest fading out. Drawn under the ship.
 	for fx in _fx_line:

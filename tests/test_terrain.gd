@@ -310,7 +310,10 @@ func the_gate_is_always_reachable() -> void:
 			t.generate(s, sn, Vector2.ZERO)
 			if not t.has_gate:
 				continue
-			if t.is_solid(t.gate_pos) or not _reaches(t, Vector2.ZERO, t.gate_pos):
+			# solid[] not is_solid(): the mouth's CELL is open from generation,
+			# while is_solid additionally reports the shut gate barring it.
+			if t.solid[t.cell_index(t.gate_pos)] != 0 \
+					or not _reaches(t, Vector2.ZERO, t.gate_pos):
 				unreachable += 1
 				continue
 			# On the ARENA's edge — not the grid's, which is a margin away, and
@@ -330,6 +333,14 @@ func the_gate_is_always_reachable() -> void:
 	var h := _fresh()
 	h.generate(5, 1, Vector2.ZERO)
 	_check("a fresh gate is closed", h.gate_open, false)
+	# And a closed gate is a wall: the corridor exists from the first second,
+	# so without this the whole subnet could be skipped by walking out.
+	_check("a closed gate bars the way", h.is_solid(h.gate_pos), true)
+	_check("and bars the corridor beyond it",
+		h.is_solid(h.gate_pos + h.gate_dir * 300.0), true)
+	h.gate_open = true
+	_check("an open one does not", h.is_solid(h.gate_pos), false)
+	_check("nor beyond it", h.is_solid(h.gate_pos + h.gate_dir * 300.0), false)
 	finished["the_gate_is_always_reachable"] = true
 
 ## Reuses the test's own flood fill rather than the generator's.
