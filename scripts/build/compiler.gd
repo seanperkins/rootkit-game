@@ -37,8 +37,10 @@ const MULT_KEYS := {
 	&"reach":  [&"radius", &"travel"],
 }
 
-## Both clamps guard the same bug class: an unbounded additive stat. Cooldown
-## reached -1.70s at max rank and hung a `while accumulator >= cooldown` loop.
+## The projectile_speed clamp guards an unbounded additive stat. The cooldown
+## floors guard something else now: cadence is a product of positives, so it can
+## no longer reach the -1.70s that once hung a `while accumulator >= cooldown`
+## loop. See the two floors in build() for what each one is actually for.
 ## projectile_speed had no clamp at all and would have failed silently, as
 ## missed hits nobody could reproduce. 960 = 60 * (PROJECTILE_RADIUS 4 +
 ## ENEMY_RADIUS 12): the bound is the smallest combined radius, not the cell size.
@@ -71,7 +73,11 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	if ex.trigger != null:
 		_fold(r, ex.trigger)
 
-	# Captured pre-multiplier, pre-clamp. See ResolvedExploit.base_cooldown.
+	# cooldown is contributed ONLY by vectors now — validate() enforces it — so at
+	# this point r.cooldown IS the vector's raw base, which is exactly what the
+	# proportional floor needs, with no extra field to carry it.
+	var vector_base := r.cooldown
+	r.cooldown *= r.cadence_mult
 	r.base_cooldown = r.cooldown
 
 	# The player layer is the PERCENTAGE layer: modules contribute flat numbers,
@@ -84,7 +90,19 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 		for sk in MULT_KEYS[mk]:
 			r.set(sk, r.get(sk) * f)
 
-	r.cooldown = maxf(r.cooldown, MIN_COOLDOWN)
+	# Two floors. The PROPORTIONAL one is where balance happens: every vector
+	# bottoms out at the same fraction of a different base, so the ratio at the
+	# floor is the base ratio and reaching it is not a failure.
+	#
+	# MIN_COOLDOWN is the absolute guard, and its real load is the NULL-VECTOR
+	# path: an exploit founded on a TRIGGER has vector_base 0.0, so the
+	# proportional floor collapses to 0.0 and only this stands between
+	# _step5_fire's `while _fire_acc >= r.cooldown` and a zero cooldown. That
+	# state is reachable — legal_targets offers EMPTY_SLOT on a not-yet-created
+	# exploit for any slot type — and harmless, since every fire path gates on
+	# r.inert, but it is what this constant is actually for.
+	r.cooldown = maxf(r.cooldown,
+		maxf(MIN_COOLDOWN, vector_base * MIN_CADENCE_FRACTION))
 	r.projectile_speed = minf(r.projectile_speed, MAX_PROJECTILE_SPEED)
 	# Fold in float, floor ONCE at the end: 0.5 + 0.5 must be 1, not 0 + 0.
 	r.pierce = floori(r.pierce)
@@ -153,4 +171,33 @@ static func validate(m: Module) -> Array[String]:
 		errs.append("module '%s': contributes corruption without the corruption tag" % m.id)
 	if m.max_rank < 1:
 		errs.append("module '%s': max_rank must be >= 1" % m.id)
+
+	# A factor of zero, negative, or vanishingly small. 1e-9 passes a bare "> 0".
+	if m.stats.has(&"cadence_mult") and float(m.stats[&"cadence_mult"]) < 0.01:
+		errs.append("module '%s': cadence_mult must be >= 0.01" % m.id)
+
+	# The floor reads r.cooldown as the vector's raw base. A PAYLOAD shipping
+	# {cooldown: 0.40} was measured passing validate(), poisoning vector_base and
+	# collapsing broadcast:packet from 1.70 to 1.14.
+	if m.slot != Module.Slot.VECTOR and m.stats.has(&"cooldown"):
+		errs.append("module '%s': only a VECTOR may carry cooldown" % m.id)
+
+	# The ratio guarantee needs the cadence product to be vector-INDEPENDENT. A
+	# packet variant carrying cadence_mult 0.60 was measured producing a
+	# SOME-floored state with the ratio sliding 2.83 -> 2.43 -> 1.99 -> 1.70. The
+	# configuration also has no expressive power: applied once and unranked it is
+	# identical to editing the vector's base, EXCEPT in the floor term, which
+	# reads the raw base — so its only distinct behaviour IS the broken ratio.
+	if m.slot == Module.Slot.VECTOR and m.stats.has(&"cadence_mult"):
+		errs.append("module '%s': a VECTOR may not carry cadence_mult" % m.id)
+
+	# The guarantee's other precondition: below this the ABSOLUTE floor binds for
+	# some vectors and not others, and the ratio collapses. Requires the KEY, not
+	# merely a value when present — a VECTOR omitting cooldown has vector_base 0.0
+	# and fires at a permanent 20/s, and the inert-path argument does not cover
+	# it, because such an exploit with a trigger is NOT inert.
+	if m.slot == Module.Slot.VECTOR and (not m.stats.has(&"cooldown") \
+			or float(m.stats[&"cooldown"]) < MIN_COOLDOWN / MIN_CADENCE_FRACTION):
+		errs.append("module '%s': a VECTOR must carry cooldown >= %.4f"
+			% [m.id, MIN_COOLDOWN / MIN_CADENCE_FRACTION])
 	return errs

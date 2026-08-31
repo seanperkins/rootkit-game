@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 50
+const EXPECTED_CHECKS := 51
 
 var failures := 0
 var checks := 0
@@ -99,16 +99,22 @@ func vector_cadence_does_not_scale() -> void:
 	var r5 := Compiler.build(ex)
 	_check("rank 5 vector fires at the same cadence", r5.cooldown, r1.cooldown)
 	_check("and that cadence is the module's own", r1.cooldown,
-		base + T[&"interval"].stats[&"cooldown"])
+		base * T[&"interval"].stats[&"cadence_mult"])
 	_check("while its damage does scale", r5.damage > r1.damage, true)
 
-## Stack every cooldown contributor at max rank and the floor must still hold.
+## Stack every cadence contributor at max rank, in BOTH payload slots, and the
+## PROPORTIONAL floor holds. The absolute MIN_COOLDOWN no longer binds for any
+## legal build — that is the point of the change, so it is asserted here.
 func cooldown_clamp() -> void:
-	var ex := _mk(&"broadcast", &"interval", [&"overclock"])
+	var ex := _mk(&"broadcast", &"interval", [&"overclock", &"overclock"])
 	ex.trigger.rank = 5
 	ex.payloads[0].rank = 5
-	var r := Compiler.build(ex)
-	_check("cooldown clamped to MIN_COOLDOWN", r.cooldown, Compiler.MIN_COOLDOWN)
+	ex.payloads[1].rank = 5
+	var base: float = T[&"broadcast"].stats[&"cooldown"]
+	var r := Compiler.build(ex, {&"haste": 0.70})
+	_check("floored at the vector's own fraction", r.cooldown,
+		base * Compiler.MIN_CADENCE_FRACTION)
+	_check("above the absolute floor", r.cooldown > Compiler.MIN_COOLDOWN, true)
 	_check("cooldown never negative", r.cooldown > 0.0, true)
 
 func speed_clamp() -> void:
@@ -305,6 +311,8 @@ func rank_factor_is_asymmetric() -> void:
 func cadence_mult_folds_by_product() -> void:
 	var a := Module.make(&"synth_a", "synth_a", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
 	var b := Module.make(&"synth_b", "synth_b", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
-	var ex := _mk(&"broadcast", &"interval")
+	# on_damage_taken, not interval: interval carries a cadence_mult of its own
+	# now, so using it here would fold 0.85 into the product being asserted.
+	var ex := _mk(&"broadcast", &"on_damage_taken")
 	ex.place(a); ex.place(b)
 	_check("two factors multiply, never add", Compiler.build(ex).cadence_mult, 0.25)
