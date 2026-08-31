@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 44
+const EXPECTED_CHECKS := 50
 
 var failures := 0
 var checks := 0
@@ -27,6 +27,8 @@ func _init() -> void:
 	rule_zero_no_legal_placement()
 	inert_only_transient()
 	cadence_mult_defaults_to_one()
+	rank_factor_is_asymmetric()
+	cadence_mult_folds_by_product()
 	ward_folds_by_max()
 	rank_carve_outs()
 	ward_equality()
@@ -286,3 +288,23 @@ func cadence_mult_defaults_to_one() -> void:
 		if float(r.get(k)) == 0.0:
 			zero_defaults += 1
 	_check("every OTHER stat key defaults to zero", zero_defaults, 16)
+
+## Rank scales the two directions differently, because each is the rule the other
+## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;
+## applying a REDUCTION linearly goes negative — overclock (0.82) crosses at
+## rank 6, one above max_rank.
+func rank_factor_is_asymmetric() -> void:
+	_check("a reduction compounds", Compiler._rank_factor(0.85, 5), pow(0.85, 5))
+	_check("a cost accumulates", Compiler._rank_factor(1.52, 5), 1.0 + 0.52 * 5.0)
+	_check("1.0 is fixed under both branches", Compiler._rank_factor(1.0, 5), 1.0)
+	_check("rank 0 is neutral", Compiler._rank_factor(0.85, 0), 1.0)
+	_check("a reduction stays positive far past max_rank",
+		Compiler._rank_factor(0.85, 10) > 0.0, true)
+
+## A synthetic module, because nothing in the shipped table carries the key yet.
+func cadence_mult_folds_by_product() -> void:
+	var a := Module.make(&"synth_a", "synth_a", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
+	var b := Module.make(&"synth_b", "synth_b", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
+	var ex := _mk(&"broadcast", &"interval")
+	ex.place(a); ex.place(b)
+	_check("two factors multiply, never add", Compiler.build(ex).cadence_mult, 0.25)

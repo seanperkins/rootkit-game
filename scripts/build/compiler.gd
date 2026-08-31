@@ -7,6 +7,16 @@ class_name Compiler extends RefCounted
 const MIN_COOLDOWN := 0.05
 const MAX_PROJECTILE_SPEED := 960.0
 
+## The cooldown floor, as a fraction of the VECTOR's own base cadence. An
+## absolute floor erases what distinguishes a vector — every fast build converges
+## on the same number, and the clamp ends up doing the balancing. A proportional
+## one cannot: every vector floors at the same fraction of a DIFFERENT base, so
+## the ratio at the floor IS the base ratio, and hitting it is not a failure.
+const MIN_CADENCE_FRACTION := 0.12
+
+## Stats that accumulate by product rather than by sum.
+const MUL_FOLD_KEYS := [&"cadence_mult"]
+
 ## Which global multiplier scales which stats. Total and non-overlapping: every
 ## stat key not named here is deliberately excluded.
 ##   - lifesteal is excluded so attack is not also the best defensive stat.
@@ -82,6 +92,18 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	r.botnet_cap = floori(r.botnet_cap)
 	return r
 
+## Rank scales the two directions of a cadence factor differently, and each half
+## is the rule the other direction breaks under.
+##
+## Compounding a COST diverges: 1.52^5 = 8.1, which measured as a -53%..-63% DPS
+## trap on ranking on_kill — the option Loadout.best_target scores highest, so
+## the level-up screen would have recommended it. Applying a REDUCTION linearly
+## goes NEGATIVE: the threshold is rank > 1/(1-f), so overclock (0.82) crosses at
+## rank 6, one above max_rank. Compounding converges toward zero and never
+## crosses it.
+static func _rank_factor(f: float, rank: int) -> float:
+	return pow(f, rank) if f < 1.0 else 1.0 + (f - 1.0) * rank
+
 static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 	var m := em.module
 	var is_vector := m.slot == Module.Slot.VECTOR
@@ -104,7 +126,15 @@ static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 			# Rank buys ward magnitude, never uptime.
 			scale = 1
 		var v := float(m.stats[key]) * scale
-		if key in MAX_FOLD_KEYS:
+		if key in MUL_FOLD_KEYS:
+			# The RAW stat and `scale` — never `v`, and never em.rank. `v` is
+			# already rank-scaled, so pow(v, rank) raises (value x rank) to the
+			# power rank: pow(0.85*3, 3) = 16.58 against a correct 0.614, a 27x
+			# SLOWDOWN. And `scale` rather than em.rank so that any carve-out
+			# actually applies — reading em.rank here is what made an earlier
+			# carve-out dead code.
+			r.set(key, r.get(key) * _rank_factor(float(m.stats[key]), scale))
+		elif key in MAX_FOLD_KEYS:
 			r.set(key, maxf(r.get(key), v))
 		else:
 			r.set(key, r.get(key) + v)
