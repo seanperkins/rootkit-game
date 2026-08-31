@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROOTKIT Field Manual</title>
+<meta name="description" content="Every enemy, module, wave and constant currently in ROOTKIT, generated from the game's source.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
+<style>
+/* ROOTKIT field manual.
+   Single visual world on purpose: the game is a green-phosphor isometric
+   terminal, and every colour here is lifted from its own source — the ground is
+   project.godot's clear colour, the phosphor and alert are ui.gd's FG and WARN,
+   and each entity accent is the Color() literal from enemy_table.gd. Nothing is
+   themed against the host, so every value is painted explicitly. */
+:root {
+  --ground:#050908; --surface:#0b1310; --surface2:#101c17;
+  --rule:#1b3329; --rule-hi:#2b5443;
+  --phosphor:#8cffb8; --dim:#599e7a; --dimmer:#3d6e55;
+  --alert:#ff7370; --amber:#ffbf40;
+  --vector:#8cffb8; --trigger:#ffbf40; --payload:#b3a7ff;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --cond:"IBM Plex Sans Condensed","Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--ground); color:var(--phosphor);
+  font-family:var(--mono); font-size:15px; line-height:1.65; margin:0;
+  background-image:
+    repeating-linear-gradient(60deg,rgba(27,51,41,.28) 0 1px,transparent 1px 92px),
+    repeating-linear-gradient(-60deg,rgba(27,51,41,.28) 0 1px,transparent 1px 92px);
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px 96px;display:grid;gap:64px}
+
+header.mast{padding:72px 0 40px;border-bottom:1px solid var(--rule);display:grid;gap:18px}
+.mast h1{font-family:var(--cond);font-weight:700;font-size:clamp(2.6rem,1.4rem + 5vw,5rem);
+  line-height:.94;letter-spacing:-.02em;margin:0;text-wrap:balance}
+.mast h1 .sub{display:block;color:var(--dim);font-size:.34em;letter-spacing:.22em;
+  text-transform:uppercase;font-weight:600;margin-top:14px}
+.mast p{max-width:64ch;color:var(--dim);margin:0}
+.mast p strong{color:var(--phosphor);font-weight:500}
+.facts{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+.fact{border:1px solid var(--rule-hi);padding:5px 11px;font-size:12px;
+  letter-spacing:.06em;color:var(--dim);font-variant-numeric:tabular-nums}
+.fact b{color:var(--phosphor);font-weight:600}
+
+nav.rail{position:sticky;top:0;z-index:20;background:var(--ground);
+  border-bottom:1px solid var(--rule);padding:11px 0;display:flex;flex-wrap:wrap;
+  gap:4px 20px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+  font-family:var(--cond);font-weight:600}
+nav.rail a{color:var(--dim);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
+nav.rail a:hover,nav.rail a:focus-visible{color:var(--phosphor);border-bottom-color:var(--phosphor);outline:none}
+
+section{display:grid;gap:22px;scroll-margin-top:60px}
+h2{font-family:var(--cond);font-weight:700;font-size:clamp(1.5rem,1.1rem + 1.4vw,2.1rem);
+  margin:0;letter-spacing:-.01em;text-wrap:balance;display:flex;align-items:baseline;gap:14px}
+h2::after{content:"";flex:1;height:1px;background:var(--rule)}
+h3{font-family:var(--cond);font-weight:600;font-size:1.02rem;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--dim);margin:0}
+p{margin:0;max-width:68ch}
+.lede{color:var(--dim)}
+.lede strong,p strong{color:var(--phosphor);font-weight:500}
+code{color:var(--amber);font-size:.94em}
+
+.scroll{overflow-x:auto;border:1px solid var(--rule);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:660px}
+thead th{text-align:left;font-family:var(--cond);font-weight:600;font-size:11px;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--dimmer);padding:11px 14px;
+  border-bottom:1px solid var(--rule-hi);white-space:nowrap;background:var(--surface2)}
+tbody td{padding:10px 14px;border-bottom:1px solid var(--rule);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--surface2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.name{white-space:nowrap;font-weight:500}
+td.note{color:var(--dim);min-width:240px}
+td.dimmed{color:var(--dimmer);font-size:12.5px;white-space:nowrap}
+td.stripe{border-left:3px solid var(--rule-hi)}
+tr.v td.stripe{border-left-color:var(--vector)}
+tr.t td.stripe{border-left-color:var(--trigger)}
+tr.p td.stripe{border-left-color:var(--payload)}
+
+.glyph{display:inline-block;width:9px;height:9px;margin-right:9px;vertical-align:1px;
+  border:1.5px solid currentColor}
+.tag{display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  font-family:var(--cond);font-weight:600;border:1px solid currentColor;padding:1px 6px;
+  margin-left:8px;vertical-align:1px;color:var(--amber)}
+
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12px;color:var(--dim);letter-spacing:.04em}
+.legend span{display:flex;align-items:center;gap:8px}
+.swatch{width:11px;height:11px;border:1px solid currentColor}
+
+.timeline{border:1px solid var(--rule);background:var(--surface);padding:26px 22px 18px;overflow-x:auto}
+.tl-inner{min-width:700px}
+.tl-axis{position:relative;height:22px;border-bottom:1px solid var(--rule-hi);margin-bottom:14px}
+.tl-axis i{position:absolute;bottom:0;width:1px;height:7px;background:var(--rule-hi);font-style:normal}
+.tl-axis i::after{content:attr(data-t);position:absolute;bottom:10px;left:0;transform:translateX(-50%);
+  font-size:10.5px;color:var(--dimmer);font-variant-numeric:tabular-nums;letter-spacing:.04em}
+.tl-row{display:grid;grid-template-columns:116px 1fr;align-items:center;gap:14px;margin-bottom:7px}
+.tl-label{font-size:12px;color:var(--dim);text-align:right;white-space:nowrap}
+.tl-track{position:relative;height:16px}
+.tl-bar{position:absolute;top:3px;height:10px;border:1px solid currentColor;
+  background:color-mix(in srgb,currentColor 16%,transparent)}
+.tl-bar span{position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;
+  color:var(--dim);font-variant-numeric:tabular-nums}
+.tl-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:currentColor}
+.tl-mark::after{content:attr(data-l);position:absolute;top:-1px;left:6px;font-size:10px;
+  white-space:nowrap;letter-spacing:.06em;font-family:var(--cond);font-weight:600;text-transform:uppercase}
+
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
+.card{border:1px solid var(--rule);background:var(--surface);padding:18px 20px;display:grid;gap:9px}
+.card h4{margin:0;font-family:var(--cond);font-size:1rem;letter-spacing:.02em;font-weight:700}
+.card p{font-size:13.5px;color:var(--dim);max-width:none}
+.warn{border-left:3px solid var(--alert);background:var(--surface);padding:16px 20px}
+.warn h4{margin:0 0 6px;font-family:var(--cond);font-weight:700;color:var(--alert);
+  font-size:.98rem;letter-spacing:.03em}
+.warn p{font-size:13.5px;color:var(--dim)}
+
+footer{border-top:1px solid var(--rule);padding-top:22px;color:var(--dimmer);
+  font-size:12px;letter-spacing:.05em}
+footer a{color:var(--dim)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="mast">
+  <h1>ROOTKIT<span class="sub">Field manual &middot; generated from source</span></h1>
+  <p>A bullet heaven where the build system is the hacking. You are a rogue process in a corporate network; <strong>you move, everything else fires itself</strong>, and your power comes from compiling exploits out of typed modules. Every number below is read out of the game's own tables at build time &mdash; this page cannot disagree with the game.</p>
+  <div class="facts">
+    <span class="fact"><b>3</b> subnets per run</span>
+    <span class="fact"><b>5:00</b> per subnet</span>
+    <span class="fact"><b>13</b> enemy types</span>
+    <span class="fact"><b>35</b> modules</span>
+    <span class="fact"><b>3</b> exploits</span>
+    <span class="fact"><b>2 &times; 7156</b> arena</span>
+  </div>
+</header>
+
+<nav class="rail">
+  <a href="#run">The run</a>
+  <a href="#subnet">Subnet timeline</a>
+  <a href="#arena">The arena</a>
+  <a href="#enemies">Enemies</a>
+  <a href="#bosses">Set-pieces</a>
+  <a href="#build">The build</a>
+  <a href="#modules">Modules</a>
+  <a href="#meta">Between runs</a>
+</nav>
+
+<section id="run">
+  <h2>The run</h2>
+  <p class="lede">A run is a <strong>campaign of 3 subnets</strong>. Each is 5:00 of waves, then ICE. Killing ICE does not end the subnet &mdash; it starts its collapse, and you have to walk out. Clearing the last subnet wins.</p>
+  <div class="grid2">
+    <div class="card">
+      <h4>Movement is the only input</h4>
+      <p>WASD or arrows. Every weapon fires on its own cadence. Screen speed is uniform in all directions &mdash; the isometric squash is corrected for, so a dodge is judged on screen rather than in world space.</p>
+    </div>
+    <div class="card">
+      <h4>Levels come from shards</h4>
+      <p>Each kill drops shards. A level costs <code>round((5 + 3(n&minus;1)) &times; 1.8)</code> &mdash; so 9, 14, 20, 25, 31, and up. A level-up offers three module cards; one click places one.</p>
+    </div>
+    <div class="card">
+      <h4>Death ends the campaign</h4>
+      <p>Integrity carries across subnets; clearing one restores 30%. Salvage banks at every subnet clear, so dying late keeps what the earlier subnets paid. Kills and flips always count toward unlocks.</p>
+    </div>
+    <div class="card">
+      <h4>Enemies harden as you do</h4>
+      <p>Enemy integrity scales <code>1.55<sup>subnet&minus;1</sup> &times; (1 + 0.45 &times; elapsed/300)</code>. Without it, a rank buying damage linearly meant everything one-shot forever once your damage passed a firewall's.</p>
+    </div>
+  </div>
+</section>
+
+<section id="subnet">
+  <h2>Subnet timeline</h2>
+  <p class="lede">The wave table and the set-piece schedule for one subnet. Bars show the interval a wave is active; the number at the right of each bar is its spawn rate per second. Later subnets run the same schedule against tougher enemies.</p>
+  <div class="timeline"><div class="tl-inner">
+    <div class="tl-axis">
+      <i style="left:0%" data-t="0:00"></i><i style="left:20%" data-t="1:00"></i>
+      <i style="left:40%" data-t="2:00"></i><i style="left:60%" data-t="3:00"></i>
+      <i style="left:80%" data-t="4:00"></i><i style="left:100%" data-t="5:00"></i>
+    </div>
+<div class="tl-row"><div class="tl-label">daemon</div><div class="tl-track" style="color:#4cff8c"><div class="tl-bar" style="left:0.00%;width:15.00%"><span>1.8</span></div><div class="tl-bar" style="left:20.00%;width:30.00%"><span>3</span></div><div class="tl-bar" style="left:60.00%;width:40.00%"><span>4.2</span></div></div></div>
+<div class="tl-row"><div class="tl-label">worm</div><div class="tl-track" style="color:#8cb2ff"><div class="tl-bar" style="left:6.67%;width:23.33%"><span>1.2</span></div><div class="tl-bar" style="left:50.00%;width:30.00%"><span>3.4</span></div></div></div>
+<div class="tl-row"><div class="tl-label">firewall</div><div class="tl-track" style="color:#ff734c"><div class="tl-bar" style="left:30.00%;width:30.00%"><span>0.6</span></div><div class="tl-bar" style="left:80.00%;width:20.00%"><span>1.4</span></div></div></div>
+<div class="tl-row"><div class="tl-label">tracer</div><div class="tl-track" style="color:#8cfff2"><div class="tl-bar" style="left:23.33%;width:30.00%"><span>1.1</span></div></div></div>
+<div class="tl-row"><div class="tl-label">sentinel</div><div class="tl-track" style="color:#ffbf40"><div class="tl-bar" style="left:36.67%;width:33.33%"><span>0.5</span></div></div></div>
+<div class="tl-row"><div class="tl-label">probe</div><div class="tl-track" style="color:#ff8c8c"><div class="tl-bar" style="left:50.00%;width:33.33%"><span>0.7</span></div></div></div>
+<div class="tl-row"><div class="tl-label">rootkit</div><div class="tl-track" style="color:#d973ff"><div class="tl-bar" style="left:63.33%;width:36.67%"><span>0.6</span></div></div></div>
+<div class="tl-row"><div class="tl-label">watchdog</div><div class="tl-track" style="color:#b2d9ff"><div class="tl-bar" style="left:70.00%;width:30.00%"><span>0.25</span></div></div></div>
+    <div class="tl-row" style="margin-top:16px"><div class="tl-label">set-pieces</div>
+      <div class="tl-track" style="color:#ff7370;height:22px"><div class="tl-mark" style="left:20.00%" data-l="fork_bomb"></div><div class="tl-mark" style="left:40.00%" data-l="packet_filter"></div><div class="tl-mark" style="left:60.00%" data-l="null_ptr"></div><div class="tl-mark" style="left:80.00%" data-l="kernel_panic"></div><div class="tl-mark" style="left:99.6%" data-l="ICE"></div></div></div>
+  </div></div>
+  <p class="lede">ICE arrives when the wave table is spent. The last minute is deliberately clear of set-pieces &mdash; the subnet's ending is not a stage to share.</p>
+</section>
+
+<section id="arena">
+  <h2>The arena</h2>
+  <p class="lede">Each subnet generates its own arena from the run seed, so a bug report reproduces exactly. Generation guarantees the field is fully connected: any region the flood fill cannot reach is filled in rather than carved open, because a sealed pocket is an unwinnable run.</p>
+  <div class="grid2">
+    <div class="card">
+      <h4>Walls &middot; 3% of the field</h4>
+      <p>Small scattered blocks, the same density on every subnet. They stop you, your shots and the swarm; enemies steer around them but do not path, so one can still be pinned against a wall by the crowd behind it. Worms ignore terrain entirely.</p>
+    </div>
+    <div class="card">
+      <h4>Zones</h4>
+      <p><span style="color:#ff7370">Hazard</span> costs 12 integrity a second and burns enemies too, so kiting a swarm through one is a real play. <span style="color:#6699ff">Slow</span> cuts speed to 60%. <span style="color:#d959ff">Corruption</span> adds 8 corruption a second to anything standing in it.</p>
+    </div>
+    <div class="card">
+      <h4>The gate</h4>
+      <p>Stands at one edge from the moment the arena generates, shut and solid &mdash; you fight past it for the whole subnet. Killing ICE opens it. Beyond it a 1100-unit walkway runs out to the next subnet; reaching its far end is the transition, and there is no teleport.</p>
+    </div>
+    <div class="card">
+      <h4>The collapse &middot; 75 seconds</h4>
+      <p>ICE dying stops all spawning and starts the arena coming apart, from the point farthest from the gate inward. Standing on ground that goes is fatal. The way out lights up as tiles across walkable ground, following the actual route rather than pointing through walls.</p>
+    </div>
+  </div>
+  <div class="warn">
+    <h4>Untested tuning</h4>
+    <p>The 75-second collapse clock was set when the arena was a fifth of its current size. Crossing 2 &times; 7156 units to reach the gate may not fit in it. Treat the deadline as unverified.</p>
+  </div>
+</section>
+
+<section id="enemies">
+  <h2>Enemies</h2>
+  <p class="lede"><strong>Corruption</strong> is the second bar: fill it and the enemy flips into a botnet node that fights for you and drops shards as a kill would. <strong>Contact</strong> is damage per touch, mitigated by your armour and defence.</p>
+  <div class="legend">
+    <span><i class="swatch" style="color:#4dff8c"></i> chase</span>
+    <span><i class="swatch" style="color:#ffbf40"></i> charger</span>
+    <span><i class="swatch" style="color:#8cfff2"></i> flanker</span>
+    <span><i class="swatch" style="color:#b3d9ff"></i> support</span>
+    <span><i class="swatch" style="color:#d973ff"></i> ambusher</span>
+    <span><i class="swatch" style="color:#ff8c8c"></i> ranged</span>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Type</th><th>Behaviour</th><th class="num">Integrity</th>
+      <th class="num">Speed</th><th class="num">Corrupt</th><th class="num">Contact</th>
+      <th class="num">Shards</th><th>How it fights</th></tr></thead>
+    <tbody>
+<tr><td class="name" style="color:#4cff8c"><i class="glyph"></i>daemon</td><td>chase</td><td class="num">10</td><td class="num">74</td><td class="num">10</td><td class="num">7</td><td class="num">1</td><td class="note">The baseline swarm. Walks straight at you and dies in one hit for most of the run.</td></tr>
+<tr><td class="name" style="color:#ff734c"><i class="glyph"></i>firewall</td><td>chase</td><td class="num">34</td><td class="num">50</td><td class="num">20</td><td class="num">12</td><td class="num">4</td><td class="note">Slow and thick. The wall your damage has to grow past.</td></tr>
+<tr><td class="name" style="color:#8cb2ff"><i class="glyph"></i>worm</td><td>chase</td><td class="num">6</td><td class="num">118</td><td class="num">6</td><td class="num">5</td><td class="num">2</td><td class="note">Spawns as a train; segments follow the head&rsquo;s trail. Passes through terrain.</td></tr>
+<tr><td class="name" style="color:#ffbf40"><i class="glyph"></i>sentinel</td><td>charger</td><td class="num">46</td><td class="num">78</td><td class="num">26</td><td class="num">16</td><td class="num">3</td><td class="note">Closes, telegraphs, then dashes at 3&times; speed along a <strong>locked</strong> direction and overshoots. Sidestep late.</td></tr>
+<tr><td class="name" style="color:#8cfff2"><i class="glyph"></i>tracer</td><td>flanker</td><td class="num">14</td><td class="num">124</td><td class="num">12</td><td class="num">6</td><td class="num">2</td><td class="note">Steers at where you are going, arcing the way you are heading to close your kiting lane. Fragile; dangerous in numbers.</td></tr>
+<tr><td class="name" style="color:#b2d9ff"><i class="glyph"></i>watchdog</td><td>support</td><td class="num">70</td><td class="num">44</td><td class="num">34</td><td class="num">4</td><td class="num">5</td><td class="note">Holds back and heals everything near it, capped at each enemy&rsquo;s spawn integrity. Kill it first.</td></tr>
+<tr><td class="name" style="color:#d973ff"><i class="glyph"></i>rootkit</td><td>ambusher</td><td class="num">34</td><td class="num">96</td><td class="num">22</td><td class="num">18</td><td class="num">3</td><td class="note">Submerges &mdash; untouchable and harmless while under &mdash; then surfaces on you after a tell.</td></tr>
+<tr><td class="name" style="color:#ff8c8c"><i class="glyph"></i>probe</td><td>ranged</td><td class="num">16</td><td class="num">52</td><td class="num">14</td><td class="num">3</td><td class="num">2</td><td class="note">Holds its distance and fires a leading shot. Its shots stop on walls, which is what makes cover worth using.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="bosses">
+  <h2>Set-pieces &amp; ICE</h2>
+  <p class="lede">One set-piece a minute, each with a mechanic no ordinary enemy has. <strong>None has to be killed</strong> &mdash; but they stay on the field, so ignoring one means fighting it alongside everything that spawns after it. A kill pays <strong>120 salvage and a guaranteed card</strong>.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Type</th><th class="num">At</th><th>Behaviour</th><th class="num">Integrity</th>
+      <th class="num">Speed</th><th class="num">Corrupt</th><th class="num">Contact</th>
+      <th class="num">Shards</th><th>Signature</th></tr></thead>
+    <tbody>
+<tr><td class="name" style="color:#ff9933"><i class="glyph"></i>fork_bomb</td><td class="num">1:00</td><td>charger</td><td class="num">170</td><td class="num">82</td><td class="num">90</td><td class="num">20</td><td class="num">12</td><td class="note">Charges. On death it divides in two at half integrity, three generations deep, before the leaves die for good.</td></tr>
+<tr><td class="name" style="color:#99e6ff"><i class="glyph"></i>packet_filter</td><td class="num">2:00</td><td>support</td><td class="num">260</td><td class="num">40</td><td class="num">120</td><td class="num">14</td><td class="num">14</td><td class="note">Heals the swarm, and takes <strong>90% less damage from the front</strong>. Facing is its movement direction, so getting behind it is a manoeuvre rather than a stat check.</td></tr>
+<tr><td class="name" style="color:#cc66ff"><i class="glyph"></i>null_ptr</td><td class="num">3:00</td><td>ambusher</td><td class="num">190</td><td class="num">104</td><td class="num">100</td><td class="num">22</td><td class="num">13</td><td class="note">Blinks on a short ambush cycle, leaving a damaging afterimage at every point it vanishes. A long fight progressively denies you ground.</td></tr>
+<tr><td class="name" style="color:#ff5959"><i class="glyph"></i>kernel_panic</td><td class="num">4:00</td><td>ranged</td><td class="num">240</td><td class="num">48</td><td class="num">110</td><td class="num">18</td><td class="num">16</td><td class="note">Shoots, and periodically pulses everything <strong>with line of sight to it</strong>. Putting a wall between you and it is the only answer.</td></tr>
+<tr><td class="name" style="color:#ff40d9"><i class="glyph"></i>ice</td><td class="num">5:00</td><td>chase</td><td class="num">700</td><td class="num">46</td><td class="num">&mdash;</td><td class="num">22</td><td class="num">0</td><td class="note">The subnet&rsquo;s ending. The field is purged to make room for it. It cannot be flipped &mdash; that would bypass the kill-to-win condition.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="warn">
+    <h4>Two names, two things</h4>
+    <p><code>fork_bomb</code> is both a <strong>set-piece enemy</strong> and a <strong>payload module</strong>. They are unrelated: the payload adds area damage to a weapon, the enemy splits when killed. The tables are separate in code so nothing misbehaves, but the collision is confusing and one of them should be renamed.</p>
+  </div>
+</section>
+
+<section id="build">
+  <h2>The build</h2>
+  <p class="lede">You hold <strong>3 exploits</strong>. Each is one weapon with three slots, and each slot takes exactly one module &mdash; so a module's slot type decides its column, and the only question a level-up card asks is which row.</p>
+  <div class="grid2">
+    <div class="card">
+      <h4>Rank, not duplicates</h4>
+      <p>Placing a module where it already sits ranks it up, to a maximum of 5. Ranks are per <em>slot</em>, so the same module in two exploits is two independent copies. Replacing a module destroys its rank &mdash; drawn again, it re-enters at 1.</p>
+    </div>
+    <div class="card">
+      <h4>Triggers pay on the axis their frequency suits</h4>
+      <p>A frequent trigger is paid in <strong>cadence</strong>, because its value is rate. A rare one is paid in <strong>burst</strong> &mdash; how many shots one event produces. <code>interval</code> sits at 1.00: the baseline, and the only trigger that fires on an empty field.</p>
+    </div>
+    <div class="card">
+      <h4>Defensive stats take the max</h4>
+      <p>Wards, lifesteal, slow and shield fold by maximum across slots, never by sum. The same module is legal in many slots, and summing a defensive magnitude would buy it at no uptime cost.</p>
+    </div>
+    <div class="card">
+      <h4>Corruption is a second bar</h4>
+      <p>Damage tagged <code>corruption</code> fills it. An enemy that fills it flips into a botnet node fighting for you, and drops the same shards a kill does &mdash; so a corruption build does not starve its own levelling.</p>
+    </div>
+  </div>
+</section>
+
+<section id="modules">
+  <h2>Modules</h2>
+  <p class="lede"><strong>21 of 35 are available from the start</strong>; the other 14 unlock against lifetime kill and flip counts, split so a corruption build and a damage build climb different ladders. Locked entries show their requirement.</p>
+  <div class="legend">
+    <span><i class="swatch" style="color:#8cffb8"></i> vector &mdash; how the weapon reaches</span>
+    <span><i class="swatch" style="color:#ffbf40"></i> trigger &mdash; when it fires</span>
+    <span><i class="swatch" style="color:#b3a7ff"></i> payload &mdash; what it does on contact</span>
+  </div>
+
+  <h3>Vectors</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Module</th><th>What it is</th><th>Stats</th></tr></thead>
+    <tbody>
+<tr class="v"><td class="stripe name">broadcast()</td><td class="note">Hits everything in a ring around you. The reliable opener.</td><td class="note dimmed">dmg&nbsp;3.5 &middot; reach&nbsp;90 &middot; cadence&nbsp;0.85</td></tr>
+<tr class="v"><td class="stripe name">packet()</td><td class="note">Fires at the nearest enemy. Your starting weapon.</td><td class="note dimmed">dmg&nbsp;6 &middot; speed&nbsp;420 &middot; cadence&nbsp;0.5 &middot; travel&nbsp;640</td></tr>
+<tr class="v"><td class="stripe name">chain()</td><td class="note">Hops between enemies, jumping up to 120 units each time.</td><td class="note dimmed">dmg&nbsp;5 &middot; hops&nbsp;2 &middot; reach&nbsp;170 &middot; cadence&nbsp;0.9</td></tr>
+<tr class="v"><td class="stripe name">beam()<span class="tag lock">400 kills</span></td><td class="note">A line through several enemies at the nearest target.</td><td class="note dimmed">dmg&nbsp;3.5 &middot; pierce&nbsp;3 &middot; reach&nbsp;240 &middot; cadence&nbsp;0.6</td></tr>
+<tr class="v"><td class="stripe name">spike()</td><td class="note">A 90&deg; arc toward the nearest enemy. Heavy damage, demands facing.</td><td class="note dimmed">dmg&nbsp;9 &middot; reach&nbsp;150 &middot; cadence&nbsp;0.75</td></tr>
+<tr class="v"><td class="stripe name">flood()</td><td class="note">An enormous, slow, weak ring. Crowd clearance rather than damage.</td><td class="note dimmed">dmg&nbsp;2 &middot; reach&nbsp;300 &middot; cadence&nbsp;1.6</td></tr>
+<tr class="v"><td class="stripe name">snipe()<span class="tag lock">250 kills</span></td><td class="note">Long, fast, pierces. The single hardest hit in the table.</td><td class="note dimmed">dmg&nbsp;14 &middot; speed&nbsp;900 &middot; cadence&nbsp;1.5 &middot; travel&nbsp;1200 &middot; pierce&nbsp;2</td></tr>
+<tr class="v"><td class="stripe name">landmine()<span class="tag lock">550 kills</span></td><td class="note">Drops a charge that waits until something comes within 46 units, then detonates. Area denial &mdash; predict the swarm&rsquo;s path.</td><td class="note dimmed">dmg&nbsp;16 &middot; reach&nbsp;130 &middot; cadence&nbsp;1.9</td></tr>
+<tr class="v"><td class="stripe name">cascade()<span class="tag lock">700 kills</span></td><td class="note">More hops than <code>chain()</code>, at less per hit.</td><td class="note dimmed">dmg&nbsp;3 &middot; hops&nbsp;4 &middot; reach&nbsp;150 &middot; cadence&nbsp;0.8</td></tr>
+<tr class="v"><td class="stripe name">bounce()</td><td class="note">Shockwave with heavy knockback. Buys space rather than kills.</td><td class="note dimmed">dmg&nbsp;2 &middot; reach&nbsp;190 &middot; cadence&nbsp;1.1 &middot; knock&nbsp;320</td></tr>
+<tr class="v"><td class="stripe name">mirror()<span class="tag lock">25 flips</span></td><td class="note">Shards orbit you, damaging on contact. Refiring replaces the ring rather than stacking it.</td><td class="note dimmed">dmg&nbsp;4 &middot; reach&nbsp;90 &middot; cadence&nbsp;2.2 &middot; orbiters&nbsp;3</td></tr>
+<tr class="v"><td class="stripe name">throttle()</td><td class="note">Near-zero damage; slows everything across a wide field.</td><td class="note dimmed">dmg&nbsp;0.5 &middot; reach&nbsp;260 &middot; cadence&nbsp;1.4 &middot; slow&nbsp;0.55 &middot; slow s&nbsp;2</td></tr>
+<tr class="v"><td class="stripe name">airgap()<span class="tag lock">900 kills</span></td><td class="note">No damage at all. Maximum knockback plus a ward.</td><td class="note dimmed">reach&nbsp;210 &middot; cadence&nbsp;1.6 &middot; knock&nbsp;520 &middot; ward armour&nbsp;1.4 &middot; ward s&nbsp;2</td></tr>
+<tr class="v"><td class="stripe name">checksum()<span class="tag lock">80 flips</span></td><td class="note">Grants a shield on fire, absorbed before integrity and before armour is consulted.</td><td class="note dimmed">dmg&nbsp;1 &middot; reach&nbsp;70 &middot; cadence&nbsp;2.6 &middot; shield&nbsp;26</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Triggers</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Module</th><th>Fires</th><th>Stats</th></tr></thead>
+    <tbody>
+<tr class="t"><td class="stripe name">interval(t)</td><td class="note">On a timer. The baseline every other trigger is measured against, and the only one that fires on an empty field.</td><td class="note dimmed">cadence &times;&nbsp;1</td></tr>
+<tr class="t"><td class="stripe name">on_kill()</td><td class="note">Every time anything dies. The generalist: rate plus power.</td><td class="note dimmed">dmg&nbsp;3 &middot; cadence &times;&nbsp;0.7</td></tr>
+<tr class="t"><td class="stripe name">on_hit()</td><td class="note">Every time one of your shots connects. Pure rate &mdash; rewards pierce and chain.</td><td class="note dimmed">dmg&nbsp;1 &middot; cadence &times;&nbsp;0.62</td></tr>
+<tr class="t"><td class="stripe name">on_damage_taken()<span class="tag lock">150 kills</span></td><td class="note">When you are hit. Retaliation, in a burst.</td><td class="note dimmed">dmg&nbsp;8 &middot; reach&nbsp;40 &middot; cadence &times;&nbsp;0.9 &middot; burst&nbsp;3</td></tr>
+<tr class="t"><td class="stripe name">on_low_integrity()<span class="tag lock">300 kills</span></td><td class="note">When integrity crosses below 40% &mdash; once per crossing, rearming only after you climb back above it.</td><td class="note dimmed">dmg&nbsp;6 &middot; cadence &times;&nbsp;1 &middot; burst&nbsp;5</td></tr>
+<tr class="t"><td class="stripe name">on_flip()<span class="tag lock">15 flips</span></td><td class="note">When an enemy flips into your botnet. Pays in corruption, so it feeds the build that feeds it.</td><td class="note dimmed">corr&nbsp;2 &middot; cadence &times;&nbsp;0.74</td></tr>
+<tr class="t"><td class="stripe name">on_level_up()<span class="tag lock">450 kills</span></td><td class="note">On gaining a level. The rarest event, and the biggest burst.</td><td class="note dimmed">cadence &times;&nbsp;1 &middot; burst&nbsp;8</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Payloads</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Module</th><th>What it does</th><th>Stats</th></tr></thead>
+    <tbody>
+<tr class="p"><td class="stripe name">buffer_overflow</td><td class="note">The plain damage payload.</td><td class="note dimmed">dmg&nbsp;5.5</td></tr>
+<tr class="p"><td class="stripe name">fork_bomb</td><td class="note">Adds area to a weapon that had none. Unrelated to the mini-boss of the same name.</td><td class="note dimmed">dmg&nbsp;4 &middot; reach&nbsp;60</td></tr>
+<tr class="p"><td class="stripe name">corrupt</td><td class="note">The main route to flipping enemies.</td><td class="note dimmed">corr&nbsp;4</td></tr>
+<tr class="p"><td class="stripe name">keylog</td><td class="note">Heals on kills credited to this exploit.</td><td class="note dimmed">lifesteal&nbsp;0.4</td></tr>
+<tr class="p"><td class="stripe name">worm<span class="tag lock">50 flips</span></td><td class="note">Corruption that also spreads.</td><td class="note dimmed">corr&nbsp;2 &middot; hops&nbsp;1</td></tr>
+<tr class="p"><td class="stripe name">fork()</td><td class="note">Raises how many flipped enemies can fight for you at once.</td><td class="note dimmed">botnet&nbsp;2</td></tr>
+<tr class="p"><td class="stripe name">overclock</td><td class="note">Faster and stronger. The strongest generic payload.</td><td class="note dimmed">dmg&nbsp;2 &middot; cadence &times;&nbsp;0.82</td></tr>
+<tr class="p"><td class="stripe name">harden</td><td class="note">Arms on fire. Wards take the max across exploits, never the sum.</td><td class="note dimmed">ward armour&nbsp;1.2 &middot; ward s&nbsp;2</td></tr>
+<tr class="p"><td class="stripe name">sandbox</td><td class="note">The longest ward; pairs well with a short one, which inherits its duration.</td><td class="note dimmed">ward defence&nbsp;10 &middot; ward s&nbsp;3</td></tr>
+<tr class="p"><td class="stripe name">nice()</td><td class="note">Move faster while it is live.</td><td class="note dimmed">ward speed&nbsp;12 &middot; ward s&nbsp;1.5</td></tr>
+<tr class="p"><td class="stripe name">bitmask</td><td class="note">One more enemy per shot.</td><td class="note dimmed">pierce&nbsp;1</td></tr>
+<tr class="p"><td class="stripe name">race_condition</td><td class="note">Pure speed, at the cost of the slot.</td><td class="note dimmed">cadence &times;&nbsp;0.88</td></tr>
+<tr class="p"><td class="stripe name">heap_spray<span class="tag lock">200 kills</span></td><td class="note">Widens whatever it is attached to.</td><td class="note dimmed">hops&nbsp;1 &middot; reach&nbsp;30</td></tr>
+<tr class="p"><td class="stripe name">tarpit<span class="tag lock">40 flips</span></td><td class="note">Everything the weapon hits is slowed.</td><td class="note dimmed">slow&nbsp;0.35 &middot; slow s&nbsp;1.5</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="meta">
+  <h2>Between runs</h2>
+  <p class="lede">Salvage banks at every subnet clear and persists across runs. The shell spends it on permanent upgrades, each buyable 10 times at <code>60 + 30n</code> &mdash; so 60 rising to 330 for the last.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Upgrade</th><th>Per level</th><th class="num">At 10</th><th>Effect</th></tr></thead>
+    <tbody>
+<tr><td class="name">memory</td><td>+8 integrity</td><td class="num">80</td><td class="note">Raises the integrity you start every subnet with.</td></tr>
+<tr><td class="name">firewall</td><td>+0.6 armor</td><td class="num">6</td><td class="note">Flat reduction on every hit taken.</td></tr>
+<tr><td class="name">encryption</td><td>+6 defense</td><td class="num">60</td><td class="note">Proportional mitigation, stacking with armour.</td></tr>
+<tr><td class="name">bus_speed</td><td>+6 clock speed</td><td class="num">60</td><td class="note">You move faster. The most direct answer to the collapse.</td></tr>
+<tr><td class="name">bandwidth</td><td>+6 pickup radius</td><td class="num">60</td><td class="note">Shards come to you from further away.</td></tr>
+<tr><td class="name">cpu_cycles</td><td>+4% attack</td><td class="num">40%</td><td class="note">Scales damage and corruption on every exploit.</td></tr>
+<tr><td class="name">cooling</td><td>-3% haste</td><td class="num">-30%</td><td class="note">Everything fires faster.</td></tr>
+<tr><td class="name">addressing</td><td>+3% reach</td><td class="num">30%</td><td class="note">Scales radius and projectile travel.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>
+  Generated from the game source by <code>tools/build_manual.py</code>. The build fails if a module or enemy exists without prose, so this page cannot silently fall behind the game.
+</footer>
+
+</div>
+</body>
+</html>
