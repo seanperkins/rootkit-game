@@ -10,6 +10,11 @@ const SIZE := Vector2(3200, 2000)
 func _initialize() -> void:
 	print("ROOTKIT — terrain\n")
 	cell_lookup()
+	density_scales_with_subnet()
+	generation_is_deterministic()
+	every_open_cell_is_reachable()
+	the_playfield_never_collapses()
+	the_start_is_clear()
 	print("")
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
@@ -44,3 +49,82 @@ func cell_lookup() -> void:
 	_check("the arena origin maps to cell 0", t.cell_index(ORIGIN), 0)
 	_check("the last cell is in range",
 		t.cell_index(ORIGIN + SIZE - Vector2(1, 1)), t.w * t.h - 1)
+
+func density_scales_with_subnet() -> void:
+	_check("subnet 1 is the base density", Terrain.density_for(1), Terrain.DENSITY_BASE)
+	_check("subnet 3 is two steps up", Terrain.density_for(3),
+		Terrain.DENSITY_BASE + 2.0 * Terrain.DENSITY_PER_SUBNET)
+	# Subnet 0 must not underflow into a negative density.
+	_check("subnet 0 clamps to the base", Terrain.density_for(0), Terrain.DENSITY_BASE)
+
+func generation_is_deterministic() -> void:
+	var a := _fresh(); a.generate(4242, 2, Vector2.ZERO)
+	var b := _fresh(); b.generate(4242, 2, Vector2.ZERO)
+	var c := _fresh(); c.generate(4242, 3, Vector2.ZERO)
+	_check("same seed and subnet give the same walls", a.solid, b.solid)
+	_check("same seed and subnet give the same rects", a.rects.size(), b.rects.size())
+	_check("a different subnet gives a different arena", a.solid == c.solid, false)
+	_check("a later subnet is denser", _solid_count(c) > _solid_count(a), true)
+
+## The invariant the whole generator exists to protect. A sealed pocket is an
+## unwinnable run: ICE, or the player, spawned inside one can never be reached.
+func every_open_cell_is_reachable() -> void:
+	var bad := 0
+	for s in range(200):
+		var t := _fresh()
+		t.generate(s, 3, Vector2.ZERO)          # densest subnet, hardest case
+		if not _fully_connected(t, Vector2.ZERO):
+			bad += 1
+	_check("200 seeds, no unreachable open cell", bad, 0)
+
+func the_playfield_never_collapses() -> void:
+	var worst := 1.0
+	for s in range(200):
+		var t := _fresh()
+		t.generate(s, 3, Vector2.ZERO)
+		worst = minf(worst, t.reachable_fraction(Vector2.ZERO))
+	print("    worst reachable fraction over 200 seeds: %.3f" % worst)
+	_check("the arena never shrinks to a closet",
+		worst >= Terrain.REACHABLE_FLOOR, true)
+
+func the_start_is_clear() -> void:
+	var bad := 0
+	for s in range(100):
+		var t := _fresh()
+		t.generate(s, 3, Vector2.ZERO)
+		if t.is_solid(Vector2.ZERO):
+			bad += 1
+		# The whole spawn-safe disc, not just its centre.
+		for k in 16:
+			var a := TAU * k / 16.0
+			if t.is_solid(Vector2(cos(a), sin(a)) * (Terrain.WALL_MARGIN - 40.0)):
+				bad += 1
+	_check("the player never starts in or beside rock", bad, 0)
+
+func _solid_count(t: Terrain) -> int:
+	var n := 0
+	for i in t.solid.size():
+		if t.solid[i] != 0:
+			n += 1
+	return n
+
+## An independent flood fill, written in the TEST rather than reusing the
+## generator's. Reusing it would only prove the generator agrees with itself.
+func _fully_connected(t: Terrain, start: Vector2) -> bool:
+	var seen := {}
+	var stack := [t.cell_index(start)]
+	while not stack.is_empty():
+		var i: int = stack.pop_back()
+		if i < 0 or seen.has(i) or t.solid[i] != 0:
+			continue
+		seen[i] = true
+		var x := i % t.w
+		var y := i / t.w
+		if x > 0: stack.append(i - 1)
+		if x < t.w - 1: stack.append(i + 1)
+		if y > 0: stack.append(i - t.w)
+		if y < t.h - 1: stack.append(i + t.w)
+	for i in t.solid.size():
+		if t.solid[i] == 0 and not seen.has(i):
+			return false
+	return true

@@ -71,3 +71,102 @@ func zone_at(p: Vector2) -> int:
 	if i < 0:
 		return -1
 	return int(zone[i]) - 1
+
+## Walls are kept clear of the player's start by this much, so the opening
+## seconds are never spent wedged against rock.
+const WALL_MARGIN := 260.0
+
+const DENSITY_BASE := 0.08
+const DENSITY_PER_SUBNET := 0.05
+
+## The floor the generator's own output is held to in test. Filling unreachable
+## pockets cannot fail, but it CAN eat the arena on a pathological seed, and a
+## closet is as unplayable as a sealed pocket.
+const REACHABLE_FLOOR := 0.70
+
+## Bounded, not "until the target is met". An unbounded placement loop on a
+## dense subnet with an unlucky seed is a hang, and a hang in generation is a
+## hang before the first frame of the subnet.
+const PLACE_ATTEMPTS := 4000
+
+static func density_for(subnet: int) -> float:
+	return DENSITY_BASE + DENSITY_PER_SUBNET * float(maxi(subnet, 1) - 1)
+
+func generate(seed_value: int, subnet: int, player_start: Vector2) -> void:
+	var rng := RandomNumberGenerator.new()
+	# The subnet is mixed in, not added, so subnet 2 of one run is not subnet 1
+	# of the run seeded one higher.
+	rng.seed = hash(str(seed_value, ":", subnet))
+	solid.fill(0)
+	zone.fill(0)
+	rects.clear()
+
+	var target := int(float(w * h) * density_for(subnet))
+	var placed := 0
+	var attempts := 0
+	while placed < target and attempts < PLACE_ATTEMPTS:
+		attempts += 1
+		var rw := rng.randi_range(2, 6)
+		var rh := rng.randi_range(2, 6)
+		var cx := rng.randi_range(0, w - rw)
+		var cy := rng.randi_range(0, h - rh)
+		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
+		# grow() by the margin and ask whether the start is inside: that is
+		# exactly "this rect comes within WALL_MARGIN of the player".
+		if r.grow(WALL_MARGIN).has_point(player_start):
+			continue
+		for y in range(cy, cy + rh):
+			for x in range(cx, cx + rw):
+				var i := y * w + x
+				if solid[i] == 0:
+					solid[i] = 1
+					placed += 1
+		rects.append([r, Kind.WALL])
+
+	_fill_unreachable(player_start)
+
+## Flood-fill the open cells from the player's start; anything the fill does not
+## reach becomes rock.
+##
+## Filling rather than carving, because filling CANNOT FAIL. Carving a corridor
+## to a stranded pocket needs its own pathfinding and can itself leave a second
+## pocket; filling terminates in one pass and leaves exactly one open region by
+## construction. The cost is that a bad seed could eat the arena, which is why
+## reachable_fraction has a floor asserted in test.
+func _fill_unreachable(player_start: Vector2) -> void:
+	var start := cell_index(player_start)
+	if start < 0 or solid[start] != 0:
+		return
+	var seen := _reach(start)
+	for i in solid.size():
+		if solid[i] == 0 and seen[i] == 0:
+			solid[i] = 1
+
+func _reach(start: int) -> PackedByteArray:
+	var seen := PackedByteArray()
+	seen.resize(w * h)
+	var stack := PackedInt32Array([start])
+	while stack.size() > 0:
+		var i := stack[stack.size() - 1]
+		stack.remove_at(stack.size() - 1)
+		if seen[i] != 0 or solid[i] != 0:
+			continue
+		seen[i] = 1
+		var x := i % w
+		var y := i / w
+		if x > 0: stack.append(i - 1)
+		if x < w - 1: stack.append(i + 1)
+		if y > 0: stack.append(i - w)
+		if y < h - 1: stack.append(i + w)
+	return seen
+
+func reachable_fraction(player_start: Vector2) -> float:
+	var start := cell_index(player_start)
+	if start < 0 or solid[start] != 0:
+		return 0.0
+	var seen := _reach(start)
+	var n := 0
+	for i in seen.size():
+		if seen[i] != 0:
+			n += 1
+	return float(n) / float(w * h)
