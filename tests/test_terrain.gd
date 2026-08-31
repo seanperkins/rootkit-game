@@ -58,24 +58,35 @@ func _fresh() -> Terrain:
 
 func cell_lookup() -> void:
 	var t := _fresh()
-	_check("grid width covers the arena", t.w, 100)
-	_check("grid height covers the arena", t.h, 63)
+	# The grid is deliberately LARGER than the arena: the corridor beyond a gate
+	# is ordinary ground on this same grid, which is what makes walking out
+	# continuous rather than a teleport.
+	_check("the grid covers the arena plus a margin either side", t.w,
+		int(ceil((SIZE.x + Terrain.MARGIN * 2.0) / Terrain.CELL)))
+	_check("in both axes", t.h,
+		int(ceil((SIZE.y + Terrain.MARGIN * 2.0) / Terrain.CELL)))
+	_check("and the arena rect is remembered", t.arena_rect, Rect2(ORIGIN, SIZE))
 	_check("a fresh field is entirely open", t.is_solid(Vector2.ZERO), false)
 	_check("a fresh field has no zones", t.zone_at(Vector2.ZERO), -1)
 
-	# Outside the arena is OPEN. Enemies spawn on a ring around the player that
-	# can fall outside the bounds; solid-outside would reject all of those.
-	_check("far outside the arena is open", t.is_solid(Vector2(-9000, -9000)), false)
-	_check("outside the arena has no zone", t.zone_at(Vector2(-9000, -9000)), -1)
+	# Beyond the whole GRID is open, so spawn rings that fall off the edge are
+	# not rejected. The margin's own cells are made solid by generate().
+	_check("far outside the grid is open", t.is_solid(Vector2(-90000, -90000)), false)
+	_check("outside the grid has no zone", t.zone_at(Vector2(-90000, -90000)), -1)
 
-	# Writing a cell directly is how later tasks bake; prove the mapping first.
 	t.solid[t.cell_index(Vector2(0, 0))] = 1
 	_check("a written cell reads back solid", t.is_solid(Vector2(0, 0)), true)
 	_check("its neighbour is untouched", t.is_solid(Vector2(64, 0)), false)
-	_check("the arena origin maps to cell 0", t.cell_index(ORIGIN), 0)
+	_check("the grid origin maps to cell 0", t.cell_index(t.origin), 0)
 	_check("the last cell is in range",
-		t.cell_index(ORIGIN + SIZE - Vector2(1, 1)), t.w * t.h - 1)
+		t.cell_index(t.origin + t.size - Vector2(1, 1)), t.w * t.h - 1)
 
+	# Generation walls off everything outside the arena, so the world is bounded.
+	var g := _fresh()
+	g.generate(1, 1, Vector2.ZERO, false)
+	_check("outside the arena is rock after generation",
+		g.is_solid(ORIGIN - Vector2(200, 200)), true)
+	_check("inside it is not", g.is_solid(Vector2.ZERO), false)
 	finished["cell_lookup"] = true
 func density_scales_with_subnet() -> void:
 	_check("subnet 1 is the base density", Terrain.density_for(1), Terrain.DENSITY_BASE)
@@ -193,31 +204,48 @@ func zones_are_placed_in_the_open() -> void:
 	var a := _fresh(); a.generate(77, 2, Vector2.ZERO)
 	var b := _fresh(); b.generate(77, 2, Vector2.ZERO)
 	_check("zones are deterministic", a.zone, b.zone)
-
-## A wall over world x,y in [0,128), so its open side is negative on both axes.
 	finished["zones_are_placed_in_the_open"] = true
+
+## A 4x4 block of solid cells near the arena centre, plus the world centre of a
+## cell just outside it.
+##
+## Derived from cell coordinates rather than from world literals: the grid's
+## origin moved when the corridor margin was added, so any test that assumed
+## world 0 sat on a cell boundary silently started testing something else.
+const WALL_C := 8      # cells a side is 4, anchored this far from centre
+
 func _walled() -> Terrain:
 	var t := _fresh()
-	for y in range(4):
-		for x in range(4):
-			var c := t.cell_xy(Vector2(x * Terrain.CELL, y * Terrain.CELL))
-			t.solid[c.y * t.w + c.x] = 1
+	var c := t.cell_xy(Vector2.ZERO)
+	for y in range(c.y, c.y + 4):
+		for x in range(c.x, c.x + 4):
+			t.solid[y * t.w + x] = 1
 	return t
+
+func _cell_centre(t: Terrain, cx: int, cy: int) -> Vector2:
+	return t.origin + Vector2(float(cx) + 0.5, float(cy) + 0.5) * Terrain.CELL
+
+## The open cell immediately left of the wall block, level with its second row.
+func _outside(t: Terrain) -> Vector2:
+	var c := t.cell_xy(Vector2.ZERO)
+	return _cell_centre(t, c.x - 1, c.y + 1)
 
 func sliding_along_walls() -> void:
 	var t := _walled()
-	var outside := Vector2(-20, 40)          # left of the wall, level with it
+	var outside := _outside(t)
+	var step := Terrain.CELL      # one full cell, so it lands in the wall
 
-	# Straight into the wall: blocked on x, and y was not requested, so nothing.
-	_check("a head-on step is refused", t.slide(outside, Vector2(30, 0)), outside)
+	# Straight into the wall: blocked on x, and y was not requested.
+	_check("a head-on step is refused", t.slide(outside, Vector2(step, 0)), outside)
 
 	# Diagonal into the wall: x is refused, y is free, so it SLIDES rather than
 	# stopping dead. This is the whole point of resolving per axis.
 	_check("a diagonal step keeps its free axis",
-		t.slide(outside, Vector2(30, 30)), outside + Vector2(0, 30))
+		t.slide(outside, Vector2(step, step)), outside + Vector2(0, step))
 
+	var open_spot := _cell_centre(t, 4, 4)
 	_check("a free step is unchanged",
-		t.slide(Vector2(-400, -400), Vector2(10, 10)), Vector2(-390, -390))
+		t.slide(open_spot, Vector2(10, 10)), open_spot + Vector2(10, 10))
 
 	# The end position is never inside rock, whatever is asked for.
 	var bad := 0
@@ -230,40 +258,40 @@ func sliding_along_walls() -> void:
 
 func enemies_avoid_and_never_embed() -> void:
 	var t := _walled()
+	var outside := _outside(t)
 
-	# Heading straight at the wall from the open side: the avoidance force must
-	# push AWAY from it, i.e. have a negative x component.
-	var f := t.avoid(Vector2(-20, 40), Vector2(1, 0))
+	# Heading straight at the wall from the open side: a force is produced and
+	# it does not point further into the rock.
+	var f := t.avoid(outside, Vector2(1, 0))
 	_check("a force is produced facing a wall", f.length() > 0.0, true)
 	_check("and it does not point into the wall", f.x <= 0.0, true)
 
-	# Nothing ahead, no force. An avoidance force in open ground would bend
-	# every enemy's path for no reason.
 	_check("open ground produces no force",
-		t.avoid(Vector2(-800, -800), Vector2(1, 0)), Vector2.ZERO)
+		t.avoid(_cell_centre(t, 4, 4), Vector2(1, 0)), Vector2.ZERO)
 	_check("a still enemy produces no force",
-		t.avoid(Vector2(-20, 40), Vector2.ZERO), Vector2.ZERO)
+		t.avoid(outside, Vector2.ZERO), Vector2.ZERO)
 
-	# The guarantee that matters. Avoidance is steering and may be imperfect;
-	# rejection is what makes "no enemy is ever inside rock" true regardless.
+	# Avoidance is steering and may be imperfect; rejection is what makes "no
+	# enemy is ever inside rock" true regardless.
 	var bad := 0
 	for k in 64:
 		var a := TAU * k / 64.0
-		if t.is_solid(t.slide(Vector2(-20, 40), Vector2(cos(a), sin(a)) * 200.0)):
+		if t.is_solid(t.slide(outside, Vector2(cos(a), sin(a)) * 200.0)):
 			bad += 1
 	_check("a rejected step never lands in rock", bad, 0)
 	finished["enemies_avoid_and_never_embed"] = true
 
 func spawn_points_find_open_ground() -> void:
 	var t := _walled()          # rock over world x,y in [0,128)
-	var p := t.nearest_open(Vector2(64, 64))
+	var c := t.cell_xy(Vector2.ZERO)
+	var deep := _cell_centre(t, c.x + 1, c.y + 1)
+	var p := t.nearest_open(deep)
 	_check("a point in rock resolves to open ground", t.is_solid(p), false)
-	_check("and it does not travel far",
-		p.distance_to(Vector2(64, 64)) < 300.0, true)
+	_check("and it does not travel far", p.distance_to(deep) < 300.0, true)
 
 	# A point already open is returned untouched — no needless displacement.
-	_check("an open point is unchanged",
-		t.nearest_open(Vector2(-500, -500)), Vector2(-500, -500))
+	var open_spot := _cell_centre(t, 4, 4)
+	_check("an open point is unchanged", t.nearest_open(open_spot), open_spot)
 
 	# The search is BOUNDED: a fully solid field returns the input rather than
 	# looping forever. An unbounded search here is a hang on a dense seed.
@@ -285,9 +313,11 @@ func the_gate_is_always_reachable() -> void:
 			if t.is_solid(t.gate_pos) or not _reaches(t, Vector2.ZERO, t.gate_pos):
 				unreachable += 1
 				continue
-			# On an edge, not floating in the middle of the arena.
-			var c := t.cell_xy(t.gate_pos)
-			if c.x > 1 and c.y > 1 and c.x < t.w - 2 and c.y < t.h - 2:
+			# On the ARENA's edge — not the grid's, which is a margin away, and
+			# not floating in the middle of the field.
+			if t.arena_rect.grow(-Terrain.CELL * 3.0).has_point(t.gate_pos):
+				off_edge += 1
+			if not t.arena_rect.grow(Terrain.CELL).has_point(t.gate_pos):
 				off_edge += 1
 	_check("the gate is reachable on every seed and subnet", unreachable, 0)
 	_check("and it always sits on an arena edge", off_edge, 0)

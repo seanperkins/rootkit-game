@@ -229,6 +229,9 @@ func _reach(start: int) -> PackedByteArray:
 		if y < h - 1: stack.append(i + w)
 	return seen
 
+## As a fraction of the ARENA, not of the grid. The grid now extends a margin
+## past the arena on every side and that margin is solid by construction, so
+## dividing by w * h would report a healthy arena as a closet.
 func reachable_fraction(player_start: Vector2) -> float:
 	var start := cell_index(player_start)
 	if start < 0 or solid[start] != 0:
@@ -238,7 +241,9 @@ func reachable_fraction(player_start: Vector2) -> float:
 	for i in seen.size():
 		if seen[i] != 0:
 			n += 1
-	return float(n) / float(w * h)
+	_arena_cells()
+	var arena_cells := (_ax1 - _ax0) * (_ay1 - _ay0)
+	return float(n) / float(maxi(arena_cells, 1))
 
 ## Zones go down AFTER walls and after the connectivity fill, so a zone can
 ## never be sealed behind rock or overwritten by a pocket being filled in.
@@ -414,3 +419,99 @@ func _carve_to(from: Vector2, to: Vector2) -> void:
 		if seen[j] != 0:
 			return      # met the reachable region; stop carving
 
+
+## Distance in cells from the gate, over open ground. -1 where unreachable.
+##
+## Computed ONCE, on the boss kill, and it earns its keep twice over: the
+## largest distances are exactly "farthest from the gate", which is the order the
+## arena falls apart in, and the descending gradient from any cell is a route
+## home that follows walkable space rather than pointing through a wall.
+func build_distance_field() -> void:
+	dist_from_gate = PackedInt32Array()
+	dist_from_gate.resize(w * h)
+	for i in dist_from_gate.size():
+		dist_from_gate[i] = -1
+	voided = PackedByteArray()
+	voided.resize(w * h)
+	max_dist = 0
+	var start := cell_index(gate_pos)
+	if start < 0 or solid[start] != 0:
+		return
+	# A queue with a read head rather than pop_front on an Array: pop_front is
+	# O(n) and this walks six thousand cells.
+	var queue := PackedInt32Array([start])
+	var head := 0
+	dist_from_gate[start] = 0
+	while head < queue.size():
+		var i := queue[head]
+		head += 1
+		var d := dist_from_gate[i] + 1
+		var x := i % w
+		var y := i / w
+		for nb in [
+				(i - 1) if x > 0 else -1,
+				(i + 1) if x < w - 1 else -1,
+				(i - w) if y > 0 else -1,
+				(i + w) if y < h - 1 else -1]:
+			if nb < 0 or solid[nb] != 0 or dist_from_gate[nb] >= 0:
+				continue
+			dist_from_gate[nb] = d
+			if d > max_dist:
+				max_dist = d
+			queue.append(nb)
+
+## Void every open ARENA cell farther from the gate than `threshold`.
+##
+## The corridor is exempt because it lies outside the arena rect. Voiding the
+## way out would make the deadline unwinnable rather than tense.
+func collapse_to(threshold: int) -> void:
+	if voided.is_empty():
+		return
+	for i in voided.size():
+		if solid[i] != 0 or dist_from_gate[i] < 0:
+			continue
+		var p := origin + Vector2(float(i % w) + 0.5, float(i / w) + 0.5) * CELL
+		if not arena_rect.has_point(p):
+			continue
+		voided[i] = 1 if dist_from_gate[i] > threshold else 0
+
+func is_void(p: Vector2) -> bool:
+	if voided.is_empty():
+		return false
+	var i := cell_index(p)
+	if i < 0:
+		return false
+	return voided[i] != 0
+
+## Walk downhill on the distance field, from `p` to the gate.
+##
+## Lit as TILES rather than drawn as a line, because a line from you to the gate
+## is a claim the geometry does not support — it points through walls. Following
+## the gradient can only ever tread on ground you can actually walk, which
+## matters a great deal more now that failing to reach the gate kills you.
+func route_from(p: Vector2, limit: int = 400) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var i := cell_index(p)
+	if i < 0 or dist_from_gate.is_empty() or dist_from_gate[i] < 0:
+		return out
+	out.append(i)
+	var guard := 0
+	while dist_from_gate[i] > 0 and guard < limit:
+		guard += 1
+		var x := i % w
+		var y := i / w
+		var best := -1
+		for nb in [
+				(i - 1) if x > 0 else -1,
+				(i + 1) if x < w - 1 else -1,
+				(i - w) if y > 0 else -1,
+				(i + w) if y < h - 1 else -1]:
+			if nb < 0 or dist_from_gate[nb] < 0:
+				continue
+			if best < 0 or dist_from_gate[nb] < dist_from_gate[best]:
+				best = nb
+		if best < 0 or dist_from_gate[best] >= dist_from_gate[i]:
+			break
+		i = best
+		out.append(i)
+	return out

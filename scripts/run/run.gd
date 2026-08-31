@@ -121,6 +121,14 @@ var subnet := 1
 ## any more, only a corridor you walk down that is part of the same arena.
 enum Phase { FIGHTING, CLEARED }
 var phase := Phase.FIGHTING
+
+## Seconds from the boss kill until the arena is entirely gone. The deadline is
+## the point: a cleared subnet you can stand in forever is a lull exactly where
+## the run should be at its tensest.
+const COLLAPSE_SECONDS := 75.0
+var collapse_left := 0.0
+var _route: PackedInt32Array = PackedInt32Array()
+var _route_cell := -1
 ## director.spawned is per-SUBNET, because director.reset() zeroes it on every
 ## advance. The campaign total has to survive that.
 var _spawned_before := 0
@@ -317,6 +325,7 @@ func _physics_process(dt: float) -> void:
 		_step1_spawn(dt)
 	_step2_integrate(dt)
 	_step2c_gate()
+	_step2d_collapse(dt)
 	_step2b_zones(dt)
 	_step3_rebuild()
 	_step4_steer()
@@ -895,6 +904,8 @@ func _on_death(i: int) -> void:
 			# a bool — nothing is spawned, freed, or moved.
 			phase = Phase.CLEARED
 			terrain.gate_open = true
+			terrain.build_distance_field()
+			collapse_left = COLLAPSE_SECONDS
 			_bank_progress(true)
 		else:
 			won = true
@@ -1016,6 +1027,29 @@ func _bank_progress(with_salvage: bool) -> void:
 ## did, so chip damage still accumulates across a campaign.
 const SUBNET_CLEAR_HEAL := 0.30
 
+## The arena comes apart from the far side inward, and the ground it takes is
+## lethal. Runs only while CLEARED, so it costs a fighting subnet nothing.
+func _step2d_collapse(dt: float) -> void:
+	if phase != Phase.CLEARED:
+		return
+	collapse_left = maxf(0.0, collapse_left - dt)
+	var frac := collapse_left / COLLAPSE_SECONDS
+	terrain.collapse_to(int(float(terrain.max_dist) * frac))
+
+	var pc := terrain.cell_index(player_pos)
+	if pc != _route_cell:
+		_route_cell = pc
+		_route = terrain.route_from(player_pos)
+
+	# Lethal means lethal: no iframes, no mitigation. Armour does not help when
+	# the floor is gone.
+	if terrain.is_void(player_pos) and alive and not won:
+		_die()
+	# Anything still out there goes with it.
+	for i in range(enemies.count - 1, -1, -1):
+		if terrain.is_void(enemies.pos[i]):
+			enemies.despawn(i)
+
 ## Reaching the corridor's END is the advance. The gate itself is just a mouth
 ## you walk through; touching it does nothing, which is the whole point of the
 ## rework — the transition is a walk, not a trigger.
@@ -1033,6 +1067,9 @@ func _advance_subnet() -> void:
 	_spawned_before += director.spawned
 	subnet += 1
 	phase = Phase.FIGHTING
+	collapse_left = 0.0
+	_route = PackedInt32Array()
+	_route_cell = -1
 	# Shards do NOT follow you. Arriving on a fresh subnet standing in the last
 	# one's loose XP is both free levels and visually wrong.
 	for i in range(shards.count - 1, -1, -1):
@@ -1263,6 +1300,16 @@ func _draw() -> void:
 	# obstacles (a few dozen) rather than the number of solid cells (up to
 	# eleven hundred). A world-space AABB under to_iso is a sheared
 	# parallelogram, never a rect, so each is its four projected corners.
+	# The whole arena reddens once it starts coming apart, so the change of state
+	# is legible before the first tile actually goes.
+	if phase == Phase.CLEARED:
+		var heat := 1.0 - collapse_left / COLLAPSE_SECONDS
+		var ar := terrain.arena_rect
+		draw_colored_polygon(PackedVector2Array([
+			to_iso(ar.position), to_iso(ar.position + Vector2(ar.size.x, 0)),
+			to_iso(ar.position + ar.size), to_iso(ar.position + Vector2(0, ar.size.y))]),
+			Color(1.0, 0.15, 0.12, 0.05 + 0.17 * heat))
+
 	for entry in terrain.rects:
 		var tr: Rect2 = entry[0]
 		var kind: int = entry[1]
@@ -1287,36 +1334,57 @@ func _draw() -> void:
 			Terrain.Kind.CORRUPTION:
 				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
 
-	# The gate: present and legible while shut, bright and pulsing once open.
-	var gf := terrain
-	if gf.has_gate:
-		var ring := PackedVector2Array()
-		for k in 25:
-			var ga := TAU * k / 24.0
-			ring.append(to_iso(gf.gate_pos
-				+ Vector2(cos(ga), sin(ga)) * Terrain.GATE_RADIUS))
-		if gf.gate_open:
-			var pulse := 0.6 + 0.4 * sin(Time.get_ticks_msec() * 0.004)
-			draw_colored_polygon(ring, Color(0.35, 1.0, 0.75, 0.18 * pulse))
-			draw_polyline(ring, Color(0.55, 1.9, 1.2, pulse), 2.5)
-		else:
-			# Shut, but never hidden. A gate you have walked past for five
-			# minutes is a promise; one that appears on the boss kill is a
-			# prompt, and the promise is the better feeling.
-			draw_polyline(ring, Color(0.30, 0.45, 0.40, 0.55), 1.5)
+	# Ground that has fallen away, merged into horizontal row-runs before
+	# drawing. Per-cell quads would be thousands of draw calls across a 6,300
+	# cell grid; runs cut that by roughly an order of magnitude for one extra
+	# loop.
+	if not terrain.voided.is_empty():
+		for vy in terrain.h:
+			var vx := 0
+			while vx < terrain.w:
+				if terrain.voided[vy * terrain.w + vx] == 0:
+					vx += 1
+					continue
+				var x0 := vx
+				while vx < terrain.w and terrain.voided[vy * terrain.w + vx] != 0:
+					vx += 1
+				var q0 := terrain.origin + Vector2(x0, vy) * Terrain.CELL
+				var q1 := terrain.origin + Vector2(vx, vy + 1) * Terrain.CELL
+				draw_colored_polygon(PackedVector2Array([
+					to_iso(q0), to_iso(Vector2(q1.x, q0.y)),
+					to_iso(q1), to_iso(Vector2(q0.x, q1.y))]),
+					Color(0.16, 0.02, 0.03, 0.94))
 
-		if gf.gate_open and phase == Phase.CLEARED:
-			# A BEARING, not a path. A drawn route needs pathfinding the game
-			# does not have and would be wrong the moment a wall interrupts it;
-			# arenas are 8-18% walls and fully connected, so a direction is
-			# enough to navigate by and cannot go stale.
-			var gd := (gf.gate_pos - player_pos).normalized()
-			for k in 14:
-				var t0 := player_pos + gd * (120.0 + 90.0 * k)
-				var fade := 1.0 - float(k) / 14.0
-				var ph := fmod(Time.get_ticks_msec() * 0.0012 - k * 0.08, 1.0)
-				draw_line(to_iso(t0), to_iso(t0 + gd * 40.0),
-					Color(0.4, 1.4, 1.0, 0.10 + 0.5 * fade * ph), 2.0)
+	# The way out, lit as TILES on walkable ground rather than a line pointed at
+	# the gate. With a lethal deadline, a line that crosses a wall is a line that
+	# gets people killed.
+	if phase == Phase.CLEARED and _route.size() > 1:
+		var pulse := Time.get_ticks_msec() * 0.0016
+		for k in _route.size():
+			var ci: int = _route[k]
+			var cq := terrain.origin + Vector2(ci % terrain.w, ci / terrain.w) \
+				* Terrain.CELL
+			var cq1 := cq + Vector2(Terrain.CELL, Terrain.CELL)
+			var travel := fmod(pulse - float(k) * 0.06, 1.0)
+			draw_colored_polygon(PackedVector2Array([
+				to_iso(cq), to_iso(Vector2(cq1.x, cq.y)),
+				to_iso(cq1), to_iso(Vector2(cq.x, cq1.y))]),
+				Color(0.45, 1.6, 1.1, 0.10 + 0.30 * travel))
+
+	# The gate reads as a doorway, not a marker: two posts and a lintel, square
+	# to the way out. A ring said "something is here" and nothing more.
+	if terrain.has_gate:
+		var gside := Vector2(-terrain.gate_dir.y, terrain.gate_dir.x)
+		var m1 := terrain.gate_pos + gside * 74.0
+		var m2 := terrain.gate_pos - gside * 74.0
+		var post := terrain.gate_dir * 30.0
+		var gcol := Color(0.30, 0.45, 0.40)
+		if terrain.gate_open:
+			var gp := 0.65 + 0.35 * sin(Time.get_ticks_msec() * 0.004)
+			gcol = Color(0.55 * gp, 1.9 * gp, 1.2 * gp)
+		draw_line(to_iso(m1 - post), to_iso(m1 + post), gcol, 4.0)
+		draw_line(to_iso(m2 - post), to_iso(m2 + post), gcol, 4.0)
+		draw_line(to_iso(m1), to_iso(m2), gcol, 2.0)
 
 	# Shot visuals, oldest fading out. Drawn under the ship.
 	for fx in _fx_line:

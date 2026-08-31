@@ -114,7 +114,8 @@ func _refresh() -> void:
 		_bar(float(run.xp) / maxf(run.xp_needed, 1), 14), run.salvage,
 		run.botnet.count, run.kills, run.flips]
 	if run.phase == run.Phase.CLEARED:
-		top.text += "   >> SUBNET CLEAR — the gate is open"
+		top.text += "   >> SUBNET COLLAPSING — %ds to the gate" % int(
+			ceil(run.collapse_left))
 	# Proportional, not absolute. A fixed 30 fires at 16.7% on a 180 bar.
 	top.add_theme_color_override("font_color",
 		WARN if float(hp) < float(maxhp) * 0.3 else FG)
