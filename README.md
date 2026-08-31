@@ -17,8 +17,10 @@ subnets**: survive five minutes, then kill the ICE that follows.
 
 Clearing ICE does not move you on by itself. A **gate** stands at the arena's
 edge from the moment it generates, shut — you fight past it for the whole
-subnet. Killing ICE halts the spawns, opens it, and starts the collapse behind
-you. Walk in, cross the corridor, and the far end puts you on the next subnet's
+subnet. Killing ICE halts the spawns, opens it, lights the route to it across
+walkable ground, and starts the arena coming apart from the far side inward.
+Ground that has gone is drawn as gone, because standing on it is fatal. Walk in,
+cross the corridor, and the far end puts you on the next subnet's
 own floor with your build, level and XP intact and 30% of your integrity back,
 the gate shutting behind you. Take as long as you like getting there: nothing is
 spawning. Clearing the last subnet wins outright — it has no gate.

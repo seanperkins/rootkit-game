@@ -1,12 +1,14 @@
 extends SceneTree
 
-## The arena coming apart: the distance field that orders it, and the death it
-## deals.
+## The arena coming apart: the distance field that orders it, the death it
+## deals, and the two things that make the walk out survivable — a lit route to
+## the gate and visibly missing floor behind you.
 
 var failures := 0
 var finished := {}
 const CASES := ["the_field_measures_from_the_gate", "collapse_eats_the_far_side_first",
-	"the_route_follows_open_ground", "voided_ground_kills"]
+	"the_route_follows_open_ground", "voided_ground_kills",
+	"the_route_home_is_lit", "the_void_is_drawn_as_merged_runs"]
 
 func _initialize() -> void:
 	print("ROOTKIT — collapse\n")
@@ -14,6 +16,8 @@ func _initialize() -> void:
 	collapse_eats_the_far_side_first()
 	the_route_follows_open_ground()
 	await voided_ground_kills()
+	await the_route_home_is_lit()
+	await the_void_is_drawn_as_merged_runs()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -133,3 +137,79 @@ func voided_ground_kills() -> void:
 	_check("collapsed ground is lethal", r.alive, false)
 	r.free()
 	finished["voided_ground_kills"] = true
+
+## The collapse is a race to the gate, so the way there has to be visible. The
+## route was computed every time the player changed cell and then read by
+## nothing at all — the walk out was unlit, which is what "there is no path out"
+## looks like from the player's side.
+func the_route_home_is_lit() -> void:
+	var r := await _fresh_run()
+	var b = r.enemy_types[EnemyTable.ICE]
+	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
+		48.0, EnemyTable.ICE)
+	r._on_death(i)
+	r._physics_process(1.0 / 60.0)
+
+	_check("a route exists to draw", r._route.size() > 0, true)
+	_check("it starts under the player",
+		r._route[0], r.terrain.cell_index(r.player_pos))
+	_check("and ends on the gate",
+		r.terrain.dist_from_gate[r._route[r._route.size() - 1]], 0)
+
+	# What the renderer actually consumes: world-space cell centres, culled.
+	var all := Rect2(r.terrain.origin, r.terrain.size)
+	_check("every step of it is drawable", r._route_points(all).size(), r._route.size())
+	var none := Rect2(r.terrain.origin - Vector2(9000, 9000), Vector2(10, 10))
+	_check("and none of it is drawn off-screen", r._route_points(none).size(), 0)
+
+	# Walking out ends the collapse, so the wash goes with it.
+	r.terrain.open_gate()
+	var g = r.terrain.gate()
+	r.player_pos = g.end + g.dir * 8.0
+	r._physics_process(1.0 / 60.0)
+	_check("arriving on the next subnet clears the route", r._route.size(), 0)
+	r.free()
+	finished["the_route_home_is_lit"] = true
+
+## Voided ground was lethal and invisible: you died standing on floor that still
+## looked like floor. It is drawn as horizontal RUNS rather than per cell,
+## because a collapsed arena is thousands of cells and one quad each is
+## thousands of draw calls a frame.
+func the_void_is_drawn_as_merged_runs() -> void:
+	var r := await _fresh_run()
+	var b = r.enemy_types[EnemyTable.ICE]
+	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
+		48.0, EnemyTable.ICE)
+	r._on_death(i)
+	var all := Rect2(r.terrain.origin, r.terrain.size)
+	_check("an intact arena has no void to draw", r._void_runs(all).size(), 0)
+
+	r.terrain.collapse_to(int(r.terrain.max_dist / 2))
+	var runs: Array = r._void_runs(all)
+	_check("once it starts falling there is", runs.size() > 0, true)
+
+	# Every run covers voided cells and only voided cells.
+	var wrong := 0
+	var covered := {}
+	for run in runs:
+		for x in range(run.x, run.y + 1):
+			var idx: int = run.z * r.terrain.w + x
+			if r.terrain.voided[idx] == 0:
+				wrong += 1
+			covered[idx] = true
+	_check("no run paints ground that is still there", wrong, 0)
+
+	var total := 0
+	for k in r.terrain.voided.size():
+		if r.terrain.voided[k] != 0:
+			total += 1
+	_check("and every voided cell is covered", covered.size(), total)
+	# The whole point of runs: far fewer of them than there are cells.
+	_check("adjacent cells merge into one run", runs.size() < total, true)
+
+	# Clipped, so an off-screen collapse costs nothing.
+	_check("a view off the map draws none of it",
+		r._void_runs(Rect2(r.terrain.origin - Vector2(9000, 9000),
+			Vector2(10, 10))).size(), 0)
+	r.free()
+	finished["the_void_is_drawn_as_merged_runs"] = true

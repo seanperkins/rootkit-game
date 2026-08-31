@@ -1926,6 +1926,54 @@ func _draw_box(r: Rect2, height: float, top: Color, near: Color, side: Color,
 	draw_line(g11, g11 + up, edge, 1.5)
 	draw_line(g10, g10 + up, edge, 1.0)
 
+## Ground the collapse has already taken, as horizontal RUNS of cells, clipped
+## to the view.
+##
+## Runs, not cells: late in a collapse the arena is thousands of voided cells
+## and one quad each is thousands of draw calls a frame. Merging each row's
+## contiguous span turns a solid region into a handful of quads, and the region
+## IS solid — the collapse eats by distance from the gate, so what it takes is
+## contiguous almost everywhere.
+func _void_runs(view: Rect2) -> Array:
+	var out := []
+	if terrain.voided.is_empty():
+		return out
+	var a := terrain.cell_xy(view.position)
+	var b := terrain.cell_xy(view.end)
+	var x0 := maxi(a.x, 0)
+	var x1 := mini(b.x, terrain.w - 1)
+	var y0 := maxi(a.y, 0)
+	var y1 := mini(b.y, terrain.h - 1)
+	for y in range(y0, y1 + 1):
+		var row := y * terrain.w
+		var run := -1
+		# One past the end, so a run touching the right edge is still closed.
+		for x in range(x0, x1 + 2):
+			var on := x <= x1 and terrain.voided[row + x] != 0
+			if on and run < 0:
+				run = x
+			elif not on and run >= 0:
+				out.append(Vector3i(run, x - 1, y))
+				run = -1
+	return out
+
+## The route home as world-space cell centres, culled to the view.
+func _route_points(view: Rect2) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for k in _route.size():
+		var i := _route[k]
+		var p := terrain.origin + Vector2(
+			float(i % terrain.w) + 0.5, float(i / terrain.w) + 0.5) * Terrain.CELL
+		if view.has_point(p):
+			out.append(p)
+	return out
+
+## A cell-aligned world rect as its four projected corners. Under to_iso an AABB
+## is a sheared parallelogram, never a rect.
+func _ground_quad(a: Vector2, b: Vector2) -> PackedVector2Array:
+	return PackedVector2Array([
+		to_iso(a), to_iso(Vector2(b.x, a.y)), to_iso(b), to_iso(Vector2(a.x, b.y))])
+
 func _draw() -> void:
 	var view := _visible_world_rect()
 	# Terrain first, so it sits under every entity.
@@ -1939,10 +1987,38 @@ func _draw() -> void:
 	if phase == Phase.CLEARED:
 		var heat := 1.0 - collapse_left / COLLAPSE_SECONDS
 		var ar := terrain.arena()
-		draw_colored_polygon(PackedVector2Array([
-			to_iso(ar.position), to_iso(ar.position + Vector2(ar.size.x, 0)),
-			to_iso(ar.position + ar.size), to_iso(ar.position + Vector2(0, ar.size.y))]),
+		draw_colored_polygon(_ground_quad(ar.position, ar.end),
 			Color(1.0, 0.15, 0.12, 0.05 + 0.17 * heat))
+
+		# Ground that has already gone. Opaque, and nothing drawn on top of it:
+		# it swallows the backdrop's lattice, and the lattice stopping IS the
+		# edge of the world. An outline along each run's near edge was tried and
+		# removed — the collapse frontier faces whichever way the gate does, so
+		# lighting one side of it banded the interior into scanlines and marked
+		# the wrong edge on three arenas out of four.
+		for run in _void_runs(view):
+			var a := terrain.origin + Vector2(float(run.x), float(run.z)) * CELL
+			var b := terrain.origin + Vector2(float(run.y + 1), float(run.z + 1)) * CELL
+			draw_colored_polygon(_ground_quad(a, b), Color(0.015, 0.008, 0.02))
+
+		# The way out, lit as TILES. A line from you to the gate is a claim the
+		# geometry does not support — it points through walls. The gradient can
+		# only ever tread on ground you can actually walk, and failing to reach
+		# the gate now kills you, so this is the difference between a deadline
+		# and an ambush.
+		#
+		# WHOLE cells, butted together. At two thirds of a cell they read as a
+		# dotted line rather than a floor you follow, which at this alpha over a
+		# reddened arena was very nearly nothing at all.
+		var pulse := 0.75 + 0.25 * sin(Time.get_ticks_msec() * 0.005)
+		var pts := _route_points(view)
+		var half := Vector2(CELL, CELL) * 0.5
+		for k in pts.size():
+			# Brightest under your feet, fading toward the gate, so the wash
+			# carries the direction of travel on its own.
+			var f := 1.0 - float(k) / float(maxi(pts.size(), 1))
+			draw_colored_polygon(_ground_quad(pts[k] - half, pts[k] + half),
+				Color(0.35, 1.50, 1.00, (0.22 + 0.30 * f) * pulse))
 
 	for entry in terrain.rects:
 		var tr: Rect2 = entry[0]
