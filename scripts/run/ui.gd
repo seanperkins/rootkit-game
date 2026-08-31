@@ -7,7 +7,20 @@ const WARN := Color(1.0, 0.45, 0.42)
 var run: Node2D
 var _hud: Control
 var _overlay: Control
+## The card PanelContainers, so the SELECTED one can be lit. The card is the
+## module; the row inside it is only where that module goes, so highlighting a
+## row alone loses track of what is being placed.
 var _cards: Array = []
+## The keyboard's view of the overlay: one entry per card, holding only the
+## buttons that can actually be pressed. Indexing enabled-only rows is what
+## makes Enter always do something — the highlight can never come to rest on a
+## `no room` row, where the key would look broken.
+var _nav: Array = []
+var _decline: Button
+## Which card, which of its enabled rows, or the decline button underneath them.
+var _col := 0
+var _row := 0
+var _on_decline := false
 var _end: Control
 
 func bind(r: Node2D) -> void:
@@ -24,11 +37,11 @@ func _mono(size: int) -> Label:
 	l.add_theme_color_override("font_color", FG)
 	return l
 
-func _panel(c: Color) -> StyleBoxFlat:
+func _panel(c: Color, width: int = 1) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.02, 0.05, 0.04, 0.92)
 	sb.border_color = c
-	sb.set_border_width_all(1)
+	sb.set_border_width_all(width)
 	sb.set_content_margin_all(14)
 	return sb
 
@@ -65,19 +78,38 @@ func _build() -> void:
 	title.position = Vector2(60, 78)
 	_overlay.add_child(title)
 
+	# A column, rather than two hardcoded y positions. The cards stretch to the
+	# tallest stats line, and decline sat at a fixed 452 that the row had
+	# already grown past — so the one option you reach by pressing DOWN was
+	# drawn underneath the first card.
+	var column := VBoxContainer.new()
+	column.name = "Column"
+	column.position = Vector2(60, 150)
+	column.add_theme_constant_override("separation", 18)
+	_overlay.add_child(column)
+
 	var row := HBoxContainer.new()
 	row.name = "Row"
-	row.position = Vector2(60, 150)
 	row.add_theme_constant_override("separation", 18)
-	_overlay.add_child(row)
+	column.add_child(row)
 
-	var decline := Button.new()
-	decline.name = "Decline"
-	decline.text = "decline  ->  +25 salvage"
-	decline.position = Vector2(60, 452)
-	decline.custom_minimum_size = Vector2(260, 34)
-	_overlay.add_child(decline)
-	decline.pressed.connect(func(): run.decline_card())
+	_decline = Button.new()
+	_decline.name = "Decline"
+	# A leading space, so the selection marker can replace it without the label
+	# shifting sideways as the highlight moves.
+	_decline.text = " decline  ->  +25 salvage"
+	_decline.custom_minimum_size = Vector2(260, 34)
+	# Left-aligned in a box that would otherwise stretch it the full width.
+	_decline.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	_decline.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_decline.focus_mode = Control.FOCUS_NONE
+	_decline.set_meta("base", _decline.text)
+	_decline.set_meta("tint", DIM)
+	column.add_child(_decline)
+	_decline.pressed.connect(func(): run.decline_card())
+	# Connected once, here rather than per offer: the cards are rebuilt on every
+	# level-up but this button is not, and reconnecting would stack handlers.
+	_decline.mouse_entered.connect(_hover_decline)
 
 	_end = Control.new()
 	_end.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -154,13 +186,41 @@ func _on_cards(cards: Array) -> void:
 	_overlay.visible = true
 
 func _show_cards() -> void:
-	_overlay.get_node("Title").text = "  LEVEL UP  ::  one click places the module"
-	var row: HBoxContainer = _overlay.get_node("Row")
+	_overlay.get_node("Title").text = \
+		"  LEVEL UP  ::  arrows or WASD to choose, enter to place, esc to decline"
+	var row: HBoxContainer = card_row()
 	for c in row.get_children():
 		row.remove_child(c)
 		c.queue_free()
+	_cards.clear()
+	_nav.clear()
 	for entry in _cards_data:
-		row.add_child(_make_card(entry))
+		var buttons: Array = []
+		var card := _make_card(entry, buttons)
+		row.add_child(card)
+		_cards.append(card)
+		_nav.append(buttons)
+	# Hovering moves the highlight, so the mouse and the keyboard never disagree
+	# about what Enter would press.
+	for ci in _nav.size():
+		var list: Array = _nav[ci]
+		for bi in list.size():
+			(list[bi] as Button).mouse_entered.connect(_hover.bind(ci, bi))
+	_reset_selection()
+
+## The cards are rebuilt on every offer, so the selection is too. Index 0 of an
+## enabled-only list is always a legal target; a card with no legal row at all
+## is skipped, and if none of them has one there is only decline left.
+func _reset_selection() -> void:
+	_col = 0
+	_row = 0
+	_on_decline = false
+	while _col < _nav.size() and (_nav[_col] as Array).is_empty():
+		_col += 1
+	if _col >= _nav.size():
+		_col = 0
+		_on_decline = true
+	_apply_highlight()
 
 const COLUMN_NAMES := ["VECTOR", "TRIGGER", "PAYLOAD"]
 
@@ -238,6 +298,13 @@ func _row_button(m: Module, e: int, target) -> Button:
 					tint = NEW_ROW
 
 	b.text = " %s  exploit_%02d   %s" % [mark, e + 1, detail]
+	# Kept so the highlight can restyle and re-mark this button later without
+	# rebuilding it or reverse-engineering which outcome it represents.
+	b.set_meta("base", b.text)
+	b.set_meta("tint", tint)
+	# The engine's own focus navigation would fight the grid below, and the grid
+	# is what knows that a card is a module and a row is an exploit.
+	b.focus_mode = Control.FOCUS_NONE
 	if target == null:
 		b.disabled = true
 		b.add_theme_stylebox_override("disabled", _panel(OFF))
@@ -257,7 +324,11 @@ func _spacer() -> Control:
 	c.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	return c
 
-func _make_card(entry: Array) -> Control:
+## `out_buttons` collects this card's pressable rows, in the order they are laid
+## out. Gathered while building rather than by walking children afterwards: the
+## builder already knows which rows are legal, and a walker would have to
+## re-derive it from the node tree.
+func _make_card(entry: Array, out_buttons: Array) -> Control:
 	var m = entry[0]
 	var targets: Array = entry[1]
 	var card := PanelContainer.new()
@@ -271,7 +342,6 @@ func _make_card(entry: Array) -> Control:
 	card.add_child(box)
 
 	if m == null:
-		card.add_theme_stylebox_override("panel", _panel(DIM))
 		var t := _mono(13)
 		t.text = "[ salvage ]\n\nno module fits"
 		box.add_child(t)
@@ -281,13 +351,16 @@ func _make_card(entry: Array) -> Control:
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.custom_minimum_size = Vector2(0, 34)
 		b.add_theme_font_size_override("font_size", 12)
+		b.focus_mode = Control.FOCUS_NONE
+		b.set_meta("base", b.text)
+		b.set_meta("tint", DIM)
 		for state in ["normal", "hover", "pressed", "focus"]:
 			b.add_theme_stylebox_override(state, _panel(DIM))
 		b.pressed.connect(func(): run.choose_card(null, null))
 		box.add_child(b)
+		out_buttons.append(b)
 		return card
 
-	card.add_theme_stylebox_override("panel", _panel(FG))
 	box.add_child(_column_marks(int(m.slot)))
 	var name_label := _mono(16)
 	name_label.text = m.display_name
@@ -303,7 +376,10 @@ func _make_card(entry: Array) -> Control:
 	for t in targets:
 		by_row[t.exploit] = t
 	for e in Loadout.MAX_EXPLOITS:
-		box.add_child(_row_button(m, e, by_row.get(e)))
+		var rb := _row_button(m, e, by_row.get(e))
+		box.add_child(rb)
+		if not rb.disabled:
+			out_buttons.append(rb)
 	return card
 
 func _stats_line(m: Module) -> String:
@@ -334,9 +410,117 @@ func _on_end(won: bool, salvage: int) -> void:
 func _restart() -> void:
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
+# ------------------------------------------------------- keyboard selection ---
+
+## The button Enter would press, or null when there is nothing to press.
+func highlighted() -> Button:
+	if _on_decline:
+		return _decline
+	if _col < 0 or _col >= _nav.size():
+		return null
+	var list: Array = _nav[_col]
+	return list[_row] if _row >= 0 and _row < list.size() else null
+
+## The card strip and the decline button, so their placement is assertable.
+func card_row() -> Control:
+	return _overlay.get_node("Column/Row")
+
+func decline_button() -> Button:
+	return _decline
+
+## Down past the last row lands on decline, and once more wraps to the top, so
+## every option is reachable without knowing a shortcut exists.
+func _move_row(delta: int) -> void:
+	if _nav.is_empty():
+		return
+	var n: int = (_nav[_col] as Array).size()
+	var at := n if _on_decline else _row
+	at = posmod(at + delta, n + 1)
+	_on_decline = at == n
+	_row = 0 if _on_decline else at
+	_apply_highlight()
+
+## Sideways picks a different MODULE. Cards with no legal row at all are passed
+## over rather than landed on, and from decline this steps back onto the grid —
+## decline spans the width, so there is nothing sideways of it to reach.
+func _move_card(delta: int) -> void:
+	if _nav.is_empty():
+		return
+	var was_decline := _on_decline
+	_on_decline = false
+	for _try in _nav.size():
+		_col = posmod(_col + delta, _nav.size())
+		if not (_nav[_col] as Array).is_empty():
+			break
+	var n: int = (_nav[_col] as Array).size()
+	if n == 0:
+		_on_decline = true          # no card has a legal row; only decline left
+	else:
+		_row = 0 if was_decline else mini(_row, n - 1)
+	_apply_highlight()
+
+func _activate() -> void:
+	var b := highlighted()
+	# Through the button's own signal, so the keyboard and the mouse take
+	# exactly the same path into choose_card.
+	if b != null and not b.disabled:
+		b.pressed.emit()
+
+func _hover(card: int, row: int) -> void:
+	_col = card
+	_row = row
+	_on_decline = false
+	_apply_highlight()
+
+func _hover_decline() -> void:
+	_on_decline = true
+	_apply_highlight()
+
+## The selected card is lit and the others dimmed, and inside it the selected
+## row is marked and brightened. Both, because the card is the module and the
+## row is only where it goes — a row marked on its own does not say what is
+## about to be placed.
+func _apply_highlight() -> void:
+	for ci in _cards.size():
+		var lit: bool = ci == _col and not _on_decline
+		(_cards[ci] as PanelContainer).add_theme_stylebox_override(
+			"panel", _panel(FG if lit else DIM, 2 if lit else 1))
+	var sel := highlighted()
+	for ci in _nav.size():
+		for b in _nav[ci]:
+			_mark(b, b == sel)
+	if _decline != null:
+		_mark(_decline, _decline == sel)
+
+func _mark(b: Button, on: bool) -> void:
+	var base: String = b.get_meta("base", b.text)
+	var tint: Color = b.get_meta("tint", FG)
+	b.text = (">" + base.substr(1)) if on else base
+	var col := tint if on else tint.darkened(0.45)
+	for state in ["normal", "hover", "pressed", "focus"]:
+		b.add_theme_stylebox_override(state, _panel(col, 2 if on else 1))
+	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+		b.add_theme_color_override(state, col)
+
 func _input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and e.keycode == KEY_R and _end.visible:
+	if not (e is InputEventKey) or not e.pressed or e.is_echo():
+		return
+	if e.keycode == KEY_R and _end.visible:
 		_restart()
+		return
+	if not _overlay.visible:
+		return
+	match e.keycode:
+		KEY_W, KEY_UP:                       _move_row(-1)
+		KEY_S, KEY_DOWN:                     _move_row(1)
+		KEY_A, KEY_LEFT:                     _move_card(-1)
+		KEY_D, KEY_RIGHT:                    _move_card(1)
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:  _activate()
+		KEY_ESCAPE:                          run.decline_card()
+		_:                                   return
+	var vp := get_viewport()
+	if vp != null:
+		vp.set_input_as_handled()
 
 func _process(_d: float) -> void:
 	if run != null and not run.paused:

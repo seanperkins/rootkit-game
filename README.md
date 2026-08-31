@@ -146,6 +146,7 @@ godot --headless -s res://tests/test_terrain_run.gd  # zones and terrain in a li
 godot --headless -s res://tests/test_gates.gd        # the gate, the corridor, the walk through
 godot --headless -s res://tests/test_collapse.gd     # distance field, collapse order, the route
 godot --headless -s res://tests/test_minibosses.gd   # the schedule and the four mechanics
+godot --headless -s res://tests/test_cards_keyboard.gd # level-up by arrows/WASD
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
