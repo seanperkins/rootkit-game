@@ -223,3 +223,34 @@ func slide(from: Vector2, delta: Vector2) -> Vector2:
 	if not is_solid(try_y):
 		p = try_y
 	return p
+
+## How far ahead an enemy looks for rock, and how hard it turns from it.
+const LOOK_AHEAD := 46.0
+const AVOID_FORCE := 90.0
+
+## A steering force away from a wall directly ahead, or zero in the open.
+##
+## Steering, NOT pathfinding. An enemy pushed off a wall it is walking into will
+## slide along it and go around small obstacles; it will not solve a concave
+## one. That is the enemy-behaviour pass's problem, and until then the hard
+## rejection in the integrate step is what keeps the invariant — an enemy may
+## look stupid against a wall, but it can never end a tick inside one.
+func avoid(at: Vector2, heading: Vector2) -> Vector2:
+	if heading.length_squared() < 0.000001:
+		return Vector2.ZERO
+	var dir := heading.normalized()
+	if not is_solid(at + dir * LOOK_AHEAD):
+		return Vector2.ZERO
+	# Probe both perpendiculars and turn toward whichever is clear. Turning a
+	# fixed way makes every enemy hitting the same wall pile into one corner.
+	var left := Vector2(-dir.y, dir.x)
+	var right := -left
+	var left_clear := not is_solid(at + left * LOOK_AHEAD)
+	var right_clear := not is_solid(at + right * LOOK_AHEAD)
+	if left_clear and not right_clear:
+		return left * AVOID_FORCE
+	if right_clear and not left_clear:
+		return right * AVOID_FORCE
+	# Both clear or both blocked: back off along the reverse heading, which is
+	# always the way it came and therefore always was passable.
+	return -dir * AVOID_FORCE

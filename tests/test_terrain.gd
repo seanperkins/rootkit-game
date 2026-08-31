@@ -17,7 +17,7 @@ var finished := {}
 const CASES := [
 	"cell_lookup", "density_scales_with_subnet", "generation_is_deterministic",
 	"every_open_cell_is_reachable", "the_playfield_never_collapses",
-	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls",
+	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls", "enemies_avoid_and_never_embed",
 ]
 
 const ORIGIN := Vector2(-1600, -1000)
@@ -33,6 +33,7 @@ func _initialize() -> void:
 	the_start_is_clear()
 	zones_are_placed_in_the_open()
 	sliding_along_walls()
+	enemies_avoid_and_never_embed()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -223,3 +224,29 @@ func sliding_along_walls() -> void:
 			bad += 1
 	_check("no slide ever ends inside a wall", bad, 0)
 	finished["sliding_along_walls"] = true
+
+func enemies_avoid_and_never_embed() -> void:
+	var t := _walled()
+
+	# Heading straight at the wall from the open side: the avoidance force must
+	# push AWAY from it, i.e. have a negative x component.
+	var f := t.avoid(Vector2(-20, 40), Vector2(1, 0))
+	_check("a force is produced facing a wall", f.length() > 0.0, true)
+	_check("and it does not point into the wall", f.x <= 0.0, true)
+
+	# Nothing ahead, no force. An avoidance force in open ground would bend
+	# every enemy's path for no reason.
+	_check("open ground produces no force",
+		t.avoid(Vector2(-800, -800), Vector2(1, 0)), Vector2.ZERO)
+	_check("a still enemy produces no force",
+		t.avoid(Vector2(-20, 40), Vector2.ZERO), Vector2.ZERO)
+
+	# The guarantee that matters. Avoidance is steering and may be imperfect;
+	# rejection is what makes "no enemy is ever inside rock" true regardless.
+	var bad := 0
+	for k in 64:
+		var a := TAU * k / 64.0
+		if t.is_solid(t.slide(Vector2(-20, 40), Vector2(cos(a), sin(a)) * 200.0)):
+			bad += 1
+	_check("a rejected step never lands in rock", bad, 0)
+	finished["enemies_avoid_and_never_embed"] = true

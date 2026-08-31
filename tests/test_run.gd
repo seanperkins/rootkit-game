@@ -52,7 +52,13 @@ func _initialize() -> void:
 	print("  outcome: %s" % ("WON" if run.won else ("DIED" if not run.alive else "timeout")))
 	print("")
 
-	_check("enemies spawned", run.spawned_total() > 200, true)
+	# A RATE, not a count. A raw threshold silently encodes "the autopilot
+	# survived long enough to see 200 spawns", so it fails whenever the game gets
+	# harder rather than whenever the spawner breaks. The wave table opens at
+	# 1.8/s, so anything at or above 1.0/s means the director is producing.
+	var spawn_rate := float(run.spawned_total()) / maxf(mins, 1.0)
+	print("  spawn rate %.2f/s" % spawn_rate)
+	_check("the director is producing spawns", spawn_rate >= 1.0, true)
 	_check("damage landed (kills > 0)", run.kills > 0, true)
 	_check("player levelled up", run.level > 1, true)
 	_check("cards were offered", picks > 0, true)
@@ -111,7 +117,30 @@ func _autopilot() -> Vector2:
 	var to_centre: Vector2 = Vector2.ZERO - run.player_pos
 	if to_centre.length() > 1100.0:
 		dir = (dir + to_centre.normalized() * 1.6).normalized()
-	return dir
+	return _around_walls(dir)
+
+## Terrain awareness, added when walls arrived. Without it this autopilot kites
+## in a straight line into rock and gets pinned: measured at 34 s survived with
+## walls against 149 s with density forced to zero, on identical code. That is a
+## fact about a straight-line policy, not about the game — but it made the smoke
+## test cover four times less of the run, which is the opposite of its job.
+##
+## Deliberately dumb: probe the intended heading, and if it is blocked take
+## whichever perpendicular is clear. Enough not to walk into a wall; nowhere
+## near enough to make this good play.
+func _around_walls(dir: Vector2) -> Vector2:
+	if dir.length_squared() < 0.000001:
+		return dir
+	var ahead: float = Terrain.CELL * 2.0
+	if not run.terrain.is_solid(run.player_pos + dir * ahead):
+		return dir
+	var left := Vector2(-dir.y, dir.x)
+	if not run.terrain.is_solid(run.player_pos + left * ahead):
+		return left
+	var right := -left
+	if not run.terrain.is_solid(run.player_pos + right * ahead):
+		return right
+	return -dir
 
 ## A FLIPPED enemy must retire its slot at recycle. Freeing only DEAD leaves
 ## them in the swarm permanently, filling the 600-pool.

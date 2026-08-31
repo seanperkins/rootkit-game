@@ -407,7 +407,16 @@ func _step2_integrate(dt: float) -> void:
 		var t = enemy_types[enemies.type_index[i]]
 		var to := (player_pos - enemies.pos[i]).normalized()
 		enemies.vel[i] = to * t.speed + enemies.force[i]
-		enemies.pos[i] += enemies.vel[i] * dt
+		# Worms phase through terrain, HEADS INCLUDED. Segments are sampled from
+		# the head's trail rather than integrated, so colliding the head alone
+		# would stretch the body through the wall the head is stuck against.
+		if _worm_id[i] != 0:
+			enemies.pos[i] += enemies.vel[i] * dt
+		else:
+			# Hard rejection, not a hope. Avoidance is steering and can fail on a
+			# concave wall; this is what makes "no enemy ends a tick inside rock"
+			# true for every enemy on every tick regardless of how steering did.
+			enemies.pos[i] = terrain.slide(enemies.pos[i], enemies.vel[i] * dt)
 		if _worm_id[i] != 0:
 			var id := _worm_id[i]
 			var c: int = (_worm_cursor[id] + 1) % WORM_TRAIL_LEN
@@ -497,7 +506,7 @@ func _step4_steer() -> void:
 			var dl := d.length()
 			if dl > 0.001:
 				push += d / dl * (SEPARATION_RADIUS - dl)
-		enemies.force[i] = push * 2.2
+		enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos - here)
 		i += STEER_SLICES
 
 ## Event triggers respond only when off cooldown. Returns false when the
