@@ -101,6 +101,13 @@ const CHARGE_DASH := 0.5
 const CHARGE_RECOVER := 0.8
 const CHARGE_SPEED := 3.0
 
+const MAX_HOSTILES := 200
+const HOSTILE_SPEED := 260.0
+const HOSTILE_DAMAGE := 6.0
+const HOSTILE_RADIUS := 5.0
+const RANGED_STANDOFF := 420.0
+const RANGED_COOLDOWN := 1.6
+
 const SUPPORT_STANDOFF := 300.0
 const SUPPORT_RADIUS := 180.0
 const SUPPORT_HEAL := 6.0        # per second
@@ -236,6 +243,15 @@ var _botnet_life: PackedFloat32Array
 
 var _buf: PackedInt32Array
 var _counts: PackedInt32Array
+## Enemy fire.
+##
+## A second Population, and deliberately NOT in the entity grid: the only thing
+## a hostile shot can hit is the player, so detection is one distance test per
+## shot per tick rather than a grid insert plus a query. That also leaves the
+## grid's tag space and rebuild cost untouched.
+var hostiles: Population
+var _hostile_life: PackedFloat32Array
+
 var _pos_arrays: Array
 var _skips: Array
 var _unlocked: Array = []
@@ -269,6 +285,8 @@ func _ready() -> void:
 	projectiles = Population.new(MAX_PROJECTILES)
 	shards = Population.new(MAX_SHARDS)
 	botnet = Population.new(MAX_BOTNET)
+	hostiles = Population.new(MAX_HOSTILES)
+	_hostile_life = PackedFloat32Array(); _hostile_life.resize(MAX_HOSTILES)
 	queue = HitQueue.new(EVENT_BUDGET, MAX_ENEMIES)
 	director = SpawnDirector.new()
 	# Generated from the player's start, because the spawn-safe margin is
@@ -377,6 +395,7 @@ func _physics_process(dt: float) -> void:
 	_step4_steer()
 	_step5_fire(dt)
 	_step6_detect(dt)
+	_step6b_hostiles(dt)
 	_steps78_drain()
 	_step9_recycle()
 
@@ -872,6 +891,8 @@ func _behave(i: int, t, dt: float) -> Vector2:
 			return _support(i, sp, to_player, dt)
 		EnemyTable.Behaviour.AMBUSHER:
 			return _ambush(i, sp, to_player, dt)
+		EnemyTable.Behaviour.RANGED:
+			return _ranged(i, sp, to_player, dt)
 		_:
 			return to_player.normalized() * sp
 	return to_player.normalized() * sp
@@ -910,6 +931,46 @@ func _charge(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 			if _ai_timer[i] <= 0.0:
 				_ai_phase[i] = CH_APPROACH
 			return to_player.normalized() * sp * 0.5
+
+## Holds its distance and shoots, leading the player.
+func _ranged(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+	_ai_timer[i] -= dt
+	if _ai_timer[i] <= 0.0:
+		_ai_timer[i] = RANGED_COOLDOWN
+		_fire_hostile(enemies.pos[i])
+	var d := to_player.length()
+	if d < 0.001:
+		return Vector2.ZERO
+	var toward := to_player / d
+	if d > RANGED_STANDOFF + 60.0:
+		return toward * sp
+	if d < RANGED_STANDOFF - 60.0:
+		return -toward * sp
+	return Vector2.ZERO
+
+func _fire_hostile(from: Vector2) -> void:
+	# Lead the player, so standing still is punished and moving is rewarded.
+	var lead := player_pos + player_vel * 0.35
+	var dir := (lead - from).normalized()
+	var h := hostiles.spawn(from, dir * HOSTILE_SPEED, 1.0, HOSTILE_RADIUS, 0)
+	if h >= 0:
+		_hostile_life[h] = 4.0
+
+## Hostile shots: move, expire, die on terrain, and hit exactly one thing.
+func _step6b_hostiles(dt: float) -> void:
+	var i := 0
+	while i < hostiles.count:
+		hostiles.pos[i] += hostiles.vel[i] * dt
+		_hostile_life[i] -= dt
+		var gone := _hostile_life[i] <= 0.0 or terrain.is_solid(hostiles.pos[i])
+		if not gone and hostiles.pos[i].distance_to(player_pos) \
+				< HOSTILE_RADIUS + PLAYER_RADIUS:
+			_damage_player(HOSTILE_DAMAGE)
+			gone = true
+		if gone:
+			hostiles.despawn(i)
+			continue        # despawn swaps the last element in; do NOT advance
+		i += 1
 
 ## Hangs back and heals the swarm, which makes it a priority target you have to
 ## dig for — a target-selection decision the game does not otherwise have.
@@ -1261,6 +1322,8 @@ func _advance_subnet() -> void:
 		enemies.despawn(i)
 	for i in range(projectiles.count - 1, -1, -1):
 		projectiles.despawn(i)
+	for i in range(hostiles.count - 1, -1, -1):
+		hostiles.despawn(i)
 	player_health = minf(_eff_integrity(),
 		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
 	director.reset()

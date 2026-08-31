@@ -8,7 +8,7 @@ var finished := {}
 const CASES := ["chase_is_unchanged_and_state_resets", "spawning_clears_ai_state",
 	"charger_commits_to_its_dash", "flanker_leads_the_player",
 	"player_velocity_is_tracked", "support_heals_but_never_past_spawn",
-	"ambusher_is_untouchable_while_under"]
+	"ambusher_is_untouchable_while_under", "ranged_shoots_and_its_shots_bite"]
 
 func _initialize() -> void:
 	print("ROOTKIT — enemy behaviour\n")
@@ -19,6 +19,7 @@ func _initialize() -> void:
 	await player_velocity_is_tracked()
 	await support_heals_but_never_past_spawn()
 	await ambusher_is_untouchable_while_under()
+	await ranged_shoots_and_its_shots_bite()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -226,3 +227,52 @@ func ambusher_is_untouchable_while_under() -> void:
 	_check("back in the grid", n2 > 0, true)
 	r.free()
 	finished["ambusher_is_untouchable_while_under"] = true
+
+func ranged_shoots_and_its_shots_bite() -> void:
+	var r := await _fresh_run()
+	var t := EnemyTable.EnemyType.new(&"t_rng", 0, Color.WHITE, 14.0, 55.0,
+		14.0, 4.0, 2, EnemyTable.Behaviour.RANGED)
+	r.player_pos = Vector2.ZERO
+	var i: int = r.enemies.spawn(Vector2(420, 0), Vector2.ZERO, 14.0, 12.0, 0)
+	r._spawn_enemy_state(i, 14.0, EnemyTable.Behaviour.RANGED)
+
+	_check("no shots to begin with", r.hostiles.count, 0)
+	for k in 120:
+		r._behave(i, t, 1.0 / 60.0)
+	_check("it fires on its cadence", r.hostiles.count > 0, true)
+
+	# A hostile shot is NOT in the entity grid: the only thing it can hit is the
+	# player, so it costs one distance test rather than a grid insert.
+	r._step3_rebuild()
+	var n: int = r.grid.query_radius_into(r.hostiles.pos[0], 80.0, r._buf, Grid.M_ALL)
+	var found := false
+	for k in mini(n, r._buf.size()):
+		if Grid.tag_of(r._buf[k]) == Grid.Pop.PROJECTILE:
+			found = true
+	_check("hostile shots stay out of the grid", found, false)
+
+	# It damages the player on contact. Cleared first: at a 1.6 s cadence those
+	# 120 ticks produced more than one shot, and counting leftovers would make
+	# this assertion about the cadence rather than about the hit.
+	while r.hostiles.count > 0:
+		r.hostiles.despawn(0)
+	var one: int = r.hostiles.spawn(r.player_pos, Vector2(1, 0), 1.0, 4.0, 0)
+	r._hostile_life[one] = 4.0
+	var hp: float = r.player_health
+	r.player_iframe = 0.0
+	r._step6b_hostiles(1.0 / 60.0)
+	_check("a hostile shot hurts", r.player_health < hp, true)
+	_check("and is spent", r.hostiles.count, 0)
+
+	# Terrain stops them, which is what makes walls cover.
+	while r.hostiles.count > 0:
+		r.hostiles.despawn(0)
+	r.player_pos = Vector2(4000, 4000)          # far away, so terrain is what kills it
+	var j: int = r.hostiles.spawn(Vector2(0, 0), Vector2(300, 0), 1.0, 4.0, 0)
+	r._hostile_life[j] = 4.0
+	var c: Vector2i = r.terrain.cell_xy(Vector2(6, 0))
+	r.terrain.solid[c.y * r.terrain.w + c.x] = 1
+	r._step6b_hostiles(1.0 / 60.0)
+	_check("a hostile shot dies on rock", r.hostiles.count, 0)
+	r.free()
+	finished["ranged_shoots_and_its_shots_bite"] = true
