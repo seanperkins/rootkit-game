@@ -1178,6 +1178,36 @@ func _depth_sort() -> void:
 		_band_count[key2] += 1
 
 func _draw() -> void:
+	# Terrain first, so it sits under every entity.
+	#
+	# Drawn from `rects` rather than per-cell: the draw count is the number of
+	# obstacles (a few dozen) rather than the number of solid cells (up to
+	# eleven hundred). A world-space AABB under to_iso is a sheared
+	# parallelogram, never a rect, so each is its four projected corners.
+	for entry in terrain.rects:
+		var tr: Rect2 = entry[0]
+		var kind: int = entry[1]
+		var quad := PackedVector2Array([
+			to_iso(tr.position),
+			to_iso(tr.position + Vector2(tr.size.x, 0)),
+			to_iso(tr.position + tr.size),
+			to_iso(tr.position + Vector2(0, tr.size.y))])
+		match kind:
+			Terrain.Kind.WALL:
+				# Light enough to read as MASS against a near-black ground. At
+				# 0.05 the fill was indistinguishable from the arena floor and a
+				# wall registered only as its outline, which reads as a marking
+				# on the ground rather than as something you cannot walk through.
+				draw_colored_polygon(quad, Color(0.10, 0.21, 0.17))
+				draw_polyline(quad + PackedVector2Array([quad[0]]),
+					Color(0.45, 1.0, 0.72), 1.5)
+			Terrain.Kind.HAZARD:
+				draw_colored_polygon(quad, Color(1.0, 0.30, 0.28, 0.15))
+			Terrain.Kind.SLOW:
+				draw_colored_polygon(quad, Color(0.40, 0.60, 1.0, 0.13))
+			Terrain.Kind.CORRUPTION:
+				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
+
 	# Shot visuals, oldest fading out. Drawn under the ship.
 	for fx in _fx_line:
 		var f: float = fx[2] / FX_LIFE

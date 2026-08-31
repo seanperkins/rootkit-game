@@ -156,7 +156,29 @@ func _kite(g: Node2D) -> Vector2:
 	var c: Vector2 = Vector2.ZERO - g.player_pos
 	if c.length() > 1100.0:
 		dir = (dir + c.normalized() * 1.6).normalized()
-	return dir
+	return _around_walls(g, dir)
+
+## Terrain awareness, added when walls arrived.
+##
+## Without it this kite walks into rock and dies early, and the GATE SHRINKS
+## WITH IT: measured at 43 s survived against the 317 s it used to reach, which
+## dropped the reported p95 from 3.3 ms to 0.9 ms. That reads as a speedup and
+## is nothing of the kind — it is the same architecture measured over a quarter
+## of the load. A perf gate that gets easier whenever the game gets harder is
+## not gating anything.
+func _around_walls(g: Node2D, dir: Vector2) -> Vector2:
+	if dir.length_squared() < 0.000001:
+		return dir
+	var ahead: float = Terrain.CELL * 2.0
+	if not g.terrain.is_solid(g.player_pos + dir * ahead):
+		return dir
+	var left := Vector2(-dir.y, dir.x)
+	if not g.terrain.is_solid(g.player_pos + left * ahead):
+		return left
+	var right := -left
+	if not g.terrain.is_solid(g.player_pos + right * ahead):
+		return right
+	return -dir
 
 func _mean(s: PackedFloat64Array) -> float:
 	var m := 0.0

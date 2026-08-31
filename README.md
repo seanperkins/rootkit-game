@@ -24,6 +24,12 @@ salvage, so dying on subnet 03 keeps what 01 and 02 paid out; only salvage
 earned since the last clear is lost. Kills and flips always count toward
 unlocks.
 
+Each subnet generates its own **arena** from the run seed: walls that stop you,
+your shots and the swarm, plus hazard, slow and corruption zones. Later subnets
+are denser. Generation guarantees the arena is fully connected — an unreachable
+pocket would be an unwinnable run — by filling any sealed region rather than
+carving into it.
+
 ## The build
 
 An **exploit** is one weapon with three slot types:
@@ -74,6 +80,8 @@ godot --headless -s res://tests/test_corruption.gd   # flip -> botnet
 godot --headless -s res://tests/test_meta.gd         # shop, unlocks, save durability
 godot --headless -s res://tests/test_run.gd          # a full autopiloted campaign
 godot --headless -s res://tests/test_campaign.gd     # subnet advance, banking, the win
+godot --headless -s res://tests/test_terrain.gd      # generation, connectivity, collision
+godot --headless -s res://tests/test_terrain_run.gd  # zones and terrain in a live run
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
