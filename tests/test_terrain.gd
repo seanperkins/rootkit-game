@@ -79,8 +79,9 @@ func cell_lookup() -> void:
 	finished["cell_lookup"] = true
 func density_scales_with_subnet() -> void:
 	_check("subnet 1 is the base density", Terrain.density_for(1), Terrain.DENSITY_BASE)
-	_check("subnet 3 is two steps up", Terrain.density_for(3),
-		Terrain.DENSITY_BASE + 2.0 * Terrain.DENSITY_PER_SUBNET)
+	# FLAT. Later subnets get harder through enemies and HP, not by taking away
+	# room to move — the ramp made late subnets feel cramped rather than hard.
+	_check("subnet 3 is the same", Terrain.density_for(3), Terrain.DENSITY_BASE)
 	# Subnet 0 must not underflow into a negative density.
 	_check("subnet 0 clamps to the base", Terrain.density_for(0), Terrain.DENSITY_BASE)
 
@@ -92,7 +93,7 @@ func generation_is_deterministic() -> void:
 	_check("same seed and subnet give the same walls", a.solid, b.solid)
 	_check("same seed and subnet give the same rects", a.rects.size(), b.rects.size())
 	_check("a different subnet gives a different arena", a.solid == c.solid, false)
-	_check("a later subnet is denser", _solid_count(c) > _solid_count(a), true)
+	# No "denser later" assertion any more: density is flat by design.
 
 ## The invariant the whole generator exists to protect. A sealed pocket is an
 ## unwinnable run: ICE, or the player, spawned inside one can never be reached.

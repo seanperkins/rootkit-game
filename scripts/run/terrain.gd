@@ -81,8 +81,11 @@ func zone_at(p: Vector2) -> int:
 ## seconds are never spent wedged against rock.
 const WALL_MARGIN := 260.0
 
-const DENSITY_BASE := 0.08
-const DENSITY_PER_SUBNET := 0.05
+## Flat across subnets. This was 8% rising to 18%, and the ramp was the wrong
+## lever: a late subnet with less room to kite reads as cramped, not as hard.
+## Difficulty escalates through enemy HP and the wave table instead.
+const DENSITY_BASE := 0.03
+const DENSITY_PER_SUBNET := 0.0
 
 ## The floor the generator's own output is held to in test. Filling unreachable
 ## pockets cannot fail, but it CAN eat the arena on a pathological seed, and a
@@ -119,8 +122,11 @@ func generate(seed_value: int, subnet: int, player_start: Vector2,
 	var attempts := 0
 	while placed < target and attempts < PLACE_ATTEMPTS:
 		attempts += 1
-		var rw := rng.randi_range(2, 6)
-		var rh := rng.randi_range(2, 6)
+		# Small. At 2-6 cells these read as slabs you route around; at 1-3 they
+		# read as scattered cover you weave through, which is what the arena
+		# wants at 3% coverage.
+		var rw := rng.randi_range(1, 3)
+		var rh := rng.randi_range(1, 3)
 		var cx := rng.randi_range(0, w - rw)
 		var cy := rng.randi_range(0, h - rh)
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
