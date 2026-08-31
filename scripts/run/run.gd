@@ -108,6 +108,10 @@ const SPLIT_GENERATIONS := 3
 const FILTER_FRONT_SCALE := 0.10
 const MINIBOSS_SALVAGE := 120
 
+## How fast an impulse bleeds off, per second. High enough that a shove is a
+## shove rather than a permanent velocity change.
+const KNOCK_DECAY := 6.0
+
 const AFTERIMAGE_RADIUS := 70.0
 const AFTERIMAGE_SECONDS := 5.0
 const PULSE_PERIOD := 7.0
@@ -152,6 +156,10 @@ var _spawn_hp: PackedFloat32Array
 ## Out of the entity grid, and therefore untouchable and harmless.
 var _submerged: PackedByteArray
 ## How many times this enemy's line has already divided.
+## Knockback impulses, decayed each tick and added to velocity. Separate from
+## `force`, which is recomputed from scratch every steer slice and would erase
+## an impulse the tick after it landed.
+var _knock: PackedVector2Array
 var _split_gen: PackedInt32Array
 ## Paid out already, so a re-dispatched death cannot pay twice.
 var _rewarded: PackedByteArray
@@ -164,6 +172,13 @@ var _packet_filter_index := -1
 ## Set by the zone pass each tick and read by _eff_clock_speed, so a slow zone
 ## affects the player without a second timer: standing in it IS the duration.
 var _zone_slow_player := false
+
+## An absorb pool granted in whole chunks when a shielding exploit fires.
+##
+## NOT integrity: it does not heal, it does not appear in the integrity ratio,
+## and it is spent before armour and defence are ever consulted — a shield is
+## something in the way, not toughness.
+var player_shield := 0.0
 var queue: HitQueue
 var loadout: Loadout
 var director: SpawnDirector
@@ -333,6 +348,7 @@ func _ready() -> void:
 	_ai_aim = PackedVector2Array(); _ai_aim.resize(MAX_ENEMIES)
 	_spawn_hp = PackedFloat32Array(); _spawn_hp.resize(MAX_ENEMIES)
 	_submerged = PackedByteArray(); _submerged.resize(MAX_ENEMIES)
+	_knock = PackedVector2Array(); _knock.resize(MAX_ENEMIES)
 	_split_gen = PackedInt32Array(); _split_gen.resize(MAX_ENEMIES)
 	_rewarded = PackedByteArray(); _rewarded.resize(MAX_ENEMIES)
 	for _k in enemy_types.size():
@@ -613,7 +629,8 @@ func _step2_integrate(dt: float) -> void:
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
 			continue
 		var t = enemy_types[enemies.type_index[i]]
-		enemies.vel[i] = _behave(i, t, dt) + enemies.force[i]
+		enemies.vel[i] = _behave(i, t, dt) + enemies.force[i] + _knock[i]
+		_knock[i] = _knock[i].lerp(Vector2.ZERO, minf(KNOCK_DECAY * dt, 1.0))
 		# Worms phase through terrain, HEADS INCLUDED. Segments are sampled from
 		# the head's trail rather than integrated, so colliding the head alone
 		# would stretch the body through the wall the head is stuck against.
@@ -846,6 +863,11 @@ func _hit(ei: int, r: ResolvedExploit, target: int,
 ##
 ## Here, where the source is known — not in the drain, which would have to read
 ## facing for every enemy on every hit whether or not one of these is alive.
+func apply_knockback(i: int, impulse: Vector2) -> void:
+	if i < 0 or i >= _knock.size():
+		return
+	_knock[i] += impulse
+
 func _facing_scale(i: int, from: Vector2) -> float:
 	if i < 0 or i >= enemies.count or enemies.type_index[i] != _packet_filter_index:
 		return 1.0
@@ -932,6 +954,16 @@ func _damage_player(amount: float) -> void:
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
 			_try_event_fire(ei, r)
+	# The shield is in the way, so it pays first and unmitigated: armour reducing
+	# a hit the shield was going to eat entirely would make the two multiply.
+	if player_shield > 0.0:
+		var eaten := minf(player_shield, amount)
+		player_shield -= eaten
+		amount -= eaten
+		if amount <= 0.0:
+			player_iframe = IFRAMES
+			emit_signal("stats_changed")
+			return
 	player_health -= _mitigated(amount)
 	player_iframe = IFRAMES
 	if player_health <= 0.0 and alive and not won:
@@ -956,6 +988,7 @@ func _die() -> void:
 ## previous occupant was slowed. A stale slow is a live bug, not a cosmetic one:
 ## it makes a newly spawned enemy crawl for no reason the player can see.
 func _clear_ai(i: int) -> void:
+	_knock[i] = Vector2.ZERO
 	_split_gen[i] = 0
 	_rewarded[i] = 0
 	_ai_phase[i] = 0
