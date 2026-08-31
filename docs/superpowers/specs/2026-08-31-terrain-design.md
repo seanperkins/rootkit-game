@@ -169,3 +169,9 @@ Named here so they are choices rather than oversights:
 
 Destructible walls; A* or flow-field pathfinding; terrain-aware line-of-sight
 for beams; terrain that varies within a subnet.
+
+Two of these are taken up by later passes rather than abandoned. The mini-boss
+pass adds a bounded **dynamic zone overlay** for timed effects like `null_ptr`'s
+afterimages — the baked grid here stays static and immutable, with the overlay
+checked separately — and a **line-of-sight** walk over the occupancy grid for
+`kernel_panic`'s pulse, run once per pulse rather than per tick.
