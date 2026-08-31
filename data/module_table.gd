@@ -21,15 +21,20 @@ const LOCKED := [&"beam", &"on_damage_taken", &"worm"]
 static func all() -> Array:
 	return [
 		# --- VECTOR ---------------------------------------------------------
+		# Base damage is ~30% off its first pass, and payload damage ~20%, because
+		# a rank buys damage LINEARLY while enemy integrity used to be a constant:
+		# past firewall's 34 HP everything died in one hit for the rest of the run.
+		# SpawnDirector.hp_mult is the other half of that fix and the load-bearing
+		# one — these numbers only set where the curve starts.
 		Module.make(&"broadcast", "broadcast()", S.VECTOR,
-			{&"damage": 5.0, &"radius": 120.0, &"cooldown": 0.85}, [], V.BROADCAST),
+			{&"damage": 3.5, &"radius": 90.0, &"cooldown": 0.85}, [], V.BROADCAST),
 		Module.make(&"packet", "packet()", S.VECTOR,
-			{&"damage": 9.0, &"projectile_speed": 420.0, &"cooldown": 0.5,
+			{&"damage": 6.0, &"projectile_speed": 420.0, &"cooldown": 0.5,
 			 &"travel": 640.0}, [], V.PACKET),
 		Module.make(&"chain", "chain()", S.VECTOR,
-			{&"damage": 7.0, &"chain_count": 2.0, &"radius": 170.0, &"cooldown": 0.9}, [], V.CHAIN),
+			{&"damage": 5.0, &"chain_count": 2.0, &"radius": 170.0, &"cooldown": 0.9}, [], V.CHAIN),
 		Module.make(&"beam", "beam()", S.VECTOR,
-			{&"damage": 5.0, &"pierce": 3.0, &"radius": 240.0, &"cooldown": 0.6}, [], V.BEAM),
+			{&"damage": 3.5, &"pierce": 3.0, &"radius": 240.0, &"cooldown": 0.6}, [], V.BEAM),
 
 		# --- TRIGGER --------------------------------------------------------
 		Module.make(&"interval", "interval(t)", S.TRIGGER,
@@ -43,9 +48,9 @@ static func all() -> Array:
 
 		# --- PAYLOAD --------------------------------------------------------
 		Module.make(&"buffer_overflow", "buffer_overflow", S.PAYLOAD,
-			{&"damage": 7.0}),
+			{&"damage": 5.5}),
 		Module.make(&"fork_bomb", "fork_bomb", S.PAYLOAD,
-			{&"damage": 5.0, &"radius": 60.0}, [&"aoe"]),
+			{&"damage": 4.0, &"radius": 60.0}, [&"aoe"]),
 		Module.make(&"corrupt", "corrupt", S.PAYLOAD,
 			{&"corruption": 4.0}, [&"corruption"]),
 		Module.make(&"keylog", "keylog", S.PAYLOAD,
@@ -58,8 +63,8 @@ static func all() -> Array:
 			{&"damage": 2.0, &"cadence_mult": 0.82}),
 
 		# --- PAYLOAD, defensive ------------------------------------------------
-		# None contributes damage, so equipping one is a real cost against the two
-		# payload slots. Magnitudes are set from worked worst cases: nice matches
+		# None contributes damage, so equipping one is a real cost against the one
+		# payload slot an exploit has. Magnitudes are set from worked worst cases: nice matches
 		# the whole maxed bus_speed shop line (+60), so one module in one slot is
 		# never worth more than 1,950 salvage of upgrades.
 		Module.make(&"harden", "harden", S.PAYLOAD,

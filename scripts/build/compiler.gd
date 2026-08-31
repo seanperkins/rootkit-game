@@ -17,15 +17,21 @@ const MIN_CADENCE_FRACTION := 0.12
 ## Stats that accumulate by product rather than by sum.
 const MUL_FOLD_KEYS := [&"cadence_mult"]
 
+## How much of a rank a VECTOR's radius actually collects. See the carve-out in
+## _fold for what linear growth did, and why zero growth was no better.
+const VECTOR_RADIUS_RANK := 0.25
+
 ## Which global multiplier scales which stats. Total and non-overlapping: every
 ## stat key not named here is deliberately excluded.
 ##   - lifesteal is excluded so attack is not also the best defensive stat.
 ##   - projectile_speed is excluded because its cap prevents tunnelling through
 ##     the smallest combined radius; a multiplier applied before the cap would
 ##     silently do nothing at high values.
-## Defensive magnitudes accumulate by MAX, not by +. The same module is legal in
-## both payload slots of one exploit, so summing would buy double magnitude at
-## zero uptime cost — the opposite of what a second copy should be worth.
+## Defensive magnitudes accumulate by MAX, not by +. One exploit can still carry
+## ward_* on two modules at once — a TRIGGER and a PAYLOAD both may — so summing
+## would buy double magnitude at zero uptime cost, the opposite of what a second
+## source should be worth. This read "both payload slots" until the payload
+## column was cut to one; the rule outlived its example.
 const MAX_FOLD_KEYS := [
 	&"ward_armor", &"ward_defense", &"ward_clock_speed", &"ward_duration",
 	&"lifesteal",
@@ -119,7 +125,7 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 ## goes NEGATIVE: the threshold is rank > 1/(1-f), so overclock (0.82) crosses at
 ## rank 6, one above max_rank. Compounding converges toward zero and never
 ## crosses it.
-static func _rank_factor(f: float, rank: int) -> float:
+static func _rank_factor(f: float, rank: float) -> float:
 	return pow(f, rank) if f < 1.0 else 1.0 + (f - 1.0) * rank
 
 static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
@@ -134,15 +140,24 @@ static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 		# weapon fired three times slower for three times the damage, which is
 		# flat DPS, bad feel, and made MIN_COOLDOWN unreachable from the vector
 		# side. Reductions from payloads and triggers still scale with rank.
-		var scale: int = em.rank
+		var scale := float(em.rank)
 		if is_vector and (key == &"cooldown" or key == &"travel"):
 			# A vector's cadence and its range are base properties, not scaling
 			# stats. travel especially: at em.rank a rank-3 packet would fly
 			# 1920px and outrun every bound the design has.
-			scale = 1
+			scale = 1.0
+		elif is_vector and key == &"radius":
+			# A vector's radius grows, but far slower than its rank. At em.rank a
+			# rank-5 broadcast reached 600px — most of a 1280x720 screen, from a
+			# module whose whole cost was showing up five times. Freezing it
+			# outright overcorrected: radius IS the damage for an AoE vector, and a
+			# frozen one made rank close to worthless on three of the four vectors.
+			# A quarter rate keeps the upgrade real and the footprint readable —
+			# rank 5 is 2x, not 5x. PAYLOAD radius and `reach` still scale fully.
+			scale = 1.0 + VECTOR_RADIUS_RANK * float(em.rank - 1)
 		elif key == &"ward_duration":
 			# Rank buys ward magnitude, never uptime.
-			scale = 1
+			scale = 1.0
 		var v := float(m.stats[key]) * scale
 		if key in MUL_FOLD_KEYS:
 			# The RAW stat and `scale` — never `v`, and never em.rank. `v` is
