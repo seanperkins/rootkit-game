@@ -72,6 +72,7 @@ var projectiles: Population
 var shards: Population
 var botnet: Population
 var grid: Grid
+var terrain: Terrain
 var queue: HitQueue
 var loadout: Loadout
 var director: SpawnDirector
@@ -184,6 +185,10 @@ func _ready() -> void:
 	botnet = Population.new(MAX_BOTNET)
 	queue = HitQueue.new(EVENT_BUDGET, MAX_ENEMIES)
 	director = SpawnDirector.new()
+	# Generated from the player's start, because the spawn-safe margin is
+	# measured from wherever they actually are.
+	terrain = Terrain.new(ARENA_ORIGIN, ARENA_SIZE)
+	terrain.generate(_rng.seed, subnet, player_pos)
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_counts = PackedInt32Array(); _counts.resize(4)
@@ -384,7 +389,8 @@ func _step2_integrate(dt: float) -> void:
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
-		player_pos += world_dir * _eff_clock_speed() * dt
+		player_pos = terrain.slide(player_pos,
+			world_dir * _eff_clock_speed() * dt)
 	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
 		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
 	if player_iframe > 0.0:

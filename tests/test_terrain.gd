@@ -3,6 +3,22 @@ extends SceneTree
 ## The terrain layer: cell lookup, generation, connectivity, zones.
 
 var failures := 0
+var checks := 0
+var finished := {}
+
+## A runtime error inside a test function aborts THAT FUNCTION and nothing else:
+## GDScript prints the error, _initialize carries on, and a suite whose asserts
+## never ran reports PASS with exit code 0 — a silent green.
+##
+## So every case marks itself done on its LAST line, and the suite fails if any
+## mark is missing. Counting assertions would work too, but the count has to be
+## updated every time one is added and it goes stale silently; a name that never
+## arrives cannot go stale.
+const CASES := [
+	"cell_lookup", "density_scales_with_subnet", "generation_is_deterministic",
+	"every_open_cell_is_reachable", "the_playfield_never_collapses",
+	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls",
+]
 
 const ORIGIN := Vector2(-1600, -1000)
 const SIZE := Vector2(3200, 2000)
@@ -16,12 +32,18 @@ func _initialize() -> void:
 	the_playfield_never_collapses()
 	the_start_is_clear()
 	zones_are_placed_in_the_open()
+	sliding_along_walls()
 	print("")
-	if failures == 0: print("  PASS — all cases")
+	for c in CASES:
+		if not finished.has(c):
+			print("  FAIL  case '%s' never finished — it aborted part way" % c)
+			failures += 1
+	if failures == 0: print("  PASS — all %d assertions" % checks)
 	else: print("  FAIL — %d assertion(s)" % failures)
 	quit(1 if failures > 0 else 0)
 
 func _check(label: String, got, want) -> void:
+	checks += 1
 	if got == want:
 		print("  ok    %s" % label)
 	else:
@@ -51,6 +73,7 @@ func cell_lookup() -> void:
 	_check("the last cell is in range",
 		t.cell_index(ORIGIN + SIZE - Vector2(1, 1)), t.w * t.h - 1)
 
+	finished["cell_lookup"] = true
 func density_scales_with_subnet() -> void:
 	_check("subnet 1 is the base density", Terrain.density_for(1), Terrain.DENSITY_BASE)
 	_check("subnet 3 is two steps up", Terrain.density_for(3),
@@ -58,6 +81,7 @@ func density_scales_with_subnet() -> void:
 	# Subnet 0 must not underflow into a negative density.
 	_check("subnet 0 clamps to the base", Terrain.density_for(0), Terrain.DENSITY_BASE)
 
+	finished["density_scales_with_subnet"] = true
 func generation_is_deterministic() -> void:
 	var a := _fresh(); a.generate(4242, 2, Vector2.ZERO)
 	var b := _fresh(); b.generate(4242, 2, Vector2.ZERO)
@@ -69,6 +93,7 @@ func generation_is_deterministic() -> void:
 
 ## The invariant the whole generator exists to protect. A sealed pocket is an
 ## unwinnable run: ICE, or the player, spawned inside one can never be reached.
+	finished["generation_is_deterministic"] = true
 func every_open_cell_is_reachable() -> void:
 	var bad := 0
 	for s in range(200):
@@ -78,6 +103,7 @@ func every_open_cell_is_reachable() -> void:
 			bad += 1
 	_check("200 seeds, no unreachable open cell", bad, 0)
 
+	finished["every_open_cell_is_reachable"] = true
 func the_playfield_never_collapses() -> void:
 	var worst := 1.0
 	for s in range(200):
@@ -88,6 +114,7 @@ func the_playfield_never_collapses() -> void:
 	_check("the arena never shrinks to a closet",
 		worst >= Terrain.REACHABLE_FLOOR, true)
 
+	finished["the_playfield_never_collapses"] = true
 func the_start_is_clear() -> void:
 	var bad := 0
 	for s in range(100):
@@ -102,6 +129,7 @@ func the_start_is_clear() -> void:
 				bad += 1
 	_check("the player never starts in or beside rock", bad, 0)
 
+	finished["the_start_is_clear"] = true
 func _solid_count(t: Terrain) -> int:
 	var n := 0
 	for i in t.solid.size():
@@ -149,9 +177,11 @@ func zones_are_placed_in_the_open() -> void:
 		if t2.zone[i] != 0:
 			kinds[int(t2.zone[i]) - 1] = true
 	_check("zones exist", kinds.size() > 0, true)
+	var all_valid := true
 	for k in kinds:
-		_check("zone kind %d is a real effect kind" % k,
-			k in [Terrain.Kind.HAZARD, Terrain.Kind.SLOW, Terrain.Kind.CORRUPTION], true)
+		if not (k in [Terrain.Kind.HAZARD, Terrain.Kind.SLOW, Terrain.Kind.CORRUPTION]):
+			all_valid = false
+	_check("every placed zone is a real effect kind", all_valid, true)
 	_check("WALL is never written into the zone layer",
 		kinds.has(Terrain.Kind.WALL), false)
 
@@ -159,3 +189,37 @@ func zones_are_placed_in_the_open() -> void:
 	var a := _fresh(); a.generate(77, 2, Vector2.ZERO)
 	var b := _fresh(); b.generate(77, 2, Vector2.ZERO)
 	_check("zones are deterministic", a.zone, b.zone)
+
+## A wall over world x,y in [0,128), so its open side is negative on both axes.
+	finished["zones_are_placed_in_the_open"] = true
+func _walled() -> Terrain:
+	var t := _fresh()
+	for y in range(4):
+		for x in range(4):
+			var c := t.cell_xy(Vector2(x * Terrain.CELL, y * Terrain.CELL))
+			t.solid[c.y * t.w + c.x] = 1
+	return t
+
+func sliding_along_walls() -> void:
+	var t := _walled()
+	var outside := Vector2(-20, 40)          # left of the wall, level with it
+
+	# Straight into the wall: blocked on x, and y was not requested, so nothing.
+	_check("a head-on step is refused", t.slide(outside, Vector2(30, 0)), outside)
+
+	# Diagonal into the wall: x is refused, y is free, so it SLIDES rather than
+	# stopping dead. This is the whole point of resolving per axis.
+	_check("a diagonal step keeps its free axis",
+		t.slide(outside, Vector2(30, 30)), outside + Vector2(0, 30))
+
+	_check("a free step is unchanged",
+		t.slide(Vector2(-400, -400), Vector2(10, 10)), Vector2(-390, -390))
+
+	# The end position is never inside rock, whatever is asked for.
+	var bad := 0
+	for k in 64:
+		var a := TAU * k / 64.0
+		if t.is_solid(t.slide(outside, Vector2(cos(a), sin(a)) * 90.0)):
+			bad += 1
+	_check("no slide ever ends inside a wall", bad, 0)
+	finished["sliding_along_walls"] = true

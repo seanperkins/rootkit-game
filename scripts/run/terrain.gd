@@ -207,3 +207,19 @@ func _place_zones(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 		if wrote:
 			rects.append([r, kind])
 			made += 1
+
+## Resolve a step per AXIS rather than all at once.
+##
+## Rejecting the whole step on any collision makes a wall sticky: running into
+## one diagonally stops you dead instead of sliding along it, which reads as the
+## controls failing rather than as terrain. Taking each axis on its own merit
+## costs one extra lookup and is the difference between the two.
+func slide(from: Vector2, delta: Vector2) -> Vector2:
+	var p := from
+	var try_x := Vector2(p.x + delta.x, p.y)
+	if not is_solid(try_x):
+		p = try_x
+	var try_y := Vector2(p.x, p.y + delta.y)
+	if not is_solid(try_y):
+		p = try_y
+	return p
