@@ -23,7 +23,7 @@ An **exploit** is one weapon with three slot types:
 | Slot | Count | Decides | Modules |
 |---|---|---|---|
 | `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam |
-| `TRIGGER` | 1 | when it fires | interval, on_kill, on_hit, on_damage_taken |
+| `TRIGGER` | 1 | when it fires, and how it scales the vector's cadence | interval, on_kill, on_hit, on_damage_taken |
 | `PAYLOAD` | 0–2 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
 
 You hold three exploits. Level-ups offer three module cards, each naming where

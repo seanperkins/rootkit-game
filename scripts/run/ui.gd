@@ -260,7 +260,14 @@ func _make_card(entry: Array) -> Control:
 func _stats_line(m: Module) -> String:
 	var parts := []
 	for k in m.stats:
-		parts.append("%s %+.2f" % [k, m.stats[k]])
+		if k == &"cadence_mult":
+			# A multiplier, not an addend. Under "%+.2f" on_kill's card reads
+			# "cadence_mult +1.52" — a 52% SLOWDOWN rendered as the
+			# largest-looking bonus on the card, sitting next to "damage +3.00".
+			# The multiplication sign carries the direction that +/- cannot.
+			parts.append("cadence x%.2f" % m.stats[k])
+		else:
+			parts.append("%s %+.2f" % [k, m.stats[k]])
 	return "\n".join(parts)
 
 func _on_end(won: bool, salvage: int) -> void:

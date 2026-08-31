@@ -90,7 +90,9 @@ func rank_scaling() -> void:
 	_check("rank 3: base + payload*3", Compiler.build(ex).damage, base + pay * 3.0)
 
 ## Ranking a weapon up must not make it fire slower. A VECTOR's cooldown is its
-## cadence; only reductions from payloads and triggers scale with rank.
+## cadence; cadence FACTORS from payloads and triggers still scale with rank, but
+## the two directions scale differently — a reduction compounds, a cost
+## accumulates linearly. See Compiler._rank_factor.
 func vector_cadence_does_not_scale() -> void:
 	var base: float = T[&"broadcast"].stats[&"cooldown"]
 	var ex := _mk(&"broadcast", &"interval")
