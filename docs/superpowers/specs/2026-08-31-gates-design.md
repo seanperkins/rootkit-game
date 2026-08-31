@@ -142,3 +142,37 @@ call and becomes a phase walk.
 
 Gates as a fast-travel network; going back through a gate; corridors with
 content in them; a gate that costs salvage to open.
+
+---
+
+## Amendments after playtest (2026-08-31)
+
+The gate shipped and was played. Four things were wrong, and one was missing.
+
+**The gate did not read as a gate.** A pulsing ring is a marker, not a doorway.
+It becomes a mouth: two posts and a lintel, perpendicular to the way out.
+
+**The transition teleported.** Touching the gate relocated the player into a
+separate corridor `Terrain`, which is exactly the abruptness gates existed to
+remove. The corridor moves onto the arena's own grid — enlarged past the arena
+bounds, solid everywhere outside it except the cut corridor — so walking out is
+continuous. Reaching the corridor's far end is what advances. `Phase.TRANSIT`
+and `run.field()` are deleted along with the second `Terrain`.
+
+**Shards followed the player through.** Loose XP from the cleared subnet was
+still on the ground in the next one: free levels and visually wrong.
+
+**Density was wrong at both ends.** Flat 3%, no per-subnet ramp, and barriers of
+1–3 cells rather than 2–6. The ramp was the wrong lever — a late subnet with
+less room to kite reads as cramped rather than hard.
+
+**And the missing thing: the arena now collapses.** Killing ICE starts a ~75
+second clock. The arena falls away from the point farthest from the gate and
+eats inward; voided ground is lethal. This replaces "lingering is free and
+unlimited" — that decision produced a lull exactly where the run should be at
+its tensest.
+
+One BFS distance field from the gate serves both the collapse order and the
+route display, and the route is now **lit tiles on walkable ground** rather than
+a bearing. The bearing was defensible when nothing depended on it; with a lethal
+deadline, a line that points through a wall is a line that kills people.
