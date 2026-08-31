@@ -20,6 +20,36 @@ enum Formation { RING, STREAM, FLANK, BURST }
 
 const SUBNET_SECONDS := 300.0
 
+## A run is a campaign of subnets, not one of them. Clearing the last is the win.
+const CAMPAIGN_SUBNETS := 3
+
+## Enemy integrity scales on two axes and needs both.
+##
+## WITHIN a subnet: rank buys damage linearly while enemy integrity was a
+## constant, so the moment a build passed firewall's 34 HP every enemy died in
+## one hit for the rest of the run and never stopped doing so. The wave table
+## escalates spawn RATE and enemy TYPE, which cannot answer that on its own —
+## more of a thing you one-shot is still a thing you one-shot.
+##
+## ACROSS subnets: the build now carries forward, so subnet 02 opens against a
+## loadout that subnet 01 spent five minutes assembling.
+##
+## Multiplied rather than summed: a late subnet-03 enemy is 3.8x, not 3.0x, and
+## the two axes stay independent — retuning the campaign length does not silently
+## retune the within-subnet curve.
+const HP_PER_SUBNET := 1.55
+const HP_OVER_SUBNET := 0.45
+
+static func hp_mult(subnet: int, elapsed: float) -> float:
+	var within := 1.0 + HP_OVER_SUBNET * clampf(elapsed / SUBNET_SECONDS, 0.0, 1.0)
+	return pow(HP_PER_SUBNET, maxi(subnet, 1) - 1) * within
+
+## Corruption thresholds step per SUBNET only, never with elapsed. They are held
+## per TYPE in one array shared by every live enemy, so a continuous ramp would
+## retroactively move the goalposts on an enemy already half-corrupted.
+static func threshold_mult(subnet: int) -> float:
+	return pow(HP_PER_SUBNET, maxi(subnet, 1) - 1)
+
 var waves: Array = []
 var elapsed: float = 0.0
 var _milli: Array = []

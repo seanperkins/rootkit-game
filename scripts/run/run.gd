@@ -85,10 +85,21 @@ var player_health := 0.0
 var player_iframe := 0.0
 var alive := true
 var won := false
+var subnet := 1
+var _advance_pending := false
+## director.spawned is per-SUBNET, because director.reset() zeroes it on every
+## advance. The campaign total has to survive that.
+var _spawned_before := 0
+
+## Banking is INCREMENTAL now a run spans several subnets. SaveGame.bank()
+## ACCUMULATES into the save, so handing it the running totals at every subnet
+## clear would count subnet 01's kills three times over and hand out unlock
+## milestones nobody earned.
+var _banked := {&"salvage": 0, &"kills": 0, &"flips": 0}
 
 var level := 1
 var xp := 0
-var xp_needed := 5
+var xp_needed := _xp_for(1)
 var salvage := 0
 var kills := 0
 var flips := 0
@@ -161,6 +172,7 @@ func _ready() -> void:
 	enemy_types = EnemyTable.all()
 	thresholds = PackedFloat32Array()
 	thresholds.resize(enemy_types.size())
+	_refresh_thresholds()
 	for i in enemy_types.size():
 		thresholds[i] = enemy_types[i].corruption_threshold
 
@@ -256,6 +268,8 @@ func _physics_process(dt: float) -> void:
 	_step6_detect(dt)
 	_steps78_drain()
 	_step9_recycle()
+	if _advance_pending:
+		_advance_subnet()
 
 	_update_renderers()
 	_camera.global_position = to_iso(player_pos)
@@ -277,7 +291,8 @@ func _step1_spawn(dt: float) -> void:
 				director.dropped += 1
 			continue
 		var t = enemy_types[ti]
-		var idx := enemies.spawn(s[1], Vector2.ZERO, t.integrity, ENEMY_RADIUS, ti)
+		var idx := enemies.spawn(s[1], Vector2.ZERO, t.integrity * _hp_mult(),
+			ENEMY_RADIUS, ti)
 		if idx < 0:
 			director.dropped += 1
 		else:
@@ -298,7 +313,7 @@ func _step1_spawn(dt: float) -> void:
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(player_pos + Vector2(cos(a), sin(a)) * 420.0,
-			Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
+			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		emit_signal("stats_changed")
 
@@ -321,7 +336,8 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_trail[id] = trail
 	_worm_cursor[id] = 0
 	for k in n:
-		var idx := enemies.spawn(at, Vector2.ZERO, t.integrity, ENEMY_RADIUS, WORM_TYPE)
+		var idx := enemies.spawn(at, Vector2.ZERO, t.integrity * _hp_mult(),
+			ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
 			return k > 0
 		_worm_id[idx] = id
@@ -667,7 +683,7 @@ func _damage_player(amount: float) -> void:
 		# Salvage is lost, but kills and flips still count toward unlocks —
 		# otherwise a losing run gives nothing and the meta has no reason to
 		# exist after a death, which is exactly what it is for.
-		SaveGame.bank(0, kills, flips)
+		_bank_progress(false)
 		emit_signal("run_ended", false, 0)
 	emit_signal("stats_changed")
 
@@ -721,10 +737,18 @@ func _on_death(i: int) -> void:
 		# a winning run was never persisted, so entering the boss at 399 kills
 		# won, displayed 400, and saved 399 — silently missing the beam unlock.
 		# The `not won` guard keeps a second dispatch from re-banking the run.
-		won = true
 		salvage += 500
-		SaveGame.bank(salvage, kills, flips)
-		emit_signal("run_ended", true, salvage)
+		if subnet < SpawnDirector.CAMPAIGN_SUBNETS:
+			# The advance itself CANNOT happen here: this runs inside the drain,
+			# and clearing the pools mid-drain would pull entities out from under
+			# a pass that is still adjudicating them. Flag it, act after step 9 —
+			# the same once-per-tick discipline the rest of the loop keeps.
+			_advance_pending = true
+			_bank_progress(true)
+		else:
+			won = true
+			_bank_progress(true)
+			emit_signal("run_ended", true, salvage)
 	_drop_shards(i)
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
@@ -817,7 +841,59 @@ func _step9_recycle() -> void:
 		else:
 			i += 1
 
+# ---------------------------------------------------------------- campaign ---
+
+func _hp_mult() -> float:
+	return SpawnDirector.hp_mult(subnet, director.elapsed)
+
+func _refresh_thresholds() -> void:
+	var f := SpawnDirector.threshold_mult(subnet)
+	for i in enemy_types.size():
+		thresholds[i] = enemy_types[i].corruption_threshold * f
+
+func _bank_progress(with_salvage: bool) -> void:
+	var s := (salvage - int(_banked[&"salvage"])) if with_salvage else 0
+	SaveGame.bank(s, kills - int(_banked[&"kills"]), flips - int(_banked[&"flips"]))
+	if with_salvage:
+		_banked[&"salvage"] = salvage
+	_banked[&"kills"] = kills
+	_banked[&"flips"] = flips
+
+## Carried forward: the loadout, the level, the XP, and whatever integrity the
+## last subnet left. Reset: the clock, the wave table, and every live entity.
+## The partial heal rewards the clear without erasing the damage a bad subnet
+## did, so chip damage still accumulates across a campaign.
+const SUBNET_CLEAR_HEAL := 0.30
+
+func spawned_total() -> int:
+	return _spawned_before + director.spawned
+
+func _advance_subnet() -> void:
+	_advance_pending = false
+	_spawned_before += director.spawned
+	subnet += 1
+	director.reset()
+	_refresh_thresholds()
+	for i in range(enemies.count - 1, -1, -1):
+		enemies.despawn(i)
+	for i in range(projectiles.count - 1, -1, -1):
+		projectiles.despawn(i)
+	player_health = minf(_eff_integrity(),
+		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
+	emit_signal("stats_changed")
+
 # ------------------------------------------------------------ progression ---
+
+## XP to clear ONE level. Level 1 seeds `xp_needed` from the same function, so
+## the first level costs what the curve says it costs rather than a literal that
+## drifts out of step with it.
+## 2.4, not the 1.5 this started at: a build now matures across a whole campaign
+## rather than inside one five-minute subnet, so the curve has three times the
+## wall-clock to spend itself over.
+const XP_SLOWDOWN := 1.8
+
+static func _xp_for(lvl: int) -> int:
+	return int(round(float(5 + 3 * (lvl - 1)) * XP_SLOWDOWN))
 
 func _gain_xp(n: int) -> void:
 	xp += n
@@ -827,7 +903,12 @@ func _gain_xp(n: int) -> void:
 		# Was 20 + 12(n-1), taken from the spec. That curve assumed 10-14
 		# kills/sec; the actual weapons produce ~0.5-4, so it stalled the run at
 		# level 4. Measured against real play instead of derived from a rate.
-		xp_needed = 5 + 3 * (level - 1)
+		#
+		# The x1.5 on top of that measured curve is a deliberate slowdown: at
+		# 5 + 3(n-1) a good build was fully assembled inside the first minute,
+		# which spent every card before the run had any difficulty to spend
+		# them against.
+		xp_needed = _xp_for(level)
 		pending_levels += 1
 	if pending_levels > 0 and not paused:
 		_offer_cards()

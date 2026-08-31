@@ -1,8 +1,9 @@
 extends SceneTree
 
-## Plays a whole subnet headless, auto-picking cards, and asserts the run loop
-## actually produces a game: enemies spawn, damage lands, levels happen, the
-## boss arrives, and the tick never leaks entities.
+## Plays a whole CAMPAIGN headless, auto-picking cards, and asserts the run loop
+## actually produces a game: enemies spawn, damage lands, levels happen, each
+## subnet's boss arrives, the build survives the advance between subnets, and
+## the tick never leaks entities.
 
 const DT := 1.0 / 60.0
 var failures := 0
@@ -20,16 +21,28 @@ func _initialize() -> void:
 	await process_frame
 	run.level_up_offered.connect(_auto_pick)
 
-	var ticks := int(SpawnDirector.SUBNET_SECONDS / DT) + 5400   # + 90s of boss
+	# Every subnet is 300 s of wave table plus however long ICE takes; 90 s of
+	# boss margin each has been enough at every damage level tried so far.
+	var per_subnet := int(SpawnDirector.SUBNET_SECONDS / DT) + 5400
+	var ticks := per_subnet * SpawnDirector.CAMPAIGN_SUBNETS
 	var t := 0
+	var subnets_seen := 1
+	var build_at_first_clear := ""
 	while t < ticks and run.alive and not run.won:
 		run.input_override = _autopilot()
 		run._physics_process(DT)
 		t += 1
+		if run.subnet > subnets_seen:
+			# Sampled the tick the advance lands, so the comparison below is
+			# against the build as it stood when subnet 01 ended.
+			if build_at_first_clear == "":
+				build_at_first_clear = _build_signature()
+			subnets_seen = run.subnet
 	var mins := t * DT
 
 	print("  simulated %.1f s (%d ticks)" % [mins, t])
-	print("  spawned %d, dropped %d" % [run.director.spawned, run.director.dropped])
+	print("  spawned %d (campaign), dropped %d" % [run.spawned_total(), run.director.dropped])
+	print("  reached subnet %d of %d" % [run.subnet, SpawnDirector.CAMPAIGN_SUBNETS])
 	print("  kills %d  flips %d  level %d  salvage %d" % [
 		run.kills, run.flips, run.level, run.salvage])
 	print("  live: enemies %d  projectiles %d  shards %d  botnet %d" % [
@@ -39,7 +52,7 @@ func _initialize() -> void:
 	print("  outcome: %s" % ("WON" if run.won else ("DIED" if not run.alive else "timeout")))
 	print("")
 
-	_check("enemies spawned", run.director.spawned > 200, true)
+	_check("enemies spawned", run.spawned_total() > 200, true)
 	_check("damage landed (kills > 0)", run.kills > 0, true)
 	_check("player levelled up", run.level > 1, true)
 	_check("cards were offered", picks > 0, true)
@@ -47,13 +60,39 @@ func _initialize() -> void:
 	_check("projectile pool within cap", run.projectiles.count <= run.MAX_PROJECTILES, true)
 	_check("shard pool within cap", run.shards.count <= run.MAX_SHARDS, true)
 	_check("no flipped enemies left in the swarm", _flipped_left(), 0)
-	_check("boss spawned", run.director.boss_spawned, true)
+	# Deliberately NOT "the autopilot reached subnet 02". The autopilot is bad
+	# play on purpose, and its outcome turned out to be chaotic against small
+	# balance moves — a damage INCREASE once moved it from dying at 466 s to
+	# dying at 148 s, because the level timings shifted and it drew a different
+	# build. Anything asserted here that depends on how far it gets is a test
+	# that fails on tuning rather than on breakage. The campaign's own semantics
+	# are pinned deterministically in test_campaign.gd instead; what belongs
+	# here is that the loop runs and stays within its bounds.
+	_check("boss arrives once the wave table is spent",
+		run.director.elapsed < SpawnDirector.SUBNET_SECONDS or run.director.boss_spawned,
+		true)
 	_check("run reached a terminal state", run.won or not run.alive, true)
+	_check("a win means the last subnet was cleared",
+		not run.won or run.subnet == SpawnDirector.CAMPAIGN_SUBNETS, true)
+	# Only if the autopilot actually got there. test_campaign proves the advance
+	# preserves the build without needing to survive a subnet to do it.
+	if build_at_first_clear != "":
+		_check("the build survived the subnet advance",
+			_build_signature().begins_with(build_at_first_clear), true)
 
 	print("")
 	if failures == 0: print("  PASS — all checks")
 	else: print("  FAIL — %d check(s)" % failures)
 	quit(1 if failures > 0 else 0)
+
+## Module ids in slot order, per exploit. A prefix comparison, so the build may
+## GROW across the advance — it just may not be replaced or emptied.
+func _build_signature() -> String:
+	var parts := []
+	for ex in run.loadout.exploits:
+		for em in ex.equipped():
+			parts.append(String(em.module.id))
+	return "|".join(parts)
 
 ## Kite away from the swarm, drift toward loose shards. Not good play — just
 ## enough that the loop is exercised by a moving player rather than a corpse.
