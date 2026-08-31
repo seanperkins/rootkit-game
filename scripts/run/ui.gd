@@ -113,6 +113,15 @@ func _refresh() -> void:
 		"%d:%02d" % [int(t) / 60, int(t) % 60], run.level,
 		_bar(float(run.xp) / maxf(run.xp_needed, 1), 14), run.salvage,
 		run.botnet.count, run.kills, run.flips]
+	# Name a live mini-boss. A set-piece the player does not notice arriving is
+	# not a set-piece.
+	var mb := ""
+	for i in run.enemies.count:
+		if run._is_miniboss(run.enemies.type_index[i]):
+			mb = String(run.enemy_types[run.enemies.type_index[i]].id)
+			break
+	if mb != "":
+		top.text += "   ::  %s ACTIVE" % mb.to_upper()
 	if run.phase == run.Phase.CLEARED:
 		top.text += "   >> SUBNET COLLAPSING — %ds to the gate" % int(
 			ceil(run.collapse_left))

@@ -101,16 +101,23 @@ func _init(seed_value: int = 20260829) -> void:
 	for i in _milli.size():
 		_milli[i] = 0
 
-## Which mini-bosses this step crosses.
+## Which mini-bosses this step CROSSES.
 ##
-## Records each as fired, because a step is a RANGE: testing `elapsed > time`
-## alone fires every tick after the boundary rather than once at it.
+## Both bounds matter. Without the upper test (`elapsed > time`) it fires every
+## tick after the boundary rather than once at it; without the lower test
+## (`elapsed < time`) any step that begins past the time fires — so a clock
+## jumped forward dumps all four mini-bosses on the same tick, which is what a
+## long frame or a director resumed mid-subnet does.
+##
+## The trade: a frame long enough to step over a boundary entirely skips that
+## mini-boss. At a 60 Hz tick that is a frame of over a minute, and losing one
+## arrival is much cheaper than gaining four at once.
 func due_minibosses(dt: float) -> Array:
 	var out := []
 	for k in MINIBOSS_TIMES.size():
 		if miniboss_fired[k] != 0:
 			continue
-		if elapsed + dt >= MINIBOSS_TIMES[k]:
+		if elapsed < MINIBOSS_TIMES[k] and elapsed + dt >= MINIBOSS_TIMES[k]:
 			miniboss_fired[k] = 1
 			out.append(_idx(MINIBOSS_IDS[k]))
 	return out

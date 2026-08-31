@@ -596,3 +596,70 @@ func route_from(p: Vector2, limit: int = 400) -> PackedInt32Array:
 		i = best
 		out.append(i)
 	return out
+
+
+## A bounded overlay of TIMED zones, checked after the baked lookup.
+##
+## The baked zone grid is written once per subnet and never mutated — that
+## immutability is what makes it a bare array index with no bookkeeping. Timed
+## effects like null_ptr's afterimages cannot live there, so they live here: a
+## short parallel-array list with a hard cap, so a long fight stops producing
+## new ones rather than growing without limit.
+const MAX_TEMP_ZONES := 24
+
+var _tz_pos: PackedVector2Array
+var _tz_r2: PackedFloat32Array
+var _tz_kind: PackedInt32Array
+var _tz_left: PackedFloat32Array
+
+func temp_zone_count() -> int:
+	return _tz_pos.size()
+
+func add_temp_zone(p: Vector2, radius: float, kind: int, seconds: float) -> void:
+	if _tz_pos.size() >= MAX_TEMP_ZONES:
+		return          # capped: drop the request rather than grow the list
+	_tz_pos.append(p)
+	_tz_r2.append(radius * radius)
+	_tz_kind.append(kind)
+	_tz_left.append(seconds)
+
+func step_temp_zones(dt: float) -> void:
+	var i := 0
+	while i < _tz_left.size():
+		_tz_left[i] -= dt
+		if _tz_left[i] <= 0.0:
+			var last := _tz_left.size() - 1
+			_tz_pos[i] = _tz_pos[last]; _tz_pos.resize(last)
+			_tz_r2[i] = _tz_r2[last]; _tz_r2.resize(last)
+			_tz_kind[i] = _tz_kind[last]; _tz_kind.resize(last)
+			_tz_left[i] = _tz_left[last]; _tz_left.resize(last)
+			continue    # a swapped-in entry occupies i; do NOT advance
+		i += 1
+
+func temp_zone_at(p: Vector2) -> int:
+	for i in _tz_pos.size():
+		if p.distance_squared_to(_tz_pos[i]) <= _tz_r2[i]:
+			return _tz_kind[i]
+	return -1
+
+func clear_temp_zones() -> void:
+	_tz_pos = PackedVector2Array()
+	_tz_r2 = PackedFloat32Array()
+	_tz_kind = PackedInt32Array()
+	_tz_left = PackedFloat32Array()
+
+## Can `a` see `b`, or is there rock between them?
+##
+## A DDA walk over the occupancy grid, run once per pulse rather than per tick.
+## Bounded by the cell distance, so it terminates on any geometry.
+func has_line_of_sight(a: Vector2, b: Vector2) -> bool:
+	var d := b - a
+	var steps := int(d.length() / (CELL * 0.5)) + 1
+	if steps <= 1:
+		return true
+	for k in range(1, steps):
+		var p := a + d * (float(k) / float(steps))
+		var i := cell_index(p)
+		if i >= 0 and solid[i] != 0:
+			return false
+	return true

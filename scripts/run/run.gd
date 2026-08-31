@@ -108,6 +108,11 @@ const SPLIT_GENERATIONS := 3
 const FILTER_FRONT_SCALE := 0.10
 const MINIBOSS_SALVAGE := 120
 
+const AFTERIMAGE_RADIUS := 70.0
+const AFTERIMAGE_SECONDS := 5.0
+const PULSE_PERIOD := 7.0
+const PULSE_DAMAGE := 26.0
+
 const MAX_HOSTILES := 200
 const HOSTILE_SPEED := 260.0
 const HOSTILE_DAMAGE := 6.0
@@ -504,6 +509,12 @@ func _step9b_splits() -> void:
 			# Children are not a second payday.
 			_rewarded[idx] = 1
 	_pending_splits.clear()
+
+## null_ptr leaves a damaging afterimage each time it drops out of the world, so
+## a long fight progressively denies you ground.
+func _leave_afterimage(at: Vector2) -> void:
+	terrain.add_temp_zone(at, AFTERIMAGE_RADIUS, Terrain.Kind.HAZARD,
+		AFTERIMAGE_SECONDS)
 
 func _spawn_miniboss(type_index: int) -> void:
 	var t = enemy_types[type_index]
@@ -1028,8 +1039,22 @@ func _charge(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 				_ai_phase[i] = CH_APPROACH
 			return to_player.normalized() * sp * 0.5
 
+## kernel_panic's pulse: everything with LINE OF SIGHT to it takes the hit, so
+## standing behind a wall is the only answer. This is the payoff for terrain
+## existing, and it is why the line-of-sight walk had to be built.
+func _pulse(i: int, dt: float) -> void:
+	_ai_aim[i].x -= dt
+	if _ai_aim[i].x > 0.0:
+		return
+	_ai_aim[i].x = PULSE_PERIOD
+	_fx_ring.append([enemies.pos[i], 700.0, FX_LIFE * 8.0, Color(2.2, 0.5, 0.4)])
+	if terrain.has_line_of_sight(enemies.pos[i], player_pos):
+		_damage_player(PULSE_DAMAGE)
+
 ## Holds its distance and shoots, leading the player.
 func _ranged(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+	if enemy_types[enemies.type_index[i]].id == &"kernel_panic":
+		_pulse(i, dt)
 	_ai_timer[i] -= dt
 	if _ai_timer[i] <= 0.0:
 		_ai_timer[i] = RANGED_COOLDOWN
@@ -1107,6 +1132,8 @@ func _ambush(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 	_ai_timer[i] -= dt
 	match _ai_phase[i]:
 		AM_SUBMERGED:
+			if _submerged[i] == 0 and enemy_types[enemies.type_index[i]].id == &"null_ptr":
+				_leave_afterimage(enemies.pos[i])
 			_submerged[i] = 1
 			if _ai_timer[i] <= 0.0:
 				_ai_phase[i] = AM_SURFACING
@@ -1164,7 +1191,10 @@ func apply_slow(i: int, factor: float, seconds: float) -> void:
 ## Zone effects, one array index per entity per tick.
 func _step2b_zones(dt: float) -> void:
 	_zone_slow_player = false
+	terrain.step_temp_zones(dt)
 	var pz := terrain.zone_at(player_pos)
+	if pz < 0:
+		pz = terrain.temp_zone_at(player_pos)
 	if pz == Terrain.Kind.HAZARD:
 		# Deliberately NOT through the contact-damage path: iframes exist to stop
 		# a swarm chewing through you on touch, and a hazard you are standing in
@@ -1425,6 +1455,7 @@ func _advance_subnet() -> void:
 	collapse_left = 0.0
 	_route = PackedInt32Array()
 	_route_cell = -1
+	terrain.clear_temp_zones()
 	# Shards do NOT follow you. Arriving on a fresh subnet standing in the last
 	# one's loose XP is both free levels and visually wrong.
 	for i in range(shards.count - 1, -1, -1):

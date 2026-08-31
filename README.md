@@ -64,6 +64,13 @@ untouchable and harmless while under — and surfaces on you after a tell.
 `probe` keeps its distance and shoots, which is what makes walls worth standing
 behind.
 
+A **mini-boss** arrives every minute — `fork_bomb` splits into halves three
+generations deep, `packet_filter` takes 90% less damage from the front so you
+have to get behind it, `null_ptr` blinks and leaves damaging afterimages where
+it vanished, and `kernel_panic` pulses everything with line of sight to it, so
+a wall is the only answer. None has to be killed; each pays salvage and a
+guaranteed card if you do.
+
 ## Architecture
 
 Enemies, projectiles, shards, and botnet nodes are **packed arrays over a

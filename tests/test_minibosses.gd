@@ -5,7 +5,8 @@ extends SceneTree
 var failures := 0
 var finished := {}
 const CASES := ["the_schedule_fires_each_once", "the_four_exist_and_ice_is_still_last", "splitting_is_bounded_and_deferred",
-	"armour_is_directional", "killing_one_offers_a_card"]
+	"armour_is_directional", "killing_one_offers_a_card", "afterimages_are_bounded_and_expire",
+	"the_pulse_is_blocked_by_walls"]
 
 func _initialize() -> void:
 	print("ROOTKIT — mini-bosses\n")
@@ -14,6 +15,8 @@ func _initialize() -> void:
 	await splitting_is_bounded_and_deferred()
 	await armour_is_directional()
 	await killing_one_offers_a_card()
+	afterimages_are_bounded_and_expire()
+	the_pulse_is_blocked_by_walls()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -73,6 +76,15 @@ func the_schedule_fires_each_once() -> void:
 
 	d2.reset()
 	_check("reset rearms them", d2.miniboss_fired[0], 0)
+
+	# A clock jumped past every boundary fires NOTHING. Tests suppress ambient
+	# spawning by setting elapsed to 999, and a long frame does the same thing
+	# in real play — either way, four mini-bosses landing at once is not an
+	# arrival, it is an accident.
+	var d3 := SpawnDirector.new()
+	d3.elapsed = 999.0
+	_check("a clock jumped past them all fires none",
+		d3.due_minibosses(1.0 / 60.0).size(), 0)
 	finished["the_schedule_fires_each_once"] = true
 
 func the_four_exist_and_ice_is_still_last() -> void:
@@ -191,3 +203,60 @@ func killing_one_offers_a_card() -> void:
 	_check("an ordinary kill pays no bonus salvage", r.salvage, s2)
 	r.free()
 	finished["killing_one_offers_a_card"] = true
+
+func afterimages_are_bounded_and_expire() -> void:
+	var t := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
+	t.generate(4, 1, Vector2.ZERO)
+	t.add_temp_zone(Vector2.ZERO, 60.0, Terrain.Kind.HAZARD, 2.0)
+	_check("an afterimage is felt", t.temp_zone_at(Vector2(10, 0)),
+		Terrain.Kind.HAZARD)
+	_check("but not far from it", t.temp_zone_at(Vector2(400, 0)), -1)
+
+	t.step_temp_zones(2.5)
+	_check("and it expires", t.temp_zone_at(Vector2(10, 0)), -1)
+
+	# HARD CAP. A long null_ptr fight must stop producing new afterimages rather
+	# than growing the list without limit.
+	for k in Terrain.MAX_TEMP_ZONES + 20:
+		t.add_temp_zone(Vector2(k * 5, 0), 40.0, Terrain.Kind.HAZARD, 99.0)
+	_check("the overlay is capped",
+		t.temp_zone_count() <= Terrain.MAX_TEMP_ZONES, true)
+
+	# Expiry uses swap-remove; prove it does not skip an entry.
+	t.clear_temp_zones()
+	t.add_temp_zone(Vector2(0, 0), 50.0, Terrain.Kind.HAZARD, 0.5)
+	t.add_temp_zone(Vector2(500, 0), 50.0, Terrain.Kind.HAZARD, 0.5)
+	t.add_temp_zone(Vector2(1000, 0), 50.0, Terrain.Kind.HAZARD, 0.5)
+	t.step_temp_zones(1.0)
+	_check("every expired entry goes, none skipped", t.temp_zone_count(), 0)
+
+	# The BAKED grid is untouched: that is what keeps it a bare array index.
+	var before := t.zone.duplicate()
+	t.add_temp_zone(Vector2(100, 100), 60.0, Terrain.Kind.HAZARD, 1.0)
+	_check("the baked zone grid never changes", t.zone, before)
+	finished["afterimages_are_bounded_and_expire"] = true
+
+func the_pulse_is_blocked_by_walls() -> void:
+	var t := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
+	t.generate(6, 1, Vector2.ZERO)
+	t.solid.fill(0)
+	_check("open ground sees across itself",
+		t.has_line_of_sight(Vector2(-300, 0), Vector2(300, 0)), true)
+
+	for y in range(-2, 3):
+		var c := t.cell_xy(Vector2(0, y * Terrain.CELL))
+		t.solid[c.y * t.w + c.x] = 1
+	_check("a wall between them blocks it",
+		t.has_line_of_sight(Vector2(-300, 0), Vector2(300, 0)), false)
+	_check("and it is symmetric",
+		t.has_line_of_sight(Vector2(300, 0), Vector2(-300, 0)), false)
+	_check("a point sees itself",
+		t.has_line_of_sight(Vector2.ZERO, Vector2.ZERO), true)
+
+	# It must terminate on every seed, however awkward the geometry.
+	for sd in range(40):
+		var u := Terrain.new(Vector2(-1600, -1000), Vector2(3200, 2000))
+		u.generate(sd, 1, Vector2.ZERO)
+		u.has_line_of_sight(Vector2(-1500, -900), Vector2(1500, 900))
+	_check("the walk always terminates on every seed", true, true)
+	finished["the_pulse_is_blocked_by_walls"] = true
