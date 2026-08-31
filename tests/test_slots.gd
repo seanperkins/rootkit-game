@@ -14,6 +14,8 @@ func _initialize() -> void:
 	duplicates_allowed()
 	last_interval_protected()
 	empty_exploits_offered()
+	one_target_per_row()
+	slot_index_round_trips()
 	placement_applies()
 	print("")
 	if failures == 0: print("  PASS — all cases")
@@ -102,23 +104,50 @@ func last_interval_protected() -> void:
 	_check("guard still holds with only one interval",
 		_slots(l.legal_targets(T[&"on_kill"])).has([0, 1]), false)
 
-## Not-yet-founded exploits are shown, so the board is the whole build.
+## Not-yet-founded exploits are shown, so the board is the whole build. Any slot
+## type may found one — an exploit missing its vector is inert until the vector
+## arrives, which the HUD says out loud, and that is the player's call to make.
 func empty_exploits_offered() -> void:
 	var l := _fresh()
 	var ts := _slots(l.legal_targets(T[&"corrupt"]))
-	_check("payload offered both slots of exploit 1", ts.has([0, 2]) and ts.has([0, 3]), true)
+	_check("payload offered the one slot of exploit 1", ts.has([0, 2]), true)
 	_check("payload offered unfounded exploit 2", ts.has([1, 2]), true)
-	_check("payload offered unfounded exploit 3", ts.has([2, 3]), true)
+	_check("payload offered unfounded exploit 3", ts.has([2, 2]), true)
+
+## The invariant the one-click level-up card rests on: a module's slot type
+## picks its column, so a row can offer it AT MOST one home. The moment a column
+## holds two slots again this fails, and the card silently starts dropping a
+## legal target on the floor instead of asking which slot.
+func one_target_per_row() -> void:
+	var l := _fresh()
+	l.place_at(T[&"chain"], 1, 0)
+	l.place_at(T[&"on_hit"], 1, 1)
+	l.place_at(T[&"corrupt"], 1, 2)
+	for id in [&"corrupt", &"packet", &"interval", &"keylog", &"on_kill", &"broadcast"]:
+		var seen := {}
+		var doubled := false
+		for t in l.legal_targets(T[id]):
+			if seen.has(t.exploit):
+				doubled = true
+			seen[t.exploit] = true
+		_check("'%s' offers at most one slot per row" % id, doubled, false)
+
+## Slot index and slot type are the same bijection read in two directions; the
+## card converts one to the other on every button it draws.
+func slot_index_round_trips() -> void:
+	for si in Exploit.SLOT_COUNT:
+		_check("slot %d round-trips" % si,
+			Exploit.slot_index_of(Exploit.slot_type(si)), si)
 
 func placement_applies() -> void:
 	var l := _fresh()
-	l.place_at(T[&"corrupt"], 2, 3)
+	l.place_at(T[&"corrupt"], 2, 2)
 	_check("placing founds the exploit", l.exploits.size(), 3)
 	_check("module landed in the chosen slot",
-		l.exploits[2].payloads[1].module.id, &"corrupt")
-	l.place_at(T[&"corrupt"], 2, 3)
-	_check("placing again ranks up", l.exploits[2].payloads[1].rank, 2)
-	l.place_at(T[&"keylog"], 2, 3)
+		l.exploits[2].payloads[0].module.id, &"corrupt")
+	l.place_at(T[&"corrupt"], 2, 2)
+	_check("placing again ranks up", l.exploits[2].payloads[0].rank, 2)
+	l.place_at(T[&"keylog"], 2, 2)
 	_check("a different module replaces at rank 1",
-		l.exploits[2].payloads[1].module.id, &"keylog")
-	_check("replacement resets rank", l.exploits[2].payloads[1].rank, 1)
+		l.exploits[2].payloads[0].module.id, &"keylog")
+	_check("replacement resets rank", l.exploits[2].payloads[0].rank, 1)

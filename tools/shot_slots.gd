@@ -11,22 +11,26 @@ func _process(_d: float) -> bool:
 	if run == null or run.loadout == null:
 		return false
 	if frames == 30:
-		# a partially built board so the slot states are all visible at once
+		# A half-built board, so one screen shows every button state at once:
+		# exploit_01 is full, exploit_02 has an empty payload column, and
+		# exploit_03 is not founded yet.
 		var t := ModuleTable.by_id()
 		run.loadout.place_at(t[&"corrupt"], 0, 2)
 		run.loadout.exploits[0].payloads[0].rank = 3
 		run.loadout.place_at(t[&"broadcast"], 1, 0)
 		run.loadout.place_at(t[&"on_hit"], 1, 1)
-		run.loadout.place_at(t[&"keylog"], 1, 2)
 		run._recompile()
 	if frames == 60 and not shown:
 		shown = true
 		run.paused = true
 		var ui: CanvasLayer = run.get_children().filter(func(c): return c is CanvasLayer)[0]
-		var m: Module = ModuleTable.by_id()[&"buffer_overflow"]
-		ui._cards_data = [[m, run.loadout.legal_targets(m)]]
+		var t := ModuleTable.by_id()
+		var cards := []
+		for id in [&"corrupt", &"buffer_overflow", &"interval"]:
+			cards.append([t[id], run.loadout.legal_targets(t[id])])
+		ui._cards_data = cards
+		ui._show_cards()
 		ui._overlay.visible = true
-		ui._show_slots(m, run.loadout.legal_targets(m))
 	if frames == 75:
 		root.get_texture().get_image().save_png("/tmp/rootkit_slots.png")
 		return true

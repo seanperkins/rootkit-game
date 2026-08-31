@@ -65,22 +65,6 @@ func _build() -> void:
 	title.position = Vector2(60, 78)
 	_overlay.add_child(title)
 
-	var slots := VBoxContainer.new()
-	slots.name = "Slots"
-	slots.position = Vector2(60, 150)
-	slots.visible = false
-	slots.add_theme_constant_override("separation", 10)
-	_overlay.add_child(slots)
-
-	var back := Button.new()
-	back.name = "Back"
-	back.text = "back  ->  pick a different module"
-	back.position = Vector2(60, 470)
-	back.custom_minimum_size = Vector2(300, 32)
-	back.visible = false
-	_overlay.add_child(back)
-	back.pressed.connect(_show_cards)
-
 	var row := HBoxContainer.new()
 	row.name = "Row"
 	row.position = Vector2(60, 150)
@@ -90,7 +74,7 @@ func _build() -> void:
 	var decline := Button.new()
 	decline.name = "Decline"
 	decline.text = "decline  ->  +25 salvage"
-	decline.position = Vector2(60, 420)
+	decline.position = Vector2(60, 452)
 	decline.custom_minimum_size = Vector2(260, 34)
 	_overlay.add_child(decline)
 	decline.pressed.connect(func(): run.decline_card())
@@ -123,8 +107,9 @@ func _refresh() -> void:
 	# a memory-r10 player read "integrity 180/100".
 	var maxhp := int(run._eff_integrity())
 	var top: Label = _hud.get_node("Top")
-	top.text = "integrity %3d/%d  armor %.0f  def %.0f   %s   lvl %d  [%s]   salvage %d   botnet %d   kills %d  flips %d" % [
+	top.text = "integrity %3d/%d  armor %.0f  def %.0f   subnet %d/%d  %s   lvl %d  [%s]   salvage %d   botnet %d   kills %d  flips %d" % [
 		hp, maxhp, run._eff_armor(), run._eff_defense(),
+		run.subnet, SpawnDirector.CAMPAIGN_SUBNETS,
 		"%d:%02d" % [int(t) / 60, int(t) % 60], run.level,
 		_bar(float(run.xp) / maxf(run.xp_needed, 1), 14), run.salvage,
 		run.botnet.count, run.kills, run.flips]
@@ -157,11 +142,7 @@ func _on_cards(cards: Array) -> void:
 	_overlay.visible = true
 
 func _show_cards() -> void:
-	_overlay.get_node("Title").text = "  LEVEL UP  ::  select module"
-	_overlay.get_node("Row").visible = true
-	_overlay.get_node("Decline").visible = true
-	_overlay.get_node("Slots").visible = false
-	_overlay.get_node("Back").visible = false
+	_overlay.get_node("Title").text = "  LEVEL UP  ::  one click places the module"
 	var row: HBoxContainer = _overlay.get_node("Row")
 	for c in row.get_children():
 		row.remove_child(c)
@@ -169,93 +150,149 @@ func _show_cards() -> void:
 	for entry in _cards_data:
 		row.add_child(_make_card(entry))
 
-## Stage 2 — the loadout as a board. Every slot is shown; only the ones this
-## module may legally occupy are enabled, so the shape of the build is visible
-## at the moment you are deciding.
-func _show_slots(m: Module, targets: Array) -> void:
-	_overlay.get_node("Title").text = "  %s  ::  choose a slot" % m.display_name
-	_overlay.get_node("Row").visible = false
-	_overlay.get_node("Decline").visible = false
-	_overlay.get_node("Back").visible = true
-	var box: VBoxContainer = _overlay.get_node("Slots")
-	box.visible = true
-	for c in box.get_children():
-		box.remove_child(c)
-		c.queue_free()
+const COLUMN_NAMES := ["VECTOR", "TRIGGER", "PAYLOAD"]
 
-	var by_slot := {}
-	for t in targets:
-		by_slot[t.exploit * 10 + t.slot] = t
+## One colour and one mark per outcome. Placing and founding a row are both
+## "nothing is lost" but they are not the same move — founding spends one of the
+## three exploits — so they read differently.
+const RANK := Color(1.0, 0.86, 0.35)
+const NEW_ROW := Color(0.45, 0.72, 1.0)
+const OFF := Color(0.18, 0.26, 0.22)
 
-	for e in Loadout.MAX_EXPLOITS:
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		var label := _mono(13)
-		label.custom_minimum_size = Vector2(110, 0)
-		var ex: Exploit = run.loadout.exploits[e] if e < run.loadout.exploits.size() else null
-		label.text = "exploit_%02d" % (e + 1)
-		label.add_theme_color_override("font_color", FG if ex != null else DIM)
-		row.add_child(label)
-		for sl in Exploit.SLOT_COUNT:
-			row.add_child(_slot_button(m, ex, e, sl, by_slot.get(e * 10 + sl)))
-		box.add_child(row)
+## Three squares, one per exploit column, this module's own filled. The card
+## answers WHERE before it answers what, because with a single slot per column
+## the column plus the row is the entire placement — which is what collapses the
+## old module-then-slot pair of clicks into one.
+func _column_marks(slot: int) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 5)
+	for i in COLUMN_NAMES.size():
+		var sq := Panel.new()
+		sq.custom_minimum_size = Vector2(13, 13)
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = FG if i == slot else Color(0, 0, 0, 0)
+		sb.border_color = FG if i == slot else OFF
+		sb.set_border_width_all(1)
+		sq.add_theme_stylebox_override("panel", sb)
+		row.add_child(sq)
+	var l := _mono(11)
+	l.text = "  " + COLUMN_NAMES[slot]
+	l.add_theme_color_override("font_color", DIM)
+	row.add_child(l)
+	return row
 
-	var legend := _mono(12)
-	legend.add_theme_color_override("font_color", DIM)
-	legend.text = "\n  VECTOR      TRIGGER     PAYLOAD     PAYLOAD"
-	box.add_child(legend)
-
-func _slot_button(m: Module, ex, e: int, sl: int, target) -> Button:
+## One button per exploit row, and every one of them is terminal: pressing it
+## places the module. `target` is null when this row is no legal home for it,
+## which after the column is fixed can only be a max-rank duplicate or the last
+## interval trigger — both worth naming rather than greying out silently.
+func _row_button(m: Module, e: int, target) -> Button:
 	var b := Button.new()
-	b.custom_minimum_size = Vector2(168, 54)
+	b.custom_minimum_size = Vector2(0, 34)
 	b.add_theme_font_size_override("font_size", 12)
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var sl := Exploit.slot_index_of(int(m.slot))
+	var founded: bool = e < run.loadout.exploits.size()
+	var ex: Exploit = run.loadout.exploits[e] if founded else null
 	var occupant: EquippedModule = ex.at(sl) if ex != null else null
-	var occupied_by := ""
-	if occupant != null:
-		occupied_by = "%s%s" % [occupant.module.display_name,
-			"" if occupant.rank == 1 else " ·%d" % occupant.rank]
-	else:
-		occupied_by = "( empty )"
 
+	var mark := "·"
+	var detail := ""
+	var tint := OFF
 	if target == null:
-		# Not a legal home for this module: wrong slot type, a duplicate id, or
-		# the last interval trigger.
-		b.disabled = true
-		b.text = occupied_by
-		b.add_theme_stylebox_override("disabled", _panel(Color(0.18, 0.26, 0.22)))
+		if occupant == null:
+			detail = "no room"
+		elif not occupant.can_rank_up():
+			detail = "%s at max rank" % occupant.module.display_name
+		else:
+			detail = "%s is the last interval" % occupant.module.display_name
 	else:
 		match target.action:
 			Loadout.Rule.RANK_UP:
-				b.text = "%s\nRANK UP -> %d" % [occupied_by, occupant.rank + 1]
-				b.add_theme_stylebox_override("normal", _panel(Color(0.55, 1.0, 0.72)))
+				mark = "^"
+				detail = "rank %d -> %d" % [occupant.rank, occupant.rank + 1]
+				tint = RANK
 			Loadout.Rule.REPLACE:
-				b.text = "%s\nREPLACE" % occupied_by
-				b.add_theme_stylebox_override("normal", _panel(WARN))
+				mark = "x"
+				detail = "replace %s" % target.victim.display_name
+				tint = WARN
 			_:
-				b.text = "( empty )\nPLACE"
-				b.add_theme_stylebox_override("normal", _panel(FG))
+				if founded:
+					mark = "+"
+					detail = "empty slot"
+					tint = FG
+				else:
+					mark = "*"
+					detail = "new row"
+					tint = NEW_ROW
+
+	b.text = " %s  exploit_%02d   %s" % [mark, e + 1, detail]
+	if target == null:
+		b.disabled = true
+		b.add_theme_stylebox_override("disabled", _panel(OFF))
+		b.add_theme_color_override("font_disabled_color", OFF)
+	else:
+		for state in ["normal", "hover", "pressed", "focus"]:
+			b.add_theme_stylebox_override(state, _panel(tint))
+		for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+			b.add_theme_color_override(state, tint)
 		b.pressed.connect(func(): run.choose_card(m, target))
 	return b
+
+## Eats the slack between a card's text and its buttons, so the buttons sit on
+## the bottom edge whatever the stats line above them runs to.
+func _spacer() -> Control:
+	var c := Control.new()
+	c.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	return c
 
 func _make_card(entry: Array) -> Control:
 	var m = entry[0]
 	var targets: Array = entry[1]
-	var b := Button.new()
-	b.custom_minimum_size = Vector2(268, 210)
-	b.add_theme_font_size_override("font_size", 13)
-	b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var card := PanelContainer.new()
+	# A minimum height, and a spacer above the buttons in every branch below.
+	# HBoxContainer already stretches all three cards to the tallest one, so
+	# without the spacer a card with a short stats line floats its buttons up
+	# and the three rows of buttons no longer line up across the screen.
+	card.custom_minimum_size = Vector2(268, 244)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 7)
+	card.add_child(box)
+
 	if m == null:
-		b.text = "\n[ salvage ]\n\nno module fits\n\n+50 salvage"
-		b.add_theme_stylebox_override("normal", _panel(DIM))
+		card.add_theme_stylebox_override("panel", _panel(DIM))
+		var t := _mono(13)
+		t.text = "[ salvage ]\n\nno module fits"
+		box.add_child(t)
+		box.add_child(_spacer())
+		var b := Button.new()
+		b.text = " +50 salvage"
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size = Vector2(0, 34)
+		b.add_theme_font_size_override("font_size", 12)
+		for state in ["normal", "hover", "pressed", "focus"]:
+			b.add_theme_stylebox_override(state, _panel(DIM))
 		b.pressed.connect(func(): run.choose_card(null, null))
-	else:
-		var slot: String = ["VECTOR", "TRIGGER", "PAYLOAD"][int(m.slot)]
-		b.text = "\n[ %s ]\n\n%s\n\n%d slot%s available\n\n%s" % [
-			slot, m.display_name, targets.size(),
-			"" if targets.size() == 1 else "s", _stats_line(m)]
-		b.add_theme_stylebox_override("normal", _panel(FG))
-		b.pressed.connect(func(): _show_slots(m, targets))
-	return b
+		box.add_child(b)
+		return card
+
+	card.add_theme_stylebox_override("panel", _panel(FG))
+	box.add_child(_column_marks(int(m.slot)))
+	var name_label := _mono(16)
+	name_label.text = m.display_name
+	box.add_child(name_label)
+	var stats := _mono(11)
+	stats.add_theme_color_override("font_color", DIM)
+	stats.text = _stats_line(m)
+	box.add_child(stats)
+	box.add_child(_spacer())
+
+	# At most one target per row now, so a row and a button are the same thing.
+	var by_row := {}
+	for t in targets:
+		by_row[t.exploit] = t
+	for e in Loadout.MAX_EXPLOITS:
+		box.add_child(_row_button(m, e, by_row.get(e)))
+	return card
 
 func _stats_line(m: Module) -> String:
 	var parts := []
@@ -277,8 +314,8 @@ func _on_end(won: bool, salvage: int) -> void:
 		t.text = "  CORE BREACHED\n\n  ICE terminated. %d salvage banked." % salvage
 		t.add_theme_color_override("font_color", FG)
 	else:
-		t.text = "  PROCESS TERMINATED\n\n  unbanked salvage lost.\n  kills %d   flips %d" % [
-			run.kills, run.flips]
+		t.text = "  PROCESS TERMINATED\n\n  died on subnet %d of %d.\n  salvage since the last clear is lost.\n  kills %d   flips %d" % [
+			run.subnet, SpawnDirector.CAMPAIGN_SUBNETS, run.kills, run.flips]
 		t.add_theme_color_override("font_color", WARN)
 	_end.visible = true
 

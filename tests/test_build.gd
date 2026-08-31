@@ -104,16 +104,17 @@ func vector_cadence_does_not_scale() -> void:
 		base * T[&"interval"].stats[&"cadence_mult"])
 	_check("while its damage does scale", r5.damage > r1.damage, true)
 
-## Stack every cadence contributor at max rank, in BOTH payload slots, and the
-## PROPORTIONAL floor holds. The absolute MIN_COOLDOWN no longer binds for any
-## legal build — that is the point of the change, so it is asserted here.
+## Stack every cadence contributor at max rank and the PROPORTIONAL floor holds.
+## The absolute MIN_COOLDOWN no longer binds for any legal build — that is the
+## point of the change, so it is asserted here. The haste is heavier than the
+## old 0.70 because the second payload slot used to supply a second overclock;
+## what is being pinned is the floor, not any particular route down to it.
 func cooldown_clamp() -> void:
-	var ex := _mk(&"broadcast", &"interval", [&"overclock", &"overclock"])
+	var ex := _mk(&"broadcast", &"interval", [&"overclock"])
 	ex.trigger.rank = 5
 	ex.payloads[0].rank = 5
-	ex.payloads[1].rank = 5
 	var base: float = T[&"broadcast"].stats[&"cooldown"]
-	var r := Compiler.build(ex, {&"haste": 0.70})
+	var r := Compiler.build(ex, {&"haste": 0.20})
 	_check("floored at the vector's own fraction", r.cooldown,
 		base * Compiler.MIN_CADENCE_FRACTION)
 	_check("above the absolute floor", r.cooldown > Compiler.MIN_COOLDOWN, true)
@@ -125,30 +126,34 @@ func speed_clamp() -> void:
 	var r := Compiler.build(ex)
 	_check("projectile speed clamped", r.projectile_speed, Compiler.MAX_PROJECTILE_SPEED)
 
-## Fold in float, floor once at the end: two 0.5 contributions must make 1.
+## Fold in float, floor once at the end: two 0.5 contributions must make 1. The
+## halves sit in different COLUMNS now — one payload slot means an exploit can
+## no longer hold two payloads — which tests the same arithmetic against the
+## same single floor at the end of build().
 func int_fold_order() -> void:
-	var half_a := Module.make(&"half_a", "a", Module.Slot.PAYLOAD, {&"chain_count": 0.5})
+	var half_a := Module.make(&"half_a", "a", Module.Slot.TRIGGER, {&"chain_count": 0.5})
 	var half_b := Module.make(&"half_b", "b", Module.Slot.PAYLOAD, {&"chain_count": 0.5})
-	var ex := _mk(&"broadcast", &"interval")
-	ex.place(half_a); ex.place(half_b)
+	var ex := Exploit.new()
+	ex.place(T[&"broadcast"]); ex.place(half_a); ex.place(half_b)
 	var r := Compiler.build(ex)
 	_check("0.5 + 0.5 folds to 1, not 0", r.chain_count, 1)
 
-## The real bug is acquisition order changing the fold. Values are chosen to
-## expose float non-associativity: with ordinary values, commutativity makes
-## this pass even if the sort is missing entirely.
+## The real bug is acquisition order changing the fold. The two-payload
+## permutation this used to run died with the second payload slot, but the
+## invariant it guarded did not: build() walks slots by ROLE — vector, payload,
+## trigger — so the order the player happened to acquire them in cannot reach
+## the arithmetic. Values are chosen to expose float non-associativity; with
+## ordinary ones commutativity hides a fold that follows insertion order.
 func permutation_determinism() -> void:
 	var big := Module.make(&"z_big", "big", Module.Slot.PAYLOAD, {&"damage": 1e16})
-	var one := Module.make(&"m_one", "one", Module.Slot.PAYLOAD, {&"damage": 1.0})
+	var one := Module.make(&"m_one", "one", Module.Slot.TRIGGER, {&"damage": 1.0})
 	var a := Exploit.new()
-	a.place(T[&"broadcast"]); a.place(T[&"interval"])
-	a.payloads[0] = EquippedModule.new(big); a.payloads[1] = EquippedModule.new(one)
+	a.place(T[&"broadcast"]); a.place(one); a.place(big)
 	var b := Exploit.new()
-	b.place(T[&"broadcast"]); b.place(T[&"interval"])
-	b.payloads[0] = EquippedModule.new(one); b.payloads[1] = EquippedModule.new(big)
+	b.place(big); b.place(one); b.place(T[&"broadcast"])
 	var ra := Compiler.build(a)
 	var rb := Compiler.build(b)
-	_check("permuted slot order resolves identically", ra.equals(rb), true)
+	_check("acquisition order resolves identically", ra.equals(rb), true)
 
 func _fresh() -> Loadout:
 	var l := Loadout.new()
@@ -212,31 +217,47 @@ func inert_only_transient() -> void:
 	_check("no longer inert", ex.is_inert(), false)
 
 ## Ward magnitudes are MAX, never sum — including within a single exploit.
-## Compiler._fold accumulates with +, and legal_targets offers an EMPTY_SLOT for
-## payload slot 1 regardless of what slot 0 holds (loadout.gd), with ranks kept
-## per SLOT rather than per module. So the same ward module in both payload slots
-## of one exploit is a legal build, and summing it would buy double magnitude at
-## zero uptime cost — the opposite of what a second copy should be worth.
+## Compiler._fold accumulates with +, and one exploit still folds ward_* from
+## two modules at once: the PAYLOAD column and the TRIGGER column land in the
+## same ResolvedExploit. Summing would buy double magnitude at zero uptime cost,
+## the opposite of what a second source should be worth.
+##
+## The second source is synthetic because no shipped TRIGGER carries a ward. It
+## used to be the second payload slot — that slot is gone, the rule is not, and
+## writing it this way keeps the test honest: passing `[&"sandbox", &"sandbox"]`
+## to _mk now silently places one module, which would pass by doing nothing.
 func ward_folds_by_max() -> void:
 	var mag: float = T[&"sandbox"].stats[&"ward_defense"]
 	_check("one sandbox folds to its magnitude",
 		Compiler.build(_mk(&"broadcast", &"interval", [&"sandbox"])).ward_defense, mag)
-	_check("two sandbox in one exploit take the max",
-		Compiler.build(_mk(&"broadcast", &"interval", [&"sandbox", &"sandbox"])).ward_defense, mag)
+
+	var t_def := Module.make(&"t_def", "t_def", Module.Slot.TRIGGER,
+		{&"ward_defense": mag})
+	var doubled := _mk(&"broadcast", &"interval", [&"sandbox"])
+	doubled.place(t_def)
+	_check("two ward_defense sources in one exploit take the max",
+		Compiler.build(doubled).ward_defense, mag)
 
 	# Two DIFFERENT wards in one exploit keep both magnitudes but share the
 	# longer duration, because ward_duration is maxf-folded and the timer is
 	# per-exploit. Pairing a long ward with a short one upgrades the short one's
 	# uptime for free; that is priced, not accidental.
-	var r := Compiler.build(_mk(&"broadcast", &"interval", [&"harden", &"sandbox"]))
+	var t_arm := Module.make(&"t_arm", "t_arm", Module.Slot.TRIGGER,
+		T[&"harden"].stats.duplicate())
+	var mixed := _mk(&"broadcast", &"interval", [&"sandbox"])
+	mixed.place(t_arm)
+	var r := Compiler.build(mixed)
 	_check("mixed wards keep both magnitudes",
 		r.ward_armor > 0.0 and r.ward_defense > 0.0, true)
 	_check("mixed wards share the longer duration", r.ward_duration,
 		maxf(T[&"harden"].stats[&"ward_duration"], T[&"sandbox"].stats[&"ward_duration"]))
 
 	# lifesteal joins the same rule: keylog is the fifth defensive module.
-	_check("two keylog take the max",
-		Compiler.build(_mk(&"broadcast", &"interval", [&"keylog", &"keylog"])).lifesteal,
+	var t_steal := Module.make(&"t_steal", "t_steal", Module.Slot.TRIGGER,
+		{&"lifesteal": T[&"keylog"].stats[&"lifesteal"]})
+	var steal := _mk(&"broadcast", &"interval", [&"keylog"])
+	steal.place(t_steal)
+	_check("two lifesteal sources take the max", Compiler.build(steal).lifesteal,
 		float(T[&"keylog"].stats[&"lifesteal"]))
 
 ## Rank buys ward MAGNITUDE, never uptime, and never packet range. A vector's
@@ -309,12 +330,15 @@ func rank_factor_is_asymmetric() -> void:
 	_check("a reduction stays positive far past max_rank",
 		Compiler._rank_factor(0.85, 10) > 0.0, true)
 
-## A synthetic module, because nothing in the shipped table carries the key yet.
+## Synthetic modules, because nothing in the shipped table carries the key twice.
+## The second factor rides the TRIGGER column: an exploit holds one payload now,
+## and a VECTOR may not carry cadence_mult at all — validate() rejects it — so
+## the trigger is the only other place a second factor can legally come from.
+## Synthetic rather than `interval`, which carries a 0.85 of its own that would
+## fold into the very product being asserted.
 func cadence_mult_folds_by_product() -> void:
 	var a := Module.make(&"synth_a", "synth_a", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
-	var b := Module.make(&"synth_b", "synth_b", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
-	# on_damage_taken, not interval: interval carries a cadence_mult of its own
-	# now, so using it here would fold 0.85 into the product being asserted.
-	var ex := _mk(&"broadcast", &"on_damage_taken")
-	ex.place(a); ex.place(b)
+	var b := Module.make(&"synth_b", "synth_b", Module.Slot.TRIGGER, {&"cadence_mult": 0.5})
+	var ex := Exploit.new()
+	ex.place(T[&"broadcast"]); ex.place(a); ex.place(b)
 	_check("two factors multiply, never add", Compiler.build(ex).cadence_mult, 0.25)
