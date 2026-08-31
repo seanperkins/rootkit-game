@@ -113,6 +113,11 @@ func _refresh() -> void:
 		"%d:%02d" % [int(t) / 60, int(t) % 60], run.level,
 		_bar(float(run.xp) / maxf(run.xp_needed, 1), 14), run.salvage,
 		run.botnet.count, run.kills, run.flips]
+	match run.phase:
+		run.Phase.CLEARED:
+			top.text += "   >> SUBNET CLEAR — the gate is open"
+		run.Phase.TRANSIT:
+			top.text += "   >> in transit"
 	# Proportional, not absolute. A fixed 30 fires at 16.7% on a 180 bar.
 	top.add_theme_color_override("font_color",
 		WARN if float(hp) < float(maxhp) * 0.3 else FG)

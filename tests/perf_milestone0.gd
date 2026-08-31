@@ -144,6 +144,14 @@ func _real_run() -> PackedFloat64Array:
 	return out
 
 func _kite(g: Node2D) -> Vector2:
+	# Head for the gate once the subnet is cleared. Standing still in CLEARED
+	# would shrink the gate's coverage the same way terrain-blindness already
+	# did once, and a perf gate that measures less whenever the game changes is
+	# not gating anything.
+	if g.phase == g.Phase.CLEARED or g.phase == g.Phase.TRANSIT:
+		var f: Terrain = g.field()
+		if f.has_gate and f.gate_open:
+			return _around_walls(g, (f.gate_pos - g.player_pos).normalized())
 	var flee := Vector2.ZERO
 	var k := 0
 	for i in g.enemies.count:

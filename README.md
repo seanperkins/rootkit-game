@@ -13,9 +13,15 @@ godot                      # from the project root
 ```
 
 **WASD or arrows.** All weapons auto-fire. A run is a **campaign of three
-subnets**: survive five minutes, kill the ICE that follows, and you advance to
-the next one with your build, level, and XP intact, plus 30% of your integrity
-back. Clearing the last subnet wins.
+subnets**: survive five minutes, then kill the ICE that follows.
+
+Clearing ICE does not move you on by itself. A **gate** stands at the arena's
+edge from the moment it generates, shut — you fight past it for the whole
+subnet. Killing ICE halts the spawns, opens it, and lights the grid toward it.
+Walk in, cross the corridor, and you arrive on the next subnet with your build,
+level and XP intact and 30% of your integrity back, the gate shutting behind
+you. Take as long as you like getting there: nothing is spawning. Clearing the
+last subnet wins outright — it has no gate.
 
 Enemy integrity scales on both axes — up through each subnet, and again with
 the subnet number — because a rank buys damage linearly and constant HP meant

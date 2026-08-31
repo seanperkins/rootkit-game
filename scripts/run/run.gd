@@ -1255,6 +1255,37 @@ func _draw() -> void:
 			Terrain.Kind.CORRUPTION:
 				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
 
+	# The gate: present and legible while shut, bright and pulsing once open.
+	var gf := field()
+	if gf.has_gate:
+		var ring := PackedVector2Array()
+		for k in 25:
+			var ga := TAU * k / 24.0
+			ring.append(to_iso(gf.gate_pos
+				+ Vector2(cos(ga), sin(ga)) * Terrain.GATE_RADIUS))
+		if gf.gate_open:
+			var pulse := 0.6 + 0.4 * sin(Time.get_ticks_msec() * 0.004)
+			draw_colored_polygon(ring, Color(0.35, 1.0, 0.75, 0.18 * pulse))
+			draw_polyline(ring, Color(0.55, 1.9, 1.2, pulse), 2.5)
+		else:
+			# Shut, but never hidden. A gate you have walked past for five
+			# minutes is a promise; one that appears on the boss kill is a
+			# prompt, and the promise is the better feeling.
+			draw_polyline(ring, Color(0.30, 0.45, 0.40, 0.55), 1.5)
+
+		if gf.gate_open and phase == Phase.CLEARED:
+			# A BEARING, not a path. A drawn route needs pathfinding the game
+			# does not have and would be wrong the moment a wall interrupts it;
+			# arenas are 8-18% walls and fully connected, so a direction is
+			# enough to navigate by and cannot go stale.
+			var gd := (gf.gate_pos - player_pos).normalized()
+			for k in 14:
+				var t0 := player_pos + gd * (120.0 + 90.0 * k)
+				var fade := 1.0 - float(k) / 14.0
+				var ph := fmod(Time.get_ticks_msec() * 0.0012 - k * 0.08, 1.0)
+				draw_line(to_iso(t0), to_iso(t0 + gd * 40.0),
+					Color(0.4, 1.4, 1.0, 0.10 + 0.5 * fade * ph), 2.0)
+
 	# Shot visuals, oldest fading out. Drawn under the ship.
 	for fx in _fx_line:
 		var f: float = fx[2] / FX_LIFE
