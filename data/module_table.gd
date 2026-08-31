@@ -33,11 +33,11 @@ static func all() -> Array:
 
 		# --- TRIGGER --------------------------------------------------------
 		Module.make(&"interval", "interval(t)", S.TRIGGER,
-			{&"cooldown": -0.10}, [], 0, T.INTERVAL),
+			{&"cadence_mult": 0.85}, [], 0, T.INTERVAL),
 		Module.make(&"on_kill", "on_kill()", S.TRIGGER,
-			{&"damage": 3.0, &"cooldown": 0.35}, [], 0, T.ON_KILL),
+			{&"damage": 3.0, &"cadence_mult": 1.52}, [], 0, T.ON_KILL),
 		Module.make(&"on_hit", "on_hit()", S.TRIGGER,
-			{&"damage": 1.0, &"cooldown": 0.20}, [], 0, T.ON_HIT),
+			{&"damage": 1.0, &"cadence_mult": 1.30}, [], 0, T.ON_HIT),
 		Module.make(&"on_damage_taken", "on_damage_taken()", S.TRIGGER,
 			{&"damage": 8.0, &"radius": 40.0}, [], 0, T.ON_DAMAGE_TAKEN),
 
@@ -55,7 +55,7 @@ static func all() -> Array:
 		Module.make(&"botnet_expand", "fork()", S.PAYLOAD,
 			{&"botnet_cap": 2.0}),
 		Module.make(&"overclock", "overclock", S.PAYLOAD,
-			{&"damage": 2.0, &"cooldown": -0.12}),
+			{&"damage": 2.0, &"cadence_mult": 0.82}),
 
 		# --- PAYLOAD, defensive ------------------------------------------------
 		# None contributes damage, so equipping one is a real cost against the two

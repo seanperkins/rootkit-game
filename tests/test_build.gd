@@ -1,6 +1,13 @@
 extends SceneTree
 
+## Every assertion this file is supposed to make. A GDScript runtime error aborts
+## the enclosing function WITHOUT failing the suite — verified: a missing property
+## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
+## cases" while four checks never ran. Counting them makes that loud.
+const EXPECTED_CHECKS := 51
+
 var failures := 0
+var checks := 0
 var T := ModuleTable.by_id()
 
 func _init() -> void:
@@ -19,16 +26,24 @@ func _init() -> void:
 	rule_replace_lowest_rank()
 	rule_zero_no_legal_placement()
 	inert_only_transient()
+	cadence_mult_defaults_to_one()
+	rank_factor_is_asymmetric()
+	cadence_mult_folds_by_product()
 	ward_folds_by_max()
 	rank_carve_outs()
 	ward_equality()
 	defensive_share()
 	print("")
+	if checks != EXPECTED_CHECKS:
+		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
+			% [checks, EXPECTED_CHECKS])
+		failures += 1
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
 	quit(1 if failures > 0 else 0)
 
 func _check(label: String, got, want) -> void:
+	checks += 1
 	if got == want or (got is float and want is float and abs(got - want) < 1e-5):
 		print("  ok    %s" % label)
 	else:
@@ -75,7 +90,9 @@ func rank_scaling() -> void:
 	_check("rank 3: base + payload*3", Compiler.build(ex).damage, base + pay * 3.0)
 
 ## Ranking a weapon up must not make it fire slower. A VECTOR's cooldown is its
-## cadence; only reductions from payloads and triggers scale with rank.
+## cadence; cadence FACTORS from payloads and triggers still scale with rank, but
+## the two directions scale differently — a reduction compounds, a cost
+## accumulates linearly. See Compiler._rank_factor.
 func vector_cadence_does_not_scale() -> void:
 	var base: float = T[&"broadcast"].stats[&"cooldown"]
 	var ex := _mk(&"broadcast", &"interval")
@@ -84,16 +101,22 @@ func vector_cadence_does_not_scale() -> void:
 	var r5 := Compiler.build(ex)
 	_check("rank 5 vector fires at the same cadence", r5.cooldown, r1.cooldown)
 	_check("and that cadence is the module's own", r1.cooldown,
-		base + T[&"interval"].stats[&"cooldown"])
+		base * T[&"interval"].stats[&"cadence_mult"])
 	_check("while its damage does scale", r5.damage > r1.damage, true)
 
-## Stack every cooldown contributor at max rank and the floor must still hold.
+## Stack every cadence contributor at max rank, in BOTH payload slots, and the
+## PROPORTIONAL floor holds. The absolute MIN_COOLDOWN no longer binds for any
+## legal build — that is the point of the change, so it is asserted here.
 func cooldown_clamp() -> void:
-	var ex := _mk(&"broadcast", &"interval", [&"overclock"])
+	var ex := _mk(&"broadcast", &"interval", [&"overclock", &"overclock"])
 	ex.trigger.rank = 5
 	ex.payloads[0].rank = 5
-	var r := Compiler.build(ex)
-	_check("cooldown clamped to MIN_COOLDOWN", r.cooldown, Compiler.MIN_COOLDOWN)
+	ex.payloads[1].rank = 5
+	var base: float = T[&"broadcast"].stats[&"cooldown"]
+	var r := Compiler.build(ex, {&"haste": 0.70})
+	_check("floored at the vector's own fraction", r.cooldown,
+		base * Compiler.MIN_CADENCE_FRACTION)
+	_check("above the absolute floor", r.cooldown > Compiler.MIN_COOLDOWN, true)
 	_check("cooldown never negative", r.cooldown > 0.0, true)
 
 func speed_clamp() -> void:
@@ -258,3 +281,40 @@ func defensive_share() -> void:
 			defensive += 1
 	_check("four defensive modules unlocked", defensive, 4)
 	_check("unlocked total", ModuleTable.starting_unlocked().size(), 15)
+
+## cadence_mult is the only STAT_KEY that does not default to zero, because it
+## accumulates by product rather than by sum. Anything that resets fields
+## generically, or assumes a zero default, breaks quietly on it — so the default
+## is pinned by a test rather than by a comment.
+func cadence_mult_defaults_to_one() -> void:
+	var r := ResolvedExploit.new()
+	_check("cadence_mult defaults to 1.0", r.cadence_mult, 1.0)
+	_check("cadence_mult is a legal stat key", &"cadence_mult" in Module.STAT_KEYS, true)
+	_check("STAT_KEYS is 17", Module.STAT_KEYS.size(), 17)
+	var zero_defaults := 0
+	for k in Module.STAT_KEYS:
+		if float(r.get(k)) == 0.0:
+			zero_defaults += 1
+	_check("every OTHER stat key defaults to zero", zero_defaults, 16)
+
+## Rank scales the two directions differently, because each is the rule the other
+## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;
+## applying a REDUCTION linearly goes negative — overclock (0.82) crosses at
+## rank 6, one above max_rank.
+func rank_factor_is_asymmetric() -> void:
+	_check("a reduction compounds", Compiler._rank_factor(0.85, 5), pow(0.85, 5))
+	_check("a cost accumulates", Compiler._rank_factor(1.52, 5), 1.0 + 0.52 * 5.0)
+	_check("1.0 is fixed under both branches", Compiler._rank_factor(1.0, 5), 1.0)
+	_check("rank 0 is neutral", Compiler._rank_factor(0.85, 0), 1.0)
+	_check("a reduction stays positive far past max_rank",
+		Compiler._rank_factor(0.85, 10) > 0.0, true)
+
+## A synthetic module, because nothing in the shipped table carries the key yet.
+func cadence_mult_folds_by_product() -> void:
+	var a := Module.make(&"synth_a", "synth_a", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
+	var b := Module.make(&"synth_b", "synth_b", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
+	# on_damage_taken, not interval: interval carries a cadence_mult of its own
+	# now, so using it here would fold 0.85 into the product being asserted.
+	var ex := _mk(&"broadcast", &"on_damage_taken")
+	ex.place(a); ex.place(b)
+	_check("two factors multiply, never add", Compiler.build(ex).cadence_mult, 0.25)

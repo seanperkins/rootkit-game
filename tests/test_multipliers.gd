@@ -108,11 +108,15 @@ func exclusions_hold() -> void:
 func haste_before_clamp() -> void:
 	var t := ModuleTable.by_id()
 	var ex := Exploit.new()
-	ex.place(t[&"packet"]); ex.place(t[&"interval"])   # 0.50 - 0.10 = 0.40
+	ex.place(t[&"packet"]); ex.place(t[&"interval"])   # 0.50 x 0.85 = 0.425
 	var base := Compiler.build(ex)
 	_check("mid-range cooldown is above the clamp",
 		base.cooldown > Compiler.MIN_COOLDOWN, true)
 	var fast := Compiler.build(ex, {&"haste": 0.5})
 	_check("haste halves a mid-range cooldown", fast.cooldown, base.cooldown * 0.5)
-	_check("haste never breaches MIN_COOLDOWN",
-		Compiler.build(ex, {&"haste": 0.001}).cooldown, Compiler.MIN_COOLDOWN)
+	# The binding floor is PROPORTIONAL now: packet floors at 0.50 x 0.12 = 0.060,
+	# and MIN_COOLDOWN no longer binds for any legal build. This assertion used to
+	# pin the absolute guard, which is now only reachable on the null-vector path.
+	_check("haste cannot tunnel under the proportional floor",
+		Compiler.build(ex, {&"haste": 0.001}).cooldown,
+		float(t[&"packet"].stats[&"cooldown"]) * Compiler.MIN_CADENCE_FRACTION)
