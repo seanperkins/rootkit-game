@@ -314,8 +314,8 @@ func _step1_spawn(dt: float) -> void:
 				director.dropped += 1
 			continue
 		var t = enemy_types[ti]
-		var idx := enemies.spawn(s[1], Vector2.ZERO, t.integrity * _hp_mult(),
-			ENEMY_RADIUS, ti)
+		var idx := enemies.spawn(terrain.nearest_open(s[1]), Vector2.ZERO,
+			t.integrity * _hp_mult(), ENEMY_RADIUS, ti)
 		if idx < 0:
 			director.dropped += 1
 		else:
@@ -336,7 +336,8 @@ func _step1_spawn(dt: float) -> void:
 		_worm_cursor.clear()
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
-		var bi := enemies.spawn(player_pos + Vector2(cos(a), sin(a)) * 420.0,
+		var bi := enemies.spawn(
+			terrain.nearest_open(player_pos + Vector2(cos(a), sin(a)) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		emit_signal("stats_changed")
@@ -360,8 +361,8 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_trail[id] = trail
 	_worm_cursor[id] = 0
 	for k in n:
-		var idx := enemies.spawn(at, Vector2.ZERO, t.integrity * _hp_mult(),
-			ENEMY_RADIUS, WORM_TYPE)
+		var idx := enemies.spawn(terrain.nearest_open(at), Vector2.ZERO,
+			t.integrity * _hp_mult(), ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
 			return k > 0
 		_worm_id[idx] = id
@@ -962,6 +963,11 @@ func _advance_subnet() -> void:
 	subnet += 1
 	director.reset()
 	_refresh_thresholds()
+	# A new subnet is a new arena. Generated AFTER the subnet increments so the
+	# density scales, and from the player's CURRENT position so the spawn-safe
+	# margin is measured where they actually are — they do not teleport home on
+	# an advance, and generating around the origin could bury them.
+	terrain.generate(_rng.seed, subnet, player_pos)
 	for i in range(enemies.count - 1, -1, -1):
 		enemies.despawn(i)
 	for i in range(projectiles.count - 1, -1, -1):

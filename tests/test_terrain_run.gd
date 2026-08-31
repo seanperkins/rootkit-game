@@ -6,13 +6,14 @@ extends SceneTree
 var failures := 0
 var finished := {}
 
-const CASES := ["projectiles_die_on_walls", "hazard_zones_hurt", "slow_zones_slow"]
+const CASES := ["projectiles_die_on_walls", "hazard_zones_hurt", "slow_zones_slow", "advancing_regenerates_the_arena"]
 
 func _initialize() -> void:
 	print("ROOTKIT — terrain in the run\n")
 	await projectiles_die_on_walls()
 	await hazard_zones_hurt()
 	await slow_zones_slow()
+	await advancing_regenerates_the_arena()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -112,3 +113,21 @@ func slow_zones_slow() -> void:
 	_check("a weaker slow does not overwrite a stronger one", r._slow_factor[i], 0.5)
 	r.free()
 	finished["slow_zones_slow"] = true
+
+func advancing_regenerates_the_arena() -> void:
+	var r := await _fresh_run()
+	var before: PackedByteArray = r.terrain.solid.duplicate()
+	r._advance_subnet()
+	_check("the arena is rebuilt for the new subnet", r.terrain.solid == before, false)
+	_check("and the player is not left standing in rock",
+		r.terrain.is_solid(r.player_pos), false)
+
+	var n_before := 0
+	for i in before.size():
+		if before[i] != 0: n_before += 1
+	var n_after := 0
+	for i in r.terrain.solid.size():
+		if r.terrain.solid[i] != 0: n_after += 1
+	_check("subnet 02 is denser than subnet 01", n_after > n_before, true)
+	r.free()
+	finished["advancing_regenerates_the_arena"] = true

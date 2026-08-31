@@ -254,3 +254,25 @@ func avoid(at: Vector2, heading: Vector2) -> Vector2:
 	# Both clear or both blocked: back off along the reverse heading, which is
 	# always the way it came and therefore always was passable.
 	return -dir * AVOID_FORCE
+
+## How far out nearest_open will look, in cells.
+const OPEN_SEARCH_RINGS := 8
+
+## The nearest open point to `p`, or `p` itself if none is found within the bound.
+##
+## Bounded on purpose. "Loop until you find open ground" is a hang the moment a
+## seed produces a field dense enough not to have any nearby, and a hang in the
+## spawn path freezes the subnet before its first frame. Returning the input is
+## the honest failure: one enemy spawns in rock, walks out under the slide rule,
+## and the game runs.
+func nearest_open(p: Vector2) -> Vector2:
+	if not is_solid(p):
+		return p
+	for ring in range(1, OPEN_SEARCH_RINGS + 1):
+		var step := float(ring) * CELL
+		for k in 8:
+			var a := TAU * k / 8.0
+			var q := p + Vector2(cos(a), sin(a)) * step
+			if not is_solid(q):
+				return q
+	return p

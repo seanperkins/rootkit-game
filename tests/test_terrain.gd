@@ -17,7 +17,7 @@ var finished := {}
 const CASES := [
 	"cell_lookup", "density_scales_with_subnet", "generation_is_deterministic",
 	"every_open_cell_is_reachable", "the_playfield_never_collapses",
-	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls", "enemies_avoid_and_never_embed",
+	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls", "enemies_avoid_and_never_embed", "spawn_points_find_open_ground",
 ]
 
 const ORIGIN := Vector2(-1600, -1000)
@@ -34,6 +34,7 @@ func _initialize() -> void:
 	zones_are_placed_in_the_open()
 	sliding_along_walls()
 	enemies_avoid_and_never_embed()
+	spawn_points_find_open_ground()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -250,3 +251,22 @@ func enemies_avoid_and_never_embed() -> void:
 			bad += 1
 	_check("a rejected step never lands in rock", bad, 0)
 	finished["enemies_avoid_and_never_embed"] = true
+
+func spawn_points_find_open_ground() -> void:
+	var t := _walled()          # rock over world x,y in [0,128)
+	var p := t.nearest_open(Vector2(64, 64))
+	_check("a point in rock resolves to open ground", t.is_solid(p), false)
+	_check("and it does not travel far",
+		p.distance_to(Vector2(64, 64)) < 300.0, true)
+
+	# A point already open is returned untouched — no needless displacement.
+	_check("an open point is unchanged",
+		t.nearest_open(Vector2(-500, -500)), Vector2(-500, -500))
+
+	# The search is BOUNDED: a fully solid field returns the input rather than
+	# looping forever. An unbounded search here is a hang on a dense seed.
+	var full := _fresh()
+	full.solid.fill(1)
+	_check("a sealed field returns the input rather than hanging",
+		full.nearest_open(Vector2(10, 10)), Vector2(10, 10))
+	finished["spawn_points_find_open_ground"] = true
