@@ -107,10 +107,10 @@ func _autopilot() -> Vector2:
 	# for the gate. Without this the autopilot stands in a cleared subnet until
 	# the tick budget runs out and every campaign assertion times out rather
 	# than failing — which reads as a hang, not as a result.
-	if run.phase == run.Phase.CLEARED or run.phase == run.Phase.TRANSIT:
-		var f: Terrain = run.field()
+	if run.phase == run.Phase.CLEARED:
+		var f: Terrain = run.terrain
 		if f.has_gate and f.gate_open:
-			return _around_walls((f.gate_pos - run.player_pos).normalized())
+			return _around_walls((f.corridor_end - run.player_pos).normalized())
 	var flee := Vector2.ZERO
 	var n := 0
 	for i in run.enemies.count:

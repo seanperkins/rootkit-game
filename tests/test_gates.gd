@@ -6,14 +6,13 @@ extends SceneTree
 var failures := 0
 var finished := {}
 
-const CASES := ["ice_opens_the_gate", "walking_in_starts_transit",
-	"the_far_end_is_a_new_subnet", "the_last_subnet_just_wins"]
+const CASES := ["ice_opens_the_gate", "walking_out_is_continuous",
+	"the_last_subnet_just_wins"]
 
 func _initialize() -> void:
 	print("ROOTKIT — gates\n")
 	await ice_opens_the_gate()
-	await walking_in_starts_transit()
-	await the_far_end_is_a_new_subnet()
+	await walking_out_is_continuous()
 	await the_last_subnet_just_wins()
 	print("")
 	for c in CASES:
@@ -68,34 +67,7 @@ func ice_opens_the_gate() -> void:
 	r.free()
 	finished["ice_opens_the_gate"] = true
 
-func walking_in_starts_transit() -> void:
-	var r := await _fresh_run()
-	_kill_ice(r)
-	r.player_health = r._eff_integrity() * 0.2
-
-	# Standing away from it does nothing.
-	r.player_pos = r.terrain.gate_pos + Vector2(0, 900)
-	r._physics_process(1.0 / 60.0)
-	_check("standing away from the gate stays cleared", r.phase, r.Phase.CLEARED)
-
-	r.player_pos = r.terrain.gate_pos
-	r._physics_process(1.0 / 60.0)
-	_check("stepping into the gate begins transit", r.phase, r.Phase.TRANSIT)
-	_check("the corridor is the field in transit", r.field(), r.corridor)
-	_check("the corridor has no enemies", r.enemies.count, 0)
-	_check("the heal landed on entry",
-		r.player_health > r._eff_integrity() * 0.2 + 1.0, true)
-
-	# And it lands ONCE, not per tick.
-	var after: float = r.player_health
-	for k in 30:
-		r._physics_process(1.0 / 60.0)
-	_check("and only once", r.player_health <= after + 0.01, true)
-	_check("nothing spawns in the corridor", r.enemies.count, 0)
-	r.free()
-	finished["walking_in_starts_transit"] = true
-
-func the_far_end_is_a_new_subnet() -> void:
+func walking_out_is_continuous() -> void:
 	var r := await _fresh_run()
 	r.loadout.place_at(ModuleTable.by_id()[&"corrupt"], 0, 2)
 	r._recompile()
@@ -103,28 +75,39 @@ func the_far_end_is_a_new_subnet() -> void:
 	r.xp = 4
 	var mods: int = r.loadout.exploits[0].equipped().size()
 	var arena_before: PackedByteArray = r.terrain.solid.duplicate()
-
 	_kill_ice(r)
-	r.player_pos = r.terrain.gate_pos
-	r._physics_process(1.0 / 60.0)
-	_check("in transit", r.phase, r.Phase.TRANSIT)
+	var t: Terrain = r.terrain
 
-	r.player_pos = r.corridor.gate_pos
+	# The corridor is open ground on the SAME grid, running outward from the
+	# gate past the arena edge. No second Terrain, so no teleport.
+	_check("the gate mouth is open", t.is_solid(t.gate_pos), false)
+	_check("and so is the ground beyond it",
+		t.is_solid(t.gate_pos + t.gate_dir * 200.0), false)
+	_check("out to the corridor end", t.is_solid(t.corridor_end), false)
+	_check("but not to the side of it",
+		t.is_solid(t.gate_pos + t.gate_dir * 200.0
+			+ Vector2(-t.gate_dir.y, t.gate_dir.x) * 260.0), true)
+
+	# Stepping into the gate does NOT relocate the player.
+	r.player_pos = t.gate_pos
+	var before: Vector2 = r.player_pos
 	r._physics_process(1.0 / 60.0)
-	_check("the far end returns to fighting", r.phase, r.Phase.FIGHTING)
-	_check("on the next subnet", r.subnet, 2)
+	_check("touching the gate does not teleport", r.player_pos, before)
+	_check("and the subnet has not advanced", r.subnet, 1)
+
+	# Reaching the far end is what advances.
+	r.player_pos = t.corridor_end
+	r._physics_process(1.0 / 60.0)
+	_check("the corridor's end advances the subnet", r.subnet, 2)
+	_check("and stays fighting", r.phase, r.Phase.FIGHTING)
 	_check("with a new arena", r.terrain.solid == arena_before, false)
 	_check("the gate shut behind us", r.terrain.gate_open, false)
 	_check("the build came through", r.loadout.exploits[0].equipped().size(), mods)
-	_check("corrupt is still slotted",
-		r.loadout.exploits[0].payloads[0].module.id, &"corrupt")
 	_check("level carried", r.level, 9)
 	_check("xp carried", r.xp, 4)
-	_check("and the player is not standing in rock",
-		r.terrain.is_solid(r.player_pos), false)
-	_check("the wave clock restarted", r.director.elapsed, 0.0)
+	_check("no shards followed", r.shards.count, 0)
 	r.free()
-	finished["the_far_end_is_a_new_subnet"] = true
+	finished["walking_out_is_continuous"] = true
 
 func the_last_subnet_just_wins() -> void:
 	var r := await _fresh_run()

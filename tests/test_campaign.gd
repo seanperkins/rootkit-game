@@ -128,9 +128,9 @@ func advance_clears_the_field() -> void:
 func _walk_the_gate(r: Node2D) -> void:
 	r.phase = r.Phase.CLEARED
 	r.terrain.gate_open = true
-	r.player_pos = r.terrain.gate_pos
-	r._physics_process(1.0 / 60.0)
-	r.player_pos = r.corridor.gate_pos
+	# One step now: the corridor is part of the arena, so reaching its far end is
+	# the whole transition.
+	r.player_pos = r.terrain.corridor_end
 	r._physics_process(1.0 / 60.0)
 
 

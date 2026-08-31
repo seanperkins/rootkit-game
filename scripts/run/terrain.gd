@@ -35,16 +35,45 @@ var rects: Array = []          # [Rect2, Kind] pairs, for generation and drawing
 var has_gate := false
 var gate_pos := Vector2.ZERO
 var gate_open := false
+## Outward from the arena, so the corridor and the gate's posts know which way
+## "through" is.
+var gate_dir := Vector2.ZERO
+var corridor_end := Vector2.ZERO
+
+## The playable arena, which is now SMALLER than the grid. Collapse and wall
+## placement work in here; the corridor lives outside it.
+var arena_rect: Rect2
+
+## Distance in cells from the gate over open ground, -1 where unreachable.
+## Built once on the boss kill; drives both the collapse order and the route.
+var dist_from_gate: PackedInt32Array
+var max_dist := 0
+var voided: PackedByteArray
 
 func _init(p_origin: Vector2, p_size: Vector2) -> void:
-	origin = p_origin
-	size = p_size
+	arena_rect = Rect2(p_origin, p_size)
+	origin = p_origin - Vector2(MARGIN, MARGIN)
+	size = p_size + Vector2(MARGIN, MARGIN) * 2.0
 	w = int(ceil(size.x / CELL))
 	h = int(ceil(size.y / CELL))
 	solid = PackedByteArray()
 	solid.resize(w * h)
 	zone = PackedByteArray()
 	zone.resize(w * h)
+
+## The arena's own cell bounds inside the enlarged grid.
+var _ax0: int
+var _ay0: int
+var _ax1: int
+var _ay1: int
+
+func _arena_cells() -> void:
+	var a := cell_xy(arena_rect.position)
+	var b := cell_xy(arena_rect.position + arena_rect.size)
+	_ax0 = a.x + 1
+	_ay0 = a.y + 1
+	_ax1 = b.x - 1
+	_ay1 = b.y - 1
 
 func cell_xy(p: Vector2) -> Vector2i:
 	return Vector2i(int(floor((p.x - origin.x) / CELL)),
@@ -116,8 +145,24 @@ func generate(seed_value: int, subnet: int, player_start: Vector2,
 	solid.fill(0)
 	zone.fill(0)
 	rects.clear()
+	dist_from_gate = PackedInt32Array()
+	voided = PackedByteArray()
+	max_dist = 0
 
-	var target := int(float(w * h) * density_for(subnet))
+	# Everything outside the arena is rock. The corridor is the ONLY way out,
+	# and the player is now allowed to leave the arena rect, so the margin has to
+	# actually stop them.
+	for y in h:
+		for x in w:
+			var p := origin + Vector2(float(x) + 0.5, float(y) + 0.5) * CELL
+			if not arena_rect.has_point(p):
+				solid[y * w + x] = 1
+
+	_arena_cells()
+	# Density is a fraction of the ARENA, not of the enlarged grid — the margin
+	# is solid by construction and counting it would quietly halve the walls.
+	var arena_cells := (_ax1 - _ax0) * (_ay1 - _ay0)
+	var target := int(float(arena_cells) * density_for(subnet))
 	var placed := 0
 	var attempts := 0
 	while placed < target and attempts < PLACE_ATTEMPTS:
@@ -127,8 +172,8 @@ func generate(seed_value: int, subnet: int, player_start: Vector2,
 		# wants at 3% coverage.
 		var rw := rng.randi_range(1, 3)
 		var rh := rng.randi_range(1, 3)
-		var cx := rng.randi_range(0, w - rw)
-		var cy := rng.randi_range(0, h - rh)
+		var cx := rng.randi_range(_ax0, _ax1 - rw)
+		var cy := rng.randi_range(_ay0, _ay1 - rh)
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
 		# grow() by the margin and ask whether the start is inside: that is
 		# exactly "this rect comes within WALL_MARGIN of the player".
@@ -205,8 +250,8 @@ func _place_zones(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 		attempts += 1
 		var rw := rng.randi_range(3, 7)
 		var rh := rng.randi_range(3, 7)
-		var cx := rng.randi_range(0, w - rw)
-		var cy := rng.randi_range(0, h - rh)
+		var cx := rng.randi_range(_ax0, _ax1 - rw)
+		var cy := rng.randi_range(_ay0, _ay1 - rh)
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
 		if r.grow(WALL_MARGIN).has_point(player_start):
 			continue
@@ -277,8 +322,14 @@ const OPEN_SEARCH_RINGS := 8
 ## How close you must be to step through.
 const GATE_RADIUS := 48.0
 
-const CORRIDOR_LENGTH := 1200.0
-const CORRIDOR_HALF_WIDTH := 90.0
+const CORRIDOR_LENGTH := 1100.0
+const CORRIDOR_HALF_WIDTH := 70.0
+
+## The grid extends past the arena on every side, so the corridor beyond a gate
+## is ordinary ground on the SAME grid. That is what makes walking out
+## continuous instead of a teleport into a second Terrain — and it means
+## collision, zones and rendering need no idea the corridor exists.
+const MARGIN := 1400.0
 
 ## The nearest open point to `p`, or `p` itself if none is found within the bound.
 ##
@@ -313,10 +364,10 @@ func _place_gate(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 	var cx := 0
 	var cy := 0
 	match edge:
-		0: cx = rng.randi_range(2, w - 3); cy = 1
-		1: cx = rng.randi_range(2, w - 3); cy = h - 2
-		2: cx = 1; cy = rng.randi_range(2, h - 3)
-		_: cx = w - 2; cy = rng.randi_range(2, h - 3)
+		0: cx = rng.randi_range(_ax0 + 2, _ax1 - 2); cy = _ay0; gate_dir = Vector2(0, -1)
+		1: cx = rng.randi_range(_ax0 + 2, _ax1 - 2); cy = _ay1 - 1; gate_dir = Vector2(0, 1)
+		2: cx = _ax0; cy = rng.randi_range(_ay0 + 2, _ay1 - 2); gate_dir = Vector2(-1, 0)
+		_: cx = _ax1 - 1; cy = rng.randi_range(_ay0 + 2, _ay1 - 2); gate_dir = Vector2(1, 0)
 	gate_pos = origin + Vector2(float(cx) + 0.5, float(cy) + 0.5) * CELL
 
 	# Clear the gate's own cell and its neighbours, so it is a mouth rather than
@@ -326,7 +377,23 @@ func _place_gate(rng: RandomNumberGenerator, player_start: Vector2) -> void:
 			if x >= 0 and y >= 0 and x < w and y < h:
 				solid[y * w + x] = 0
 
+	corridor_end = gate_pos + gate_dir * CORRIDOR_LENGTH
+	_cut_corridor()
 	_carve_to(gate_pos, player_start)
+
+## Open ground from the gate outward, walled by the solid margin either side.
+## This is the whole of "no teleport": the corridor is cells on this grid, so
+## walking into it is walking.
+func _cut_corridor() -> void:
+	var side := Vector2(-gate_dir.y, gate_dir.x)
+	var steps := int(CORRIDOR_LENGTH / (CELL * 0.5))
+	var across := int(CORRIDOR_HALF_WIDTH / (CELL * 0.5))
+	for k in range(steps + 1):
+		var along := gate_pos + gate_dir * (CELL * 0.5 * k)
+		for j in range(-across, across + 1):
+			var c := cell_xy(along + side * (CELL * 0.5 * j))
+			if in_bounds(c):
+				solid[c.y * w + c.x] = 0
 
 func _carve_to(from: Vector2, to: Vector2) -> void:
 	var start := cell_index(to)
@@ -347,25 +414,3 @@ func _carve_to(from: Vector2, to: Vector2) -> void:
 		if seen[j] != 0:
 			return      # met the reachable region; stop carving
 
-## A walled strip with nothing in it, generated on entering a gate and thrown
-## away on leaving. A Terrain rather than a bespoke corridor type, so collision,
-## the occupancy grid and rendering all work here for free.
-static func corridor(length: float = CORRIDOR_LENGTH) -> Terrain:
-	var size := Vector2(length + 400.0, 640.0)
-	var t := Terrain.new(-size * 0.5, size)
-	# Solid everywhere, then cut the walkable strip out of it.
-	t.solid.fill(1)
-	for y in range(t.h):
-		for x in range(t.w):
-			var p := t.origin + Vector2(float(x) + 0.5, float(y) + 0.5) * CELL
-			if absf(p.y) <= CORRIDOR_HALF_WIDTH:
-				t.solid[y * t.w + x] = 0
-	t.rects.append([Rect2(Vector2(-length * 0.5, -CORRIDOR_HALF_WIDTH),
-		Vector2(length, CORRIDOR_HALF_WIDTH * 2.0)), Kind.WALL])
-	t.has_gate = true
-	t.gate_open = true
-	t.gate_pos = Vector2(length * 0.5, 0.0)
-	return t
-
-func corridor_entrance() -> Vector2:
-	return Vector2(origin.x + CELL * 3.0, 0.0)

@@ -117,9 +117,10 @@ var subnet := 1
 ## that now does — cleared, still alive, waiting on the player to walk. The
 ## director steps in FIGHTING and in no other phase, which is exactly the
 ## property the old triple kept getting wrong.
-enum Phase { FIGHTING, CLEARED, TRANSIT }
+## TRANSIT is gone with the corridor Terrain: there is no separate place to be
+## any more, only a corridor you walk down that is part of the same arena.
+enum Phase { FIGHTING, CLEARED }
 var phase := Phase.FIGHTING
-var corridor: Terrain = null
 ## director.spawned is per-SUBNET, because director.reset() zeroes it on every
 ## advance. The campaign total has to survive that.
 var _spawned_before := 0
@@ -345,7 +346,7 @@ func _step1_spawn(dt: float) -> void:
 			continue
 		var t = enemy_types[ti]
 		var hp: float = t.integrity * _hp_mult()
-		var idx := enemies.spawn(field().nearest_open(s[1]), Vector2.ZERO,
+		var idx := enemies.spawn(terrain.nearest_open(s[1]), Vector2.ZERO,
 			hp, ENEMY_RADIUS, ti)
 		if idx < 0:
 			director.dropped += 1
@@ -367,7 +368,7 @@ func _step1_spawn(dt: float) -> void:
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(
-			field().nearest_open(player_pos + Vector2(cos(a), sin(a)) * 420.0),
+			terrain.nearest_open(player_pos + Vector2(cos(a), sin(a)) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		emit_signal("stats_changed")
@@ -392,7 +393,7 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_cursor[id] = 0
 	for k in n:
 		var whp: float = t.integrity * _hp_mult()
-		var idx := enemies.spawn(field().nearest_open(at), Vector2.ZERO,
+		var idx := enemies.spawn(terrain.nearest_open(at), Vector2.ZERO,
 			whp, ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
 			return k > 0
@@ -442,10 +443,12 @@ func _step2_integrate(dt: float) -> void:
 		# right way round for a game where every dodge is judged on screen.
 		world_dir = from_iso(input.normalized())
 	if world_dir.length_squared() > 0.0:
-		player_pos = field().slide(player_pos,
+		player_pos = terrain.slide(player_pos,
 			world_dir * _eff_clock_speed() * dt)
-	player_pos = player_pos.clamp(ARENA_ORIGIN + Vector2(40, 40),
-		ARENA_ORIGIN + ARENA_SIZE - Vector2(40, 40))
+	# Clamped to the GRID, not the arena: the corridor lies legitimately outside
+	# the arena rect, and the margin's solid cells are what actually stop you.
+	player_pos = player_pos.clamp(terrain.origin + Vector2(40, 40),
+		terrain.origin + terrain.size - Vector2(40, 40))
 	if player_iframe > 0.0:
 		player_iframe -= dt
 	for wi in _ward_left.size():
@@ -468,7 +471,7 @@ func _step2_integrate(dt: float) -> void:
 			# Hard rejection, not a hope. Avoidance is steering and can fail on a
 			# concave wall; this is what makes "no enemy ends a tick inside rock"
 			# true for every enemy on every tick regardless of how steering did.
-			enemies.pos[i] = field().slide(enemies.pos[i], enemies.vel[i] * dt)
+			enemies.pos[i] = terrain.slide(enemies.pos[i], enemies.vel[i] * dt)
 		if _worm_id[i] != 0:
 			var id := _worm_id[i]
 			var c: int = (_worm_cursor[id] + 1) % WORM_TRAIL_LEN
@@ -496,7 +499,7 @@ func _step2_integrate(dt: float) -> void:
 			projectiles.state[i] = Population.DEAD
 		# Terrain stops shots. This is what makes a wall cover rather than
 		# decoration, and it is the same O(1) lookup the player's movement uses.
-		elif field().is_solid(projectiles.pos[i]):
+		elif terrain.is_solid(projectiles.pos[i]):
 			projectiles.state[i] = Population.DEAD
 	for i in botnet.count:
 		_botnet_life[i] -= dt
@@ -562,7 +565,7 @@ func _step4_steer() -> void:
 			var dl := d.length()
 			if dl > 0.001:
 				push += d / dl * (SEPARATION_RADIUS - dl)
-		enemies.force[i] = push * 2.2 + field().avoid(here, player_pos - here)
+		enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos - here)
 		i += STEER_SLICES
 
 ## Event triggers respond only when off cooldown. Returns false when the
@@ -812,7 +815,7 @@ func apply_slow(i: int, factor: float, seconds: float) -> void:
 ## Zone effects, one array index per entity per tick.
 func _step2b_zones(dt: float) -> void:
 	_zone_slow_player = false
-	var pz := field().zone_at(player_pos)
+	var pz := terrain.zone_at(player_pos)
 	if pz == Terrain.Kind.HAZARD:
 		# Deliberately NOT through the contact-damage path: iframes exist to stop
 		# a swarm chewing through you on touch, and a hazard you are standing in
@@ -825,7 +828,7 @@ func _step2b_zones(dt: float) -> void:
 	for i in enemies.count:
 		if _slow_left[i] > 0.0:
 			_slow_left[i] -= dt
-		match field().zone_at(enemies.pos[i]):
+		match terrain.zone_at(enemies.pos[i]):
 			Terrain.Kind.HAZARD:
 				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i],
 					Terrain.HAZARD_DPS * dt)
@@ -1013,42 +1016,14 @@ func _bank_progress(with_salvage: bool) -> void:
 ## did, so chip damage still accumulates across a campaign.
 const SUBNET_CLEAR_HEAL := 0.30
 
-## The terrain currently underfoot. Everything that collides or draws asks this
-## rather than `terrain`, so the corridor needs no special cases anywhere.
-func field() -> Terrain:
-	return corridor if phase == Phase.TRANSIT else terrain
-
-## Stepping into an open gate is the advance. Checked after movement so it reads
-## the position the player actually reached this tick.
+## Reaching the corridor's END is the advance. The gate itself is just a mouth
+## you walk through; touching it does nothing, which is the whole point of the
+## rework — the transition is a walk, not a trigger.
 func _step2c_gate() -> void:
-	var f := field()
-	if not f.has_gate or not f.gate_open:
+	if phase != Phase.CLEARED or not terrain.has_gate or not terrain.gate_open:
 		return
-	if player_pos.distance_to(f.gate_pos) > Terrain.GATE_RADIUS:
+	if player_pos.distance_to(terrain.corridor_end) > Terrain.GATE_RADIUS * 2.0:
 		return
-	if phase == Phase.CLEARED:
-		_enter_corridor()
-	elif phase == Phase.TRANSIT:
-		_leave_corridor()
-
-func _enter_corridor() -> void:
-	phase = Phase.TRANSIT
-	corridor = Terrain.corridor()
-	player_pos = corridor.corridor_entrance()
-	# The clear heal lands HERE rather than on the ICE kill, so it rewards
-	# leaving rather than killing — and exactly once, because the phase has
-	# already changed by the time this could be reached again.
-	player_health = minf(_eff_integrity(),
-		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
-	for i in range(enemies.count - 1, -1, -1):
-		enemies.despawn(i)
-	for i in range(projectiles.count - 1, -1, -1):
-		projectiles.despawn(i)
-	emit_signal("stats_changed")
-
-func _leave_corridor() -> void:
-	phase = Phase.FIGHTING
-	corridor = null
 	_advance_subnet()
 
 func spawned_total() -> int:
@@ -1057,6 +1032,17 @@ func spawned_total() -> int:
 func _advance_subnet() -> void:
 	_spawned_before += director.spawned
 	subnet += 1
+	phase = Phase.FIGHTING
+	# Shards do NOT follow you. Arriving on a fresh subnet standing in the last
+	# one's loose XP is both free levels and visually wrong.
+	for i in range(shards.count - 1, -1, -1):
+		shards.despawn(i)
+	for i in range(enemies.count - 1, -1, -1):
+		enemies.despawn(i)
+	for i in range(projectiles.count - 1, -1, -1):
+		projectiles.despawn(i)
+	player_health = minf(_eff_integrity(),
+		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
 	director.reset()
 	_refresh_thresholds()
 	# The player arrives at the arena's centre, and the arena is generated around
@@ -1277,7 +1263,7 @@ func _draw() -> void:
 	# obstacles (a few dozen) rather than the number of solid cells (up to
 	# eleven hundred). A world-space AABB under to_iso is a sheared
 	# parallelogram, never a rect, so each is its four projected corners.
-	for entry in field().rects:
+	for entry in terrain.rects:
 		var tr: Rect2 = entry[0]
 		var kind: int = entry[1]
 		var quad := PackedVector2Array([
@@ -1302,7 +1288,7 @@ func _draw() -> void:
 				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
 
 	# The gate: present and legible while shut, bright and pulsing once open.
-	var gf := field()
+	var gf := terrain
 	if gf.has_gate:
 		var ring := PackedVector2Array()
 		for k in 25:
