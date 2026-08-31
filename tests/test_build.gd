@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 51
+const EXPECTED_CHECKS := 57
 
 var failures := 0
 var checks := 0
@@ -29,6 +29,7 @@ func _init() -> void:
 	cadence_mult_defaults_to_one()
 	rank_factor_is_asymmetric()
 	cadence_mult_folds_by_product()
+	new_keys_fold_by_their_rule()
 	ward_folds_by_max()
 	rank_carve_outs()
 	ward_equality()
@@ -311,12 +312,16 @@ func cadence_mult_defaults_to_one() -> void:
 	var r := ResolvedExploit.new()
 	_check("cadence_mult defaults to 1.0", r.cadence_mult, 1.0)
 	_check("cadence_mult is a legal stat key", &"cadence_mult" in Module.STAT_KEYS, true)
-	_check("STAT_KEYS is 17", Module.STAT_KEYS.size(), 17)
+	# 22 since the module set: knockback, slow_amount, slow_duration, shield,
+	# orbit_count. Pinned because STAT_KEYS is a CLOSED set whose every member
+	# must be a field on ResolvedExploit — a key added without its field makes
+	# _fold write into nothing at all.
+	_check("STAT_KEYS is 22", Module.STAT_KEYS.size(), 22)
 	var zero_defaults := 0
 	for k in Module.STAT_KEYS:
 		if float(r.get(k)) == 0.0:
 			zero_defaults += 1
-	_check("every OTHER stat key defaults to zero", zero_defaults, 16)
+	_check("every OTHER stat key defaults to zero", zero_defaults, 21)
 
 ## Rank scales the two directions differently, because each is the rule the other
 ## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;
@@ -342,3 +347,35 @@ func cadence_mult_folds_by_product() -> void:
 	var ex := Exploit.new()
 	ex.place(T[&"broadcast"]); ex.place(a); ex.place(b)
 	_check("two factors multiply, never add", Compiler.build(ex).cadence_mult, 0.25)
+
+## The five keys added with the module set, and the rule each folds by.
+func new_keys_fold_by_their_rule() -> void:
+	var a := Module.make(&"k_a", "a", Module.Slot.PAYLOAD,
+		{&"knockback": 40.0, &"shield": 10.0, &"orbit_count": 0.5})
+	var b := Module.make(&"k_b", "b", Module.Slot.TRIGGER,
+		{&"knockback": 30.0, &"shield": 25.0, &"orbit_count": 0.5})
+	var ex := Exploit.new()
+	ex.place(T[&"broadcast"]); ex.place(a); ex.place(b)
+	var r := Compiler.build(ex)
+	_check("knockback sums", r.knockback, 70.0)
+	# Defensive: MAX, not sum. The same module is legal in many slots, and
+	# summing a defensive magnitude buys it at no uptime cost.
+	_check("shield takes the max", r.shield, 25.0)
+	# Floored ONCE at the end, like pierce: 0.5 + 0.5 must be 1, not 0 + 0.
+	_check("orbit_count sums then floors once", r.orbit_count, 1)
+
+	var s1 := Module.make(&"s_1", "s1", Module.Slot.PAYLOAD,
+		{&"slow_amount": 0.5, &"slow_duration": 1.0}, [&"slow"])
+	var s2 := Module.make(&"s_2", "s2", Module.Slot.TRIGGER,
+		{&"slow_amount": 0.3, &"slow_duration": 3.0}, [&"slow"])
+	var ex2 := Exploit.new()
+	ex2.place(T[&"broadcast"]); ex2.place(s1); ex2.place(s2)
+	var r2 := Compiler.build(ex2)
+	_check("slow_amount takes the max", r2.slow_amount, 0.5)
+	_check("slow_duration takes the max", r2.slow_duration, 3.0)
+
+	# The tag rule, mirroring the corruption one.
+	var untagged := Module.make(&"s_bad", "bad", Module.Slot.PAYLOAD,
+		{&"slow_amount": 0.5})
+	_check("slow without its tag is rejected",
+		Compiler.validate(untagged).size() > 0, true)

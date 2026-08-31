@@ -35,6 +35,9 @@ const VECTOR_RADIUS_RANK := 0.25
 const MAX_FOLD_KEYS := [
 	&"ward_armor", &"ward_defense", &"ward_clock_speed", &"ward_duration",
 	&"lifesteal",
+	# The slow and the shield join on the same argument: they are magnitudes
+	# bought once, and summing them across slots buys uptime for free.
+	&"slow_amount", &"slow_duration", &"shield",
 ]
 
 const MULT_KEYS := {
@@ -114,6 +117,7 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	r.pierce = floori(r.pierce)
 	r.chain_count = floori(r.chain_count)
 	r.botnet_cap = floori(r.botnet_cap)
+	r.orbit_count = floori(r.orbit_count)
 	return r
 
 ## Rank scales the two directions of a cadence factor differently, and each half
@@ -184,6 +188,11 @@ static func validate(m: Module) -> Array[String]:
 			errs.append("module '%s': unknown stat key '%s'" % [m.id, key])
 	if m.stats.has(&"corruption") and not m.has_tag(&"corruption"):
 		errs.append("module '%s': contributes corruption without the corruption tag" % m.id)
+	# The same rule for slow, and for the same reason: the runtime gates on the
+	# tag while the amount comes from the stat, so the two drifting apart is a
+	# module that silently does nothing.
+	if m.stats.has(&"slow_amount") and not m.has_tag(&"slow"):
+		errs.append("module '%s': contributes slow_amount without the slow tag" % m.id)
 	if m.max_rank < 1:
 		errs.append("module '%s': max_rank must be >= 1" % m.id)
 
