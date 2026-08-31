@@ -2,3 +2,6 @@
 export_presets.cfg
 *.import
 .tmp/
+
+# Built manual — regenerate with tools/build_manual.py
+site/
