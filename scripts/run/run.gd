@@ -97,7 +97,16 @@ var player_iframe := 0.0
 var alive := true
 var won := false
 var subnet := 1
-var _advance_pending := false
+
+## What the run is DOING, as one fact.
+##
+## This was spread across `paused`, `won` and `_advance_pending`, which between
+## them could describe states that cannot exist and could not describe the one
+## that now does — cleared, still alive, waiting on the player to walk. The
+## director steps in FIGHTING and in no other phase, which is exactly the
+## property the old triple kept getting wrong.
+enum Phase { FIGHTING, CLEARED, TRANSIT }
+var phase := Phase.FIGHTING
 ## director.spawned is per-SUBNET, because director.reset() zeroes it on every
 ## advance. The campaign total has to survive that.
 var _spawned_before := 0
@@ -282,7 +291,10 @@ func _physics_process(dt: float) -> void:
 	if paused or not alive or won:
 		return
 
-	_step1_spawn(dt)
+	# The director steps in FIGHTING and nowhere else: a cleared subnet stops
+	# producing, and the corridor never produces at all.
+	if phase == Phase.FIGHTING:
+		_step1_spawn(dt)
 	_step2_integrate(dt)
 	_step2b_zones(dt)
 	_step3_rebuild()
@@ -291,8 +303,6 @@ func _physics_process(dt: float) -> void:
 	_step6_detect(dt)
 	_steps78_drain()
 	_step9_recycle()
-	if _advance_pending:
-		_advance_subnet()
 
 	_update_renderers()
 	_camera.global_position = to_iso(player_pos)
@@ -828,11 +838,11 @@ func _on_death(i: int) -> void:
 		# The `not won` guard keeps a second dispatch from re-banking the run.
 		salvage += 500
 		if subnet < SpawnDirector.CAMPAIGN_SUBNETS:
-			# The advance itself CANNOT happen here: this runs inside the drain,
-			# and clearing the pools mid-drain would pull entities out from under
-			# a pass that is still adjudicating them. Flag it, act after step 9 —
-			# the same once-per-tick discipline the rest of the loop keeps.
-			_advance_pending = true
+			# CLEARED, not advanced. The advance is the player's move now: walk
+			# to the gate. Safe to set inside the drain because it is a flag and
+			# a bool — nothing is spawned, freed, or moved.
+			phase = Phase.CLEARED
+			terrain.gate_open = true
 			_bank_progress(true)
 		else:
 			won = true
@@ -958,7 +968,6 @@ func spawned_total() -> int:
 	return _spawned_before + director.spawned
 
 func _advance_subnet() -> void:
-	_advance_pending = false
 	_spawned_before += director.spawned
 	subnet += 1
 	director.reset()
