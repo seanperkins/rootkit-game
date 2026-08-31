@@ -12,9 +12,17 @@ Godot 4.7, GDScript, no image assets.
 godot                      # from the project root
 ```
 
-**WASD or arrows.** All weapons auto-fire. Survive five minutes, kill ICE, win.
-Clearing the subnet banks salvage; dying loses it but still counts kills and
-flips toward unlocks.
+**WASD or arrows.** All weapons auto-fire. A run is a **campaign of three
+subnets**: survive five minutes, kill the ICE that follows, and you advance to
+the next one with your build, level, and XP intact, plus 30% of your integrity
+back. Clearing the last subnet wins.
+
+Enemy integrity scales on both axes — up through each subnet, and again with
+the subnet number — because a rank buys damage linearly and constant HP meant
+everything one-shot forever once your damage passed 34. Each clear banks its
+salvage, so dying on subnet 03 keeps what 01 and 02 paid out; only salvage
+earned since the last clear is lost. Kills and flips always count toward
+unlocks.
 
 ## The build
 
@@ -24,11 +32,13 @@ An **exploit** is one weapon with three slot types:
 |---|---|---|---|
 | `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam |
 | `TRIGGER` | 1 | when it fires, and how it scales the vector's cadence | interval, on_kill, on_hit, on_damage_taken |
-| `PAYLOAD` | 0–2 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
+| `PAYLOAD` | 0–1 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
 
-You hold three exploits. Level-ups offer three module cards, each naming where
-it will land — a rank-up, an empty slot, a new exploit, or a replacement. Any
-card can be declined for salvage.
+You hold three exploits. A module's slot type picks its **column**, so the only
+question left is which **row** — and each of the three level-up cards carries one
+button per exploit row, marked with what pressing it does: `^` rank up, `+` fill
+an empty slot, `x` replace the occupant, `*` found a new row. One click places
+the module. Any card can be declined for salvage.
 
 Damage tagged `corruption` fills a second bar. An enemy that fills it **flips**
 into a botnet node that fights for you, and drops the same shards a kill does,
@@ -62,7 +72,8 @@ godot --headless -s res://tests/test_build.gd        # compiler + auto-slot rule
 godot --headless -s res://tests/test_drain.gd        # adjudication, both orders
 godot --headless -s res://tests/test_corruption.gd   # flip -> botnet
 godot --headless -s res://tests/test_meta.gd         # shop, unlocks, save durability
-godot --headless -s res://tests/test_run.gd          # a full winning subnet
+godot --headless -s res://tests/test_run.gd          # a full autopiloted campaign
+godot --headless -s res://tests/test_campaign.gd     # subnet advance, banking, the win
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
