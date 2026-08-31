@@ -17,7 +17,7 @@ var finished := {}
 const CASES := [
 	"cell_lookup", "density_scales_with_subnet", "generation_is_deterministic",
 	"every_open_cell_is_reachable", "the_playfield_never_collapses",
-	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls", "enemies_avoid_and_never_embed", "spawn_points_find_open_ground",
+	"the_start_is_clear", "zones_are_placed_in_the_open", "sliding_along_walls", "enemies_avoid_and_never_embed", "spawn_points_find_open_ground", "the_gate_is_always_reachable",
 ]
 
 const ORIGIN := Vector2(-1600, -1000)
@@ -35,6 +35,7 @@ func _initialize() -> void:
 	sliding_along_walls()
 	enemies_avoid_and_never_embed()
 	spawn_points_find_open_ground()
+	the_gate_is_always_reachable()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -270,3 +271,52 @@ func spawn_points_find_open_ground() -> void:
 	_check("a sealed field returns the input rather than hanging",
 		full.nearest_open(Vector2(10, 10)), Vector2(10, 10))
 	finished["spawn_points_find_open_ground"] = true
+
+func the_gate_is_always_reachable() -> void:
+	var unreachable := 0
+	var off_edge := 0
+	for s in range(150):
+		for sn in [1, 2, 3]:
+			var t := _fresh()
+			t.generate(s, sn, Vector2.ZERO)
+			if not t.has_gate:
+				continue
+			if t.is_solid(t.gate_pos) or not _reaches(t, Vector2.ZERO, t.gate_pos):
+				unreachable += 1
+				continue
+			# On an edge, not floating in the middle of the arena.
+			var c := t.cell_xy(t.gate_pos)
+			if c.x > 1 and c.y > 1 and c.x < t.w - 2 and c.y < t.h - 2:
+				off_edge += 1
+	_check("the gate is reachable on every seed and subnet", unreachable, 0)
+	_check("and it always sits on an arena edge", off_edge, 0)
+
+	# Generation can be asked for no gate at all — the last subnet has none.
+	var g := _fresh()
+	g.generate(5, 1, Vector2.ZERO, false)
+	_check("a gateless arena reports no gate", g.has_gate, false)
+
+	var h := _fresh()
+	h.generate(5, 1, Vector2.ZERO)
+	_check("a fresh gate is closed", h.gate_open, false)
+	finished["the_gate_is_always_reachable"] = true
+
+## Reuses the test's own flood fill rather than the generator's.
+func _reaches(t: Terrain, from: Vector2, to: Vector2) -> bool:
+	var goal := t.cell_index(to)
+	var seen := {}
+	var stack := [t.cell_index(from)]
+	while not stack.is_empty():
+		var i: int = stack.pop_back()
+		if i < 0 or seen.has(i) or t.solid[i] != 0:
+			continue
+		seen[i] = true
+		if i == goal:
+			return true
+		var x := i % t.w
+		var y := i / t.w
+		if x > 0: stack.append(i - 1)
+		if x < t.w - 1: stack.append(i + 1)
+		if y > 0: stack.append(i - t.w)
+		if y < t.h - 1: stack.append(i + t.w)
+	return false

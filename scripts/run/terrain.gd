@@ -31,6 +31,11 @@ var solid: PackedByteArray
 var zone: PackedByteArray
 var rects: Array = []          # [Rect2, Kind] pairs, for generation and drawing
 
+## The way out. Present from generation and shut; opened by clearing ICE.
+var has_gate := false
+var gate_pos := Vector2.ZERO
+var gate_open := false
+
 func _init(p_origin: Vector2, p_size: Vector2) -> void:
 	origin = p_origin
 	size = p_size
@@ -99,7 +104,8 @@ const ZONE_KINDS := [Kind.HAZARD, Kind.SLOW, Kind.CORRUPTION]
 static func density_for(subnet: int) -> float:
 	return DENSITY_BASE + DENSITY_PER_SUBNET * float(maxi(subnet, 1) - 1)
 
-func generate(seed_value: int, subnet: int, player_start: Vector2) -> void:
+func generate(seed_value: int, subnet: int, player_start: Vector2,
+		with_gate: bool = true) -> void:
 	var rng := RandomNumberGenerator.new()
 	# The subnet is mixed in, not added, so subnet 2 of one run is not subnet 1
 	# of the run seeded one higher.
@@ -132,6 +138,10 @@ func generate(seed_value: int, subnet: int, player_start: Vector2) -> void:
 
 	_fill_unreachable(player_start)
 	_place_zones(rng, player_start)
+	has_gate = with_gate
+	gate_open = false
+	if with_gate:
+		_place_gate(rng, player_start)
 
 ## Flood-fill the open cells from the player's start; anything the fill does not
 ## reach becomes rock.
@@ -258,6 +268,9 @@ func avoid(at: Vector2, heading: Vector2) -> Vector2:
 ## How far out nearest_open will look, in cells.
 const OPEN_SEARCH_RINGS := 8
 
+## How close you must be to step through.
+const GATE_RADIUS := 48.0
+
 ## The nearest open point to `p`, or `p` itself if none is found within the bound.
 ##
 ## Bounded on purpose. "Loop until you find open ground" is a hang the moment a
@@ -276,3 +289,51 @@ func nearest_open(p: Vector2) -> Vector2:
 			if not is_solid(q):
 				return q
 	return p
+
+## The gate goes down AFTER the connectivity fill, and is joined to the
+## reachable region by carving a straight line toward the player's start.
+##
+## Carving, which _fill_unreachable deliberately refuses to do for pockets — and
+## that objection does not carry here. A straight line toward a point already
+## known to be reachable always terminates and cannot leave a second region
+## behind; the general pocket case had neither property. Running after the fill
+## rather than before is what makes that true: the reachable set already exists
+## to aim at.
+func _place_gate(rng: RandomNumberGenerator, player_start: Vector2) -> void:
+	var edge := rng.randi_range(0, 3)
+	var cx := 0
+	var cy := 0
+	match edge:
+		0: cx = rng.randi_range(2, w - 3); cy = 1
+		1: cx = rng.randi_range(2, w - 3); cy = h - 2
+		2: cx = 1; cy = rng.randi_range(2, h - 3)
+		_: cx = w - 2; cy = rng.randi_range(2, h - 3)
+	gate_pos = origin + Vector2(float(cx) + 0.5, float(cy) + 0.5) * CELL
+
+	# Clear the gate's own cell and its neighbours, so it is a mouth rather than
+	# a pinhole you have to hit exactly.
+	for y in range(cy - 1, cy + 2):
+		for x in range(cx - 1, cx + 2):
+			if x >= 0 and y >= 0 and x < w and y < h:
+				solid[y * w + x] = 0
+
+	_carve_to(gate_pos, player_start)
+
+func _carve_to(from: Vector2, to: Vector2) -> void:
+	var start := cell_index(to)
+	if start < 0:
+		return
+	var seen := _reach(start)
+	var i := cell_index(from)
+	if i >= 0 and seen[i] != 0:
+		return          # already connected; nothing to carve
+	var steps := int(from.distance_to(to) / (CELL * 0.5)) + 1
+	for k in range(steps + 1):
+		var p := from.lerp(to, float(k) / float(steps))
+		var c := cell_xy(p)
+		if not in_bounds(c):
+			continue
+		var j := c.y * w + c.x
+		solid[j] = 0
+		if seen[j] != 0:
+			return      # met the reachable region; stop carving
