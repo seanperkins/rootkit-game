@@ -52,14 +52,43 @@ func _build() -> void:
 	_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_hud)
 
-	var top := _mono(15)
-	top.name = "Top"
-	top.position = Vector2(18, 12)
-	_hud.add_child(top)
+	# Three blocks, not one line. Eleven unrelated values sharing a single
+	# format string meant nothing could be found by position — it read as a
+	# debug printout because it was one. Still monospace, still ASCII bars: the
+	# terminal look is right for this game, the lack of grouping was not.
+	var status := _mono(15)
+	status.name = "Status"
+	status.position = Vector2(18, 12)
+	_hud.add_child(status)
 
+	var centre := _mono(15)
+	centre.name = "Centre"
+	# Anchored wide and centred by alignment, with OFFSETS rather than an
+	# explicit size: a control with non-equal opposite anchors has its size
+	# overwritten after _ready, so assigning size.x here only produced a warning
+	# and no layout.
+	centre.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	centre.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	centre.offset_top = 12
+	centre.offset_bottom = 90
+	_hud.add_child(centre)
+
+	var tally := _mono(14)
+	tally.name = "Tally"
+	tally.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	tally.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	tally.offset_top = 12
+	tally.offset_bottom = 90
+	tally.offset_right = -20
+	tally.add_theme_color_override("font_color", DIM)
+	_hud.add_child(tally)
+
+	# Bottom-left: the build is reference material, not a live readout, so it
+	# gets the corner the eye is not on during a fight.
 	var build := _mono(13)
 	build.name = "Build"
-	build.position = Vector2(18, 42)
+	build.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	build.position = Vector2(18, -74)
 	build.add_theme_color_override("font_color", DIM)
 	_hud.add_child(build)
 
@@ -211,13 +240,15 @@ func _build() -> void:
 	escrim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	escrim.color = Color(0, 0, 0, 0.86)
 	_end.add_child(escrim)
-	var etext := _mono(24)
+	# 15, not 24: the summary is fourteen rows plus the build, and at 24 it ran
+	# off the bottom of a 720px viewport.
+	var etext := _mono(15)
 	etext.name = "Text"
-	etext.position = Vector2(60, 160)
+	etext.position = Vector2(60, 90)
 	_end.add_child(etext)
 	var again := Button.new()
 	again.text = "disconnect  ->  shell   [R]"
-	again.position = Vector2(60, 260)
+	again.position = Vector2(60, 470)
 	again.custom_minimum_size = Vector2(280, 36)
 	_end.add_child(again)
 	again.pressed.connect(_restart)
@@ -230,29 +261,43 @@ func _refresh() -> void:
 	# The maximum was hardcoded in the FORMAT STRING, so no compiler caught it:
 	# a memory-r10 player read "integrity 180/100".
 	var maxhp := int(run._eff_integrity())
-	var top: Label = _hud.get_node("Top")
-	top.text = "integrity %3d/%d  armor %.0f  def %.0f   subnet %d/%d  %s   lvl %d  [%s]   salvage %d   botnet %d   kills %d  flips %d" % [
-		hp, maxhp, run._eff_armor(), run._eff_defense(),
-		run.subnet, SpawnDirector.CAMPAIGN_SUBNETS,
-		"%d:%02d" % [int(t) / 60, int(t) % 60], run.level,
-		_bar(float(run.xp) / maxf(run.xp_needed, 1), 14), run.salvage,
-		run.botnet.count, run.kills, run.flips]
-	# Name a live mini-boss. A set-piece the player does not notice arriving is
-	# not a set-piece.
-	var mb := ""
-	for i in run.enemies.count:
-		if run._is_miniboss(run.enemies.type_index[i]):
-			mb = String(run.enemy_types[run.enemies.type_index[i]].id)
-			break
-	if mb != "":
-		top.text += "   ::  %s ACTIVE" % mb.to_upper()
-	if run.phase == run.Phase.CLEARED:
-		top.text += "   >> SUBNET COLLAPSING — %ds to the gate" % int(
-			ceil(run.collapse_left))
+
+	var status: Label = _hud.get_node("Status")
+	status.text = "integrity  %3d/%-3d  [%s]\narmor %-4.0f  def %-4.0f\nlvl %-3d    [%s]" % [
+		hp, maxhp, _bar(float(hp) / maxf(float(maxhp), 1.0), 16),
+		run._eff_armor(), run._eff_defense(), run.level,
+		_bar(float(run.xp) / maxf(run.xp_needed, 1), 16)]
 	# Proportional, not absolute. A fixed 30 fires at 16.7% on a 180 bar.
-	top.add_theme_color_override("font_color",
+	status.add_theme_color_override("font_color",
 		WARN if float(hp) < float(maxhp) * 0.3 else FG)
 
+	var centre: Label = _hud.get_node("Centre")
+	var banner := ""
+	# Name a live mini-boss — a set-piece the player does not notice arriving is
+	# not a set-piece. Gated on arrival: under §6 the entity exists for the
+	# whole 0.9s charge, and naming it then spoils the entrance the telegraph is
+	# building.
+	for i in run.enemies.count:
+		if run._is_miniboss(run.enemies.type_index[i]) and not run.is_arriving(i):
+			banner = "\n:: %s ACTIVE" % String(
+				run.enemy_types[run.enemies.type_index[i]].id).to_upper()
+			break
+	if run.phase == run.Phase.CLEARED:
+		banner = "\n>> SUBNET COLLAPSING — %ds to the gate" % int(
+			ceil(run.collapse_left))
+	centre.text = "subnet %d/%d      %d:%02d%s" % [run.subnet,
+		SpawnDirector.CAMPAIGN_SUBNETS, int(t) / 60, int(t) % 60, banner]
+	centre.add_theme_color_override("font_color",
+		WARN if banner != "" else FG)
+
+	_hud.get_node("Tally").text = \
+		"salvage %d\nbotnet %d\nkills %d   flips %d" % [
+			run.salvage, run.botnet.count, run.kills, run.flips]
+
+	_hud.get_node("Build").text = "\n".join(_build_lines())
+
+## One line per exploit. Shared with the run summary, so the two cannot drift.
+func _build_lines() -> Array:
 	var lines := []
 	for i in run.resolved.size():
 		var r: ResolvedExploit = run.resolved[i]
@@ -264,7 +309,7 @@ func _refresh() -> void:
 		lines.append("exploit_%02d  %s%s" % [i + 1, " + ".join(mods),
 			"   [INERT]" if r.inert else "   dmg %.0f  cd %.2f  corr %.0f" % [
 				r.damage, r.cooldown, r.corruption]])
-	_hud.get_node("Build").text = "\n".join(lines)
+	return lines
 
 func _bar(f: float, w: int) -> String:
 	var n := int(clampf(f, 0.0, 1.0) * w)
@@ -595,16 +640,40 @@ func _stats_line(m: Module) -> String:
 			parts.append("%s %+.2f" % [k, m.stats[k]])
 	return "\n".join(parts)
 
+## A run summary rather than a verdict line. This is where a run becomes
+## something the player can compare against the next one; _on_end already
+## printed subnet, kills and flips, so this is an improvement on a real starting
+## point rather than a rescue.
 func _on_end(won: bool, salvage: int) -> void:
 	_overlay.visible = false
 	var t: Label = _end.get_node("Text")
-	if won:
-		t.text = "  CORE BREACHED\n\n  ICE terminated. %d salvage banked." % salvage
-		t.add_theme_color_override("font_color", FG)
+	var elapsed: float = SpawnDirector.SUBNET_SECONDS - run.time_left()
+	var head := "  CORE BREACHED" if won else "  PROCESS TERMINATED"
+	var rows := [
+		"",
+		"  outcome        %s" % ("ICE terminated" if won else
+			"died on subnet %d" % run.subnet),
+		"  subnet         %d of %d" % [run.subnet,
+			SpawnDirector.CAMPAIGN_SUBNETS],
+		"  time in subnet %d:%02d" % [int(elapsed) / 60, int(elapsed) % 60],
+		"  level          %d" % run.level,
+		"  kills          %d" % run.kills,
+		"  flips          %d" % run.flips,
+		"  salvage        %s" % ("%d banked" % salvage if won else
+			"lost since the last clear"),
+		"",
+		"  final build",
+	]
+	# Tolerates a run that ended holding fewer than three: indexing three
+	# unconditionally is how a summary crashes the screen it summarises.
+	var bl := _build_lines()
+	if bl.is_empty():
+		rows.append("    (none)")
 	else:
-		t.text = "  PROCESS TERMINATED\n\n  died on subnet %d of %d.\n  salvage since the last clear is lost.\n  kills %d   flips %d" % [
-			run.subnet, SpawnDirector.CAMPAIGN_SUBNETS, run.kills, run.flips]
-		t.add_theme_color_override("font_color", WARN)
+		for line in bl:
+			rows.append("    " + line)
+	t.text = head + "\n" + "\n".join(rows)
+	t.add_theme_color_override("font_color", FG if won else WARN)
 	_end.visible = true
 
 func _restart() -> void:

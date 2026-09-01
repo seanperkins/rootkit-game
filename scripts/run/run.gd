@@ -709,6 +709,12 @@ func _worm_length() -> int:
 
 ## Mini-bosses arrive on the spawn ring like anything else, but announced: an
 ## arrival the player does not notice is not a set-piece.
+## Whether an enemy is still materialising. Defined before arrivals exist so the
+## HUD can gate its mini-boss banner on it without a forward reference; Task 9
+## gives it a real array to read.
+func is_arriving(_i: int) -> bool:
+	return false
+
 func _is_miniboss(type_index: int) -> bool:
 	return enemy_types[type_index].id in SpawnDirector.MINIBOSS_IDS
 
