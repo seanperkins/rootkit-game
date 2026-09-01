@@ -284,6 +284,18 @@ var loadout: Loadout
 var director: SpawnDirector
 
 var player_pos := Vector2.ZERO
+## The player's position at the END of the previous tick. Same contract as
+## Population.prev_pos — see there for why the render layer needs two states.
+var player_prev_pos := Vector2.ZERO
+## Where to DRAW the player this frame: player_prev_pos lerped toward
+## player_pos by the frame fraction. Recomputed once per _process and read by
+## the camera and _draw, so the ship, the camera and the telegraphs aimed at it
+## can never disagree about where it is.
+var player_render_pos := Vector2.ZERO
+## Fraction through the current physics tick, clamped to [0,1]. 1.0 until the
+## first _process, so anything that draws before one has run uses the newest
+## simulated state rather than an empty past.
+var _alpha := 1.0
 ## The merged base + meta player sheet. Seeded in _ready, because a declaration
 ## initialiser is evaluated before _ready reads the save — a player with memory
 ## ranks would otherwise start every run at the base 100.
@@ -639,6 +651,15 @@ func _rebuild_execute_table() -> void:
 # ---------------------------------------------------------------- the tick ---
 
 func _physics_process(dt: float) -> void:
+	# Open the render layer's PAST before anything can move.
+	#
+	# Above the guard for the same reason _present is: a paused or ended run
+	# still draws. If prev_pos kept the last MOVING tick's value, every entity
+	# would swing between two positions for the length of the pause as the frame
+	# fraction cycled 0..1. Snapshotting unconditionally makes prev == pos the
+	# instant the simulation stops, so a paused screen is simply still.
+	_snapshot_render_state()
+
 	# PRESENTATION, above the guard, every frame, unconditionally.
 	#
 	# Everything below the guard stops the moment the run ends or an overlay
@@ -687,7 +708,10 @@ func _physics_process(dt: float) -> void:
 	_step9c_reapproach()
 	_step9b_splits()
 
-	_update_renderers()
+	# Sorted ONCE per tick, not once per drawn frame. _order is rebuilt wholesale
+	# here and enemies.count cannot change between ticks, so the render pass in
+	# _process reads a consistent order however many frames it draws from it.
+	_depth_sort()
 
 ## The presentation half of the tick, run above the guard on a clock
 ## Engine.time_scale cannot shrink.
@@ -727,9 +751,47 @@ func _present(dt: float) -> void:
 	# The shake preference multiplies the composed offset, outside Feel and
 	# after the square — folded into trauma it would scale quadratically and a
 	# legal shake of 2.0 would give 4x.
-	_camera.global_position = to_iso(player_pos) \
+	# The camera and queue_redraw live in _process now, at display rate. What
+	# stays here is the SHAKE MAGNITUDE, aged on the unscaled clock — the offset
+	# it produces is composed into the camera per drawn frame.
+
+## Everything the simulation does not own, at display rate rather than 60 Hz.
+##
+## The simulation ticks 60 times a second; a 144 Hz display draws 2.4 frames
+## between two of those ticks. Reading `pos` directly would show the same
+## position for all 2.4 of them and motion would step no matter how high the
+## framerate went — which is what it did before this existed.
+##
+## Every entity is drawn BETWEEN its last two simulated positions. That is one
+## tick (~16 ms) of latency, deliberately, and it buys motion that cannot judder:
+## both endpoints have already happened, so there is never a guess to correct.
+func _process(_dt: float) -> void:
+	# Clamped, and this is the whole discipline. The fraction can overshoot 1.0
+	# when a frame runs long, and drawing past the newest simulated position is
+	# extrapolation — a guess that gets visibly retracted on the next tick.
+	_alpha = clampf(Engine.get_physics_interpolation_fraction(), 0.0, 1.0)
+	player_render_pos = player_prev_pos.lerp(player_pos, _alpha)
+	# The shake preference multiplies the composed offset, outside Feel and
+	# after the square — folded into trauma it would scale quadratically and a
+	# legal shake of 2.0 would give 4x.
+	_camera.global_position = to_iso(player_render_pos) \
 		+ feel.shake_offset() * _shake_pref
+	_update_renderers()
 	queue_redraw()
+
+## Copy every population's `pos` into its `prev_pos`. One memcpy each, not a
+## loop over ~2700 entities — see Population.snapshot.
+func _snapshot_render_state() -> void:
+	enemies.snapshot()
+	projectiles.snapshot()
+	shards.snapshot()
+	botnet.snapshot()
+	hostiles.snapshot()
+	player_prev_pos = player_pos
+
+## Where to DRAW entity `i` of population `p` this frame.
+func _rp(p: Population, i: int) -> Vector2:
+	return p.prev_pos[i].lerp(p.pos[i], _alpha)
 
 ## Belt and braces, and UNCONDITIONAL. The release above lives in a tick that
 ## goes away with the scene, so anything still live at teardown has nothing left
@@ -2091,8 +2153,11 @@ func _step9c_reapproach() -> void:
 		if player_pos.distance_to(enemies.pos[i]) < RECYCLE_RADIUS:
 			continue
 		var a5 := _rng.randf() * TAU
-		enemies.pos[i] = _spawn_at(player_pos
-			+ Vector2(cos(a5), sin(a5)) * SPAWN_RING)
+		# teleport, not a bare pos write: this is the ONE discontinuous move in
+		# the tick, and leaving prev_pos behind draws the straggler streaking the
+		# full width of the arena for exactly one frame.
+		enemies.teleport(i, _spawn_at(player_pos
+			+ Vector2(cos(a5), sin(a5)) * SPAWN_RING))
 		enemies.vel[i] = Vector2.ZERO
 		enemies.force[i] = Vector2.ZERO
 		_knock[i] = Vector2.ZERO
@@ -2597,10 +2662,14 @@ func _build_renderers() -> void:
 func _update_renderers() -> void:
 	var mm := _mm_enemy.multimesh
 	mm.visible_instance_count = enemies.count
-	# Depth order: farther up the screen draws first. Buckets rather than a
-	# comparison sort — 600 entities every frame, and the band resolution is far
-	# finer than the overlap it resolves.
-	_depth_sort()
+	# _depth_sort runs in the tick, not here: the order is a property of the
+	# simulation step, and re-bucketing 600 entities per drawn frame would pay
+	# for it 2.4x over on a 144 Hz display.
+	#
+	# The lerps below are inlined rather than routed through _rp — this is the
+	# hot loop at the enemy cap, and a GDScript call per entity is not free.
+	var ep := enemies.prev_pos
+	var ec := enemies.pos
 	for n in enemies.count:
 		var i: int = _order[n]
 		var t = enemy_types[enemies.type_index[i]]
@@ -2622,7 +2691,8 @@ func _update_renderers() -> void:
 				var k: float = 1.0 - _arriving[i] / ARRIVAL_POP
 				s *= 1.0 + 0.35 * sin(k * PI) - (1.0 - k) * 0.15
 				s *= k * (2.0 - k)
-		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0, to_iso(enemies.pos[i])))
+		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0,
+			to_iso(ep[i].lerp(ec[i], _alpha))))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		var shade := 1.15
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
@@ -2638,15 +2708,18 @@ func _update_renderers() -> void:
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	for i in projectiles.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(projectiles.pos[i])))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
+			to_iso(_rp(projectiles, i))))
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(shards.pos[i])))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
+			to_iso(_rp(shards, i))))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
 	for i in botnet.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0, to_iso(botnet.pos[i])))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
+			to_iso(_rp(botnet, i))))
 
 ## Counting sort into screen-depth bands. O(n) with no comparisons, which is
 ## what makes per-entity depth ordering affordable at the enemy cap.
@@ -2867,13 +2940,13 @@ func _draw() -> void:
 	# what they are rather than like a shot that stopped.
 	for i in projectiles.count:
 		if _orbit_left[i] > 0.0:
-			var op := to_iso(projectiles.pos[i])
+			var op := to_iso(_rp(projectiles, i))
 			draw_circle(op, 6.0, Color(0.5, 1.6, 1.2, 0.30))
 			draw_circle(op, 3.0, Color(0.7, 2.0, 1.5))
 		elif _mine_left[i] > 0.0:
 			# Pulsing, because a mine you forgot you placed is a mine that kills
 			# you when the collapse pushes you back over it.
-			var mp := to_iso(projectiles.pos[i])
+			var mp := to_iso(_rp(projectiles, i))
 			var beat := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.006)
 			draw_circle(mp, 5.0 + 3.0 * beat, Color(2.0, 1.1, 0.4, 0.25 + 0.3 * beat))
 			draw_circle(mp, 2.5, Color(2.2, 1.3, 0.5))
@@ -2881,7 +2954,7 @@ func _draw() -> void:
 	# Enemy fire. Distinct from the player's: red, and with a soft halo so a
 	# shot crossing a busy field is still findable.
 	for i in hostiles.count:
-		var hpos := to_iso(hostiles.pos[i])
+		var hpos := to_iso(_rp(hostiles, i))
 		draw_circle(hpos, 7.0, Color(1.8, 0.45, 0.45, 0.22))
 		draw_circle(hpos, 3.5, Color(1.9, 0.55, 0.5))
 
@@ -2899,7 +2972,7 @@ func _draw() -> void:
 		var ring := PackedVector2Array()
 		for k in 17:
 			var ta := TAU * k / 16.0
-			ring.append(to_iso(enemies.pos[i]
+			ring.append(to_iso(_rp(enemies, i)
 				+ Vector2(cos(ta), sin(ta)) * (14.0 + 26.0 * tell)))
 		draw_polyline(ring, Color(1.9, 0.9, 0.4, 0.85 * (1.0 - tell)), 2.0)
 
@@ -2918,7 +2991,7 @@ func _draw() -> void:
 			continue
 		var frac2: float = clampf(
 			enemies.integrity[i] / maxf(_spawn_hp[i], 0.001), 0.0, 1.0)
-		var centre := to_iso(enemies.pos[i])
+		var centre := to_iso(_rp(enemies, i))
 		var rad2: float = (58.0 if ti2 == EnemyTable.ICE else 34.0)
 		var width: float = 1.0 + 3.2 * frac2
 		var col2: Color = enemy_types[ti2].color.lerp(
@@ -2948,7 +3021,7 @@ func _draw() -> void:
 			if _ai_aim[i] != Vector2.ZERO:
 				# Dashed rather than solid, so it reads as a beam being
 				# maintained rather than as a wall.
-				var a0 := to_iso(enemies.pos[i])
+				var a0 := to_iso(_rp(enemies, i))
 				var b0 := to_iso(_ai_aim[i])
 				var seg := 7
 				for k2 in seg:
@@ -2964,8 +3037,8 @@ func _draw() -> void:
 			var frac2: float = _ai_timer[i] / RANGED_COOLDOWN
 			if frac2 > 0.0 and frac2 < 0.28:
 				var k3: float = 1.0 - frac2 / 0.28
-				var from2 := to_iso(enemies.pos[i])
-				var to2 := to_iso(player_pos)
+				var from2 := to_iso(_rp(enemies, i))
+				var to2 := to_iso(player_render_pos)
 				draw_line(from2, from2.lerp(to2, 0.35 + 0.5 * k3),
 					Color(1.9, 0.5, 0.45, 0.30 + 0.45 * k3), 1.0 + k3)
 
@@ -2989,7 +3062,7 @@ func _draw() -> void:
 	for i in enemies.count:
 		if _arriving[i] <= 0.0:
 			continue
-		var ai := to_iso(enemies.pos[i])
+		var ai := to_iso(_rp(enemies, i))
 		var is_ice := enemies.type_index[i] == EnemyTable.ICE
 		var tint := Color(1.7, 0.5, 2.2) if is_ice else Color(2.0, 0.9, 0.35)
 		if _arriving[i] > ARRIVAL_POP:
@@ -3051,7 +3124,7 @@ func _draw() -> void:
 	# A disc at PLAYER_RADIUS, so what you see is exactly what collides. The
 	# arrow this replaced pointed somewhere — and the movement has no facing, so
 	# the direction it pointed was never the direction anything happened in.
-	var o := to_iso(player_pos)
+	var o := to_iso(player_render_pos)
 	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
 	draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22))
 	draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, c, 2.0)

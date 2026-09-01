@@ -107,6 +107,7 @@ func _initialize() -> void:
 	for w in WARMUP:
 		_fill()
 		run._physics_process(DT)
+		run._update_renderers()
 
 	var samples := PackedFloat64Array()
 	samples.resize(TICKS)
@@ -114,6 +115,10 @@ func _initialize() -> void:
 		_fill()                            # top up so every sample is at cap
 		var t0 := Time.get_ticks_usec()
 		run._physics_process(DT)
+		# Measured WITH the render pass. It used to run inside _physics_process;
+		# it now runs in _process, and a gate that stopped timing it would report
+		# a free improvement for work that merely moved.
+		run._update_renderers()
 		samples[i] = float(Time.get_ticks_usec() - t0) / 1000.0
 
 	print("  STRESS (all pools at simultaneous cap — a load real play never reaches):")
@@ -160,6 +165,7 @@ func _real_run() -> PackedFloat64Array:
 		g.input_override = _kite(g)
 		var t0 := Time.get_ticks_usec()
 		g._physics_process(DT)
+		g._update_renderers()      # see the stress loop — moved, not removed
 		out.append(float(Time.get_ticks_usec() - t0) / 1000.0)
 		t += 1
 	print("    %s at %.0fs, peak enemies %d" % [
