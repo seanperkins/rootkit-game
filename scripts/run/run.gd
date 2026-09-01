@@ -343,6 +343,10 @@ var feel := Feel.new()
 var _shake_pref := 1.0
 ## Whether floating damage numbers are drawn. Also a preference.
 var _numbers_pref := true
+## Ground chunks currently falling out of the world: [cell_top_left, elapsed].
+## Presentation only — the cell is already void to the simulation the instant it
+## is added, so nothing here can change what is walkable.
+var _falling: Array = []
 ## Screen-edge damage flash, 1.0 at the moment of the hit. Read by ui.gd. This
 ## is the shake-INDEPENDENT damage tell, which is what makes shake = 0 a
 ## supported setting rather than a way to lose information.
@@ -372,6 +376,16 @@ const FX_LIFE := 0.13
 ## Hit flash fades in about a sixth of a second — long enough to read at 60fps,
 ## short enough that a swarm under fire is not a white blob.
 const HIT_FLASH_DECAY := 6.0
+
+## How a chunk of floor leaves. Gravity in screen pixels: the drop accelerates,
+## because a tile that slides down at a constant rate reads as a fade rather
+## than as a fall.
+const FALL_GRAVITY := 900.0
+const FALL_LIFE := 1.6
+const FALL_HEIGHT := 20.0
+## Chunks alive at once. The collapse voids a whole frontier at a time and an
+## uncapped list would draw the entire arena's worth of boxes on the last tick.
+const MAX_FALLING := 220
 
 ## Indexed by the weight class in _hit_weight.
 const HIT_SOUNDS := ["hit_light", "hit_medium", "hit_heavy"]
@@ -693,6 +707,13 @@ func _present(dt: float) -> void:
 	feel.step(udt)
 	_age_fx(udt)
 	_vignette = maxf(0.0, _vignette - udt * 2.5)
+	var fi := 0
+	while fi < _falling.size():
+		_falling[fi][1] += udt
+		if _falling[fi][1] >= FALL_LIFE:
+			_falling.remove_at(fi)
+		else:
+			fi += 1
 
 	# The shake preference multiplies the composed offset, outside Feel and
 	# after the square — folded into trauma it would scale quadratically and a
@@ -2152,6 +2173,13 @@ func _step2d_collapse(dt: float) -> void:
 	collapse_left = maxf(0.0, collapse_left - dt)
 	var frac := collapse_left / COLLAPSE_SECONDS
 	terrain.collapse_to(int(float(terrain.max_dist) * frac))
+	for c in terrain.just_voided:
+		if _falling.size() >= MAX_FALLING:
+			break
+		var cx := c % terrain.w
+		var cy := c / terrain.w
+		_falling.append([terrain.origin + Vector2(float(cx), float(cy)) * CELL,
+			0.0])
 
 	var pc := terrain.cell_index(player_pos)
 	if pc != _route_cell:
@@ -2307,6 +2335,7 @@ func _advance_subnet() -> void:
 	_route = PackedInt32Array()
 	_route_cell = -1
 	terrain.clear_temp_zones()
+	_falling.clear()
 	# Shards do NOT follow you. Arriving on a fresh subnet standing in the last
 	# one's loose XP is both free levels and visually wrong.
 	for i in range(shards.count - 1, -1, -1):
@@ -2616,6 +2645,36 @@ func _depth_sort() -> void:
 		_order[_band_count[key2]] = i
 		_band_count[key2] += 1
 
+## One falling chunk of floor, as an extruded box.
+##
+## Same face convention as props.gd and backdrop.gd — near face at y = max, the
+## darker turned-away face at x = max — because a chunk lit from a different sun
+## than the ground it just left is the one thing that would break the illusion
+## it exists to sell.
+##
+## `drop` is a SCREEN-space offset. The projection has no vertical axis, so
+## falling is not a world-space move: it is the whole shape sliding down the
+## screen, which is exactly how height is expressed everywhere else here.
+func _draw_chunk(at: Vector2, drop: float, fade: float) -> void:
+	var d := Vector2(0.0, drop)
+	var up := Vector2(0.0, -FALL_HEIGHT)
+	var g00 := to_iso(at) + d
+	var g10 := to_iso(at + Vector2(CELL, 0.0)) + d
+	var g11 := to_iso(at + Vector2(CELL, CELL)) + d
+	var g01 := to_iso(at + Vector2(0.0, CELL)) + d
+	# Reddened, because the arena is: these are pieces of the floor the player
+	# has been watching go hot for the whole countdown.
+	var top := Color(0.20, 0.09, 0.10, 0.85 * fade)
+	var near := Color(0.13, 0.05, 0.06, 0.85 * fade)
+	var side := Color(0.08, 0.03, 0.04, 0.85 * fade)
+	var edge := Color(1.1, 0.30, 0.28, 0.75 * fade)
+	draw_colored_polygon(PackedVector2Array([g01, g11, g11 + up, g01 + up]), near)
+	draw_colored_polygon(PackedVector2Array([g10, g11, g11 + up, g10 + up]), side)
+	draw_colored_polygon(PackedVector2Array([
+		g00 + up, g10 + up, g11 + up, g01 + up]), top)
+	draw_polyline(PackedVector2Array([
+		g00 + up, g10 + up, g11 + up, g01 + up, g00 + up]), edge, 1.2)
+
 ## The world rectangle the camera can actually see, plus a margin.
 ##
 ## Everything below draws from map-sized data — terrain rects, voided row-runs,
@@ -2705,6 +2764,19 @@ func _draw() -> void:
 			var a := terrain.origin + Vector2(float(run.x), float(run.z)) * CELL
 			var b := terrain.origin + Vector2(float(run.y + 1), float(run.z + 1)) * CELL
 			draw_colored_polygon(_ground_quad(a, b), Color(0.015, 0.008, 0.02))
+
+		# The floor coming apart, as SOLID CHUNKS rather than squares blinking
+		# out. Each voided cell falls away under gravity, tumbling out of the
+		# world — which is what makes the arena read as a place with a
+		# structure under it instead of a painted grid losing pixels.
+		#
+		# Drawn here, below the entity layer, because a chunk falling past the
+		# player should go behind them.
+		for fr in _falling:
+			var ft: float = fr[1]
+			var drop: float = 0.5 * FALL_GRAVITY * ft * ft
+			var fade: float = clampf(1.0 - ft / FALL_LIFE, 0.0, 1.0)
+			_draw_chunk(fr[0], drop, fade)
 
 		# The way out, lit as TILES. A line from you to the gate is a claim the
 		# geometry does not support — it points through walls. The gradient can

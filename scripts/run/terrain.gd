@@ -746,7 +746,13 @@ func _build_collapse_order() -> void:
 ## every tick, which was tolerable at 28,000 cells and is not at a whole
 ## campaign's worth; this is O(cells newly voided), so the collapse costs one
 ## pass in total rather than one pass per tick.
+## Cells voided by the MOST RECENT collapse_to call. run.gd turns these into
+## falling chunks; diffing the whole `voided` array every tick would cost a pass
+## over the map to learn something this function already knows.
+var just_voided: PackedInt32Array = PackedInt32Array()
+
 func collapse_to(threshold: int) -> void:
+	just_voided.clear()
 	if _collapse_order.is_empty():
 		return
 	# Thresholds only fall during a collapse, but a caller may reset one; rewind
@@ -759,6 +765,7 @@ func collapse_to(threshold: int) -> void:
 		if dist_from_gate[c] <= threshold:
 			break
 		voided[c] = 1
+		just_voided.append(c)
 		_collapse_idx += 1
 
 func is_void(p: Vector2) -> bool:

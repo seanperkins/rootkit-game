@@ -50,10 +50,46 @@ const BLOCK_HEIGHT := 40.0
 ## Segments in the hold ring. Enough that a partial arc reads as a fraction.
 const BLOCK_ARC := 48
 
+## A wall standing on ground that has gone falls with it. Screen-space gravity,
+## matching the floor chunks in run.gd — a wall left hanging in the air over a
+## hole is the single clearest way to tell the player none of this is solid.
+const PROP_GRAVITY := 900.0
+const PROP_FALL_LIFE := 2.2
+
 var target: Node2D
 
-func _process(_d: float) -> void:
+## rect index -> seconds since its floor went. Keyed by index into
+## terrain.rects, which is stable for the life of an arena.
+var _falling: Dictionary = {}
+
+func _process(d: float) -> void:
+	# Unscaled, like every other presentation clock here: a hitstop should not
+	# hold a collapsing wall in mid-air.
+	var udt: float = minf(d / maxf(Engine.time_scale, 0.0001), 0.1)
+	# A new subnet clears `voided`, and rect indices belong to the arena that
+	# was collapsing — carrying fall timers across would drop walls the player
+	# has not reached yet.
+	if target != null and target.terrain != null \
+			and target.terrain.voided.is_empty() and not _falling.is_empty():
+		_falling.clear()
+	for k in _falling:
+		_falling[k] += udt
 	queue_redraw()
+
+## Every cell under a wall gone, not merely its centre: a wall spanning the
+## collapse frontier should stand until the last of its footing goes, which is
+## also what stops the whole row dropping in one frame.
+func _floor_gone(terrain: Terrain, r: Rect2) -> bool:
+	var step := Terrain.CELL
+	var y := r.position.y + step * 0.5
+	while y < r.end.y:
+		var x := r.position.x + step * 0.5
+		while x < r.end.x:
+			if not terrain.is_void(Vector2(x, y)):
+				return false
+			x += step
+		y += step
+	return true
 
 ## One extruded box, drawn with the same face convention as the arena slab in
 ## backdrop.gd: the y = max edge is the lit near face and the x = max edge is
@@ -64,12 +100,13 @@ func _process(_d: float) -> void:
 ## the inside of the box. Their EDGES are drawn, though, which is the whole
 ## point of the faces being translucent: you can see the back of the shape.
 func draw_box(r: Rect2, height: float, top: Color, near: Color, side: Color,
-		edge: Color) -> void:
+		edge: Color, drop: float = 0.0) -> void:
 	var up := Vector2(0.0, -height)
-	var g00: Vector2 = target.to_iso(r.position)
-	var g10: Vector2 = target.to_iso(Vector2(r.end.x, r.position.y))
-	var g11: Vector2 = target.to_iso(r.end)
-	var g01: Vector2 = target.to_iso(Vector2(r.position.x, r.end.y))
+	var d := Vector2(0.0, drop)
+	var g00: Vector2 = target.to_iso(r.position) + d
+	var g10: Vector2 = target.to_iso(Vector2(r.end.x, r.position.y)) + d
+	var g11: Vector2 = target.to_iso(r.end) + d
+	var g01: Vector2 = target.to_iso(Vector2(r.position.x, r.end.y)) + d
 	var back := Color(edge.r, edge.g, edge.b, edge.a * BACK_EDGE_SCALE)
 
 	# The far side first, so the near wireframe is drawn over it rather than
@@ -99,12 +136,31 @@ func _draw() -> void:
 	var view: Rect2 = target._visible_world_rect()
 	var terrain: Terrain = target.terrain
 
-	for entry in terrain.rects:
+	for ri in terrain.rects.size():
+		var entry = terrain.rects[ri]
 		if entry[1] != Terrain.Kind.WALL:
 			continue        # zones are conditions of the floor, not objects
 		var tr: Rect2 = entry[0]
-		if view.intersects(tr):
-			draw_box(tr, WALL_HEIGHT, WALL_TOP, WALL_NEAR, WALL_SIDE, WALL_EDGE)
+		if not view.intersects(tr):
+			continue
+		var drop := 0.0
+		if not terrain.voided.is_empty():
+			if not _falling.has(ri) and _floor_gone(terrain, tr):
+				_falling[ri] = 0.0
+			if _falling.has(ri):
+				var ft: float = _falling[ri]
+				if ft >= PROP_FALL_LIFE:
+					continue        # gone entirely
+				drop = 0.5 * PROP_GRAVITY * ft * ft
+		var fade: float = 1.0
+		if _falling.has(ri):
+			fade = clampf(1.0 - float(_falling[ri]) / PROP_FALL_LIFE, 0.0, 1.0)
+		draw_box(tr, WALL_HEIGHT,
+			Color(WALL_TOP.r, WALL_TOP.g, WALL_TOP.b, WALL_TOP.a * fade),
+			Color(WALL_NEAR.r, WALL_NEAR.g, WALL_NEAR.b, WALL_NEAR.a * fade),
+			Color(WALL_SIDE.r, WALL_SIDE.g, WALL_SIDE.b, WALL_SIDE.a * fade),
+			Color(WALL_EDGE.r, WALL_EDGE.g, WALL_EDGE.b, WALL_EDGE.a * fade),
+			drop)
 
 	for gi in terrain.gates.size():
 		var g: Terrain.Gate = terrain.gates[gi]
