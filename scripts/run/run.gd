@@ -875,7 +875,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			for k in mini(n, _buf.size()):
 				_hit(ei, r, Grid.index_of(_buf[k]))
 		Module.VectorKind.BEAM:
-			var target := _nearest_enemy(r.radius)
+			var target := _pick_target(r.radius, r.targeting)
 			if target < 0:
 				return
 			var dir := (enemies.pos[target] - player_pos).normalized()
@@ -892,7 +892,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 		Module.VectorKind.CONE:
 			# A broadcast query filtered by ANGLE. Cheap, and it reads completely
 			# differently because it demands facing.
-			var ct := _nearest_enemy(r.radius)
+			var ct := _pick_target(r.radius, r.targeting)
 			if ct < 0:
 				return
 			var cdir := (enemies.pos[ct] - player_pos).normalized()
@@ -945,7 +945,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_orbit_phase[oi] = TAU * float(k) / float(count)
 				_orbit_left[oi] = r.cooldown
 		Module.VectorKind.CHAIN:
-			var t2 := _nearest_enemy(r.radius)
+			var t2 := _pick_target(r.radius, r.targeting)
 			if t2 < 0:
 				return
 			_hit(ei, r, t2)
@@ -976,7 +976,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# The viewport covers ~1113x626 world units at this zoom, so the
 			# corner is ~640 away. Targeting at 1400 let packets fire at enemies
 			# well off-screen — and made every shot walk the entire grid.
-			var t3 := _nearest_enemy(VIEW_RANGE)
+			var t3 := _pick_target(VIEW_RANGE, r.targeting)
 			var dir2 := Vector2.RIGHT if t3 < 0 else (enemies.pos[t3] - player_pos).normalized()
 			var pi := projectiles.spawn(player_pos, dir2 * maxf(r.projectile_speed, 120.0),
 				1.0, PROJECTILE_RADIUS, 0)
@@ -1046,15 +1046,29 @@ func _facing_scale(i: int, from: Vector2) -> float:
 		return FILTER_FRONT_SCALE
 	return 1.0
 
-func _nearest_enemy(within: float) -> int:
-	var n := grid.query_radius_into(player_pos, within, _buf, Grid.M_ENEMY)
+## One linear pass over the enemies in range, with the comparator chosen by the
+## exploit. Same scan, same cost — enemies.integrity is already in hand, so
+## STRONGEST adds no work the distance sort did not do.
+##
+## `from` is where the scan SCORES from. It defaults to the player, which is what
+## the four fire-path sites want; a homing projectile already in flight passes
+## its own position, or a shot behind the swarm would re-acquire across the arena.
+func _pick_target(within: float, mode: int = Module.Targeting.NEAREST,
+		from: Vector2 = Vector2.INF) -> int:
+	if from == Vector2.INF:
+		from = player_pos
+	var n := grid.query_radius_into(from, within, _buf, Grid.M_ENEMY)
 	var best := -1
-	var bd := INF
+	var score := INF
 	for k in mini(n, _buf.size()):
 		var j := Grid.index_of(_buf[k])
-		var d := enemies.pos[j].distance_squared_to(player_pos)
-		if d < bd:
-			bd = d
+		var s: float
+		match mode:
+			Module.Targeting.STRONGEST: s = -enemies.integrity[j]
+			Module.Targeting.FARTHEST:  s = -enemies.pos[j].distance_squared_to(from)
+			_:                          s = enemies.pos[j].distance_squared_to(from)
+		if s < score:
+			score = s
 			best = j
 	return best
 

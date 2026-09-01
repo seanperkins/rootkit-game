@@ -7,6 +7,13 @@ enum VectorKind  { BROADCAST, PACKET, CHAIN, BEAM, CONE, PULSE, MINE, ORBIT }
 enum TriggerKind { INTERVAL, ON_KILL, ON_HIT, ON_DAMAGE_TAKEN,
 	ON_LOW_INTEGRITY, ON_FLIP, ON_LEVEL_UP }
 
+## How a vector chooses among the enemies in range. Only BEAM, CONE, CHAIN and
+## PACKET consult it — BROADCAST, PULSE, MINE and ORBIT resolve from the
+## player's position and have nothing to choose. Three modes, not four: a
+## fourth that no module sets is a branch in two scans bought for nothing, and
+## this enum is append-safe if one is ever wanted.
+enum Targeting  { NEAREST, STRONGEST, FARTHEST }
+
 ## The numeric scalar fields of ResolvedExploit, and the ONLY legal stat keys.
 ## Asserting against "fields of ResolvedExploit" would admit stats["tags"] = 1.0
 ## — a float written into a Dictionary.
@@ -33,6 +40,7 @@ const STAT_KEYS := [
 ## are excluded from ordinary card draws. A fused module is a VECTOR that also
 ## carries a trigger_kind, so its row needs no TRIGGER module.
 @export var is_fused: bool = false
+@export var targeting: Targeting = Targeting.NEAREST
 
 static func make(p_id: StringName, p_name: String, p_slot: Slot, p_stats: Dictionary,
 		p_tags: Array = [], p_vk: int = 0, p_tk: int = 0, p_max_rank: int = 5) -> Module:

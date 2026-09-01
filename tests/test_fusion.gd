@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 9
+const EXPECTED_CHECKS := 12
 
 var failures := 0
 var checks := 0
@@ -11,6 +11,7 @@ var T := ModuleTable.by_id()
 func _init() -> void:
 	print("ROOTKIT — fusion\n")
 	a_fused_row_fires_with_no_trigger()
+	targeting_comes_from_the_head_only()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -74,3 +75,23 @@ func a_fused_row_fires_with_no_trigger() -> void:
 		if t.exploit == 0: pay += 1
 	_check("no trigger card targets the fused row", trig, 0)
 	_check("but its payload slot is still open", pay, 1)
+
+
+## targeting is read ONLY from the vector slot, exactly as the kinds are. A
+## payload's default enum value folding in would silently pull every fused
+## sniper back to NEAREST.
+func targeting_comes_from_the_head_only() -> void:
+	var m := _fused_probe()
+	m.targeting = Module.Targeting.STRONGEST
+	var ex := Exploit.new()
+	ex.vector = EquippedModule.new(m)
+	ex.place(T[&"keylog"])              # a payload at default NEAREST
+	var r := Compiler.build(ex)
+	_check("the head's targeting survives the payload fold", r.targeting,
+		Module.Targeting.STRONGEST)
+
+	var plain := Exploit.new()
+	plain.place(T[&"packet"]); plain.place(T[&"interval"])
+	_check("an ordinary exploit defaults to NEAREST",
+		Compiler.build(plain).targeting, Module.Targeting.NEAREST)
+	_check("and NEAREST is enum zero", Module.Targeting.NEAREST, 0)

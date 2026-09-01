@@ -10,7 +10,7 @@ extends SceneTree
 ## previous version measured a hand-written model of the tick, and review showed
 ## the model had drifted from the game: a 2560x1440 arena against the real
 ## 3200x2000 (3600 grid cells against 6300), MAX_BOTNET 8 against 64, and it
-## omitted _nearest_enemy(1400) — the PACKET targeting query, which spans the
+## omitted _pick_target(1400) — the PACKET targeting query, which spans the
 ## whole grid and runs up to 12 times a tick from the starting loadout — plus
 ## the drain and the renderer writes. It reported PASS while the real tick's p95
 ## exceeded its own scaled budget. A gate that measures a model of the code
@@ -58,7 +58,7 @@ func _initialize() -> void:
 	run.director.elapsed = 999.0          # hold the field at cap manually
 	run.director.boss_spawned = true
 
-	# Worst-case loadout: packet (full-grid _nearest_enemy), broadcast (aura over
+	# Worst-case loadout: packet (full-grid _pick_target), broadcast (aura over
 	# the enemy cap), chain (hop queries), all at max rank.
 	var t := ModuleTable.by_id()
 	run.loadout.exploits[0].vector.rank = 5
