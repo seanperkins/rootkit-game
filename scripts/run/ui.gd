@@ -63,6 +63,24 @@ func _build() -> void:
 	build.add_theme_color_override("font_color", DIM)
 	_hud.add_child(build)
 
+	# The damage vignette. Screen space, because it is a fact about the player
+	# rather than about a place, and it fades rather than strobes.
+	_vignette = ColorRect.new()
+	_vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_vignette.color = Color(0.9, 0.1, 0.12, 0.0)
+	var vg := Gradient.new()
+	vg.set_color(0, Color(1, 1, 1, 0))
+	vg.set_color(1, Color(1, 1, 1, 1))
+	var vt := GradientTexture2D.new()
+	vt.gradient = vg
+	vt.fill = GradientTexture2D.FILL_RADIAL
+	vt.fill_from = Vector2(0.5, 0.5)
+	vt.fill_to = Vector2(1.0, 0.5)
+	_vignette.material = null
+	_vignette.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_hud.add_child(_vignette)
+
 	_overlay = Control.new()
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_overlay.visible = false
@@ -206,6 +224,7 @@ var _cards_data: Array = []
 var _fusion_buttons: Array = []
 var _recipes: PanelContainer
 var _recipes_body: Label
+var _vignette: ColorRect
 
 func _on_cards(cards: Array) -> void:
 	_cards_data = cards
@@ -656,6 +675,8 @@ func _input(e: InputEvent) -> void:
 		vp.set_input_as_handled()
 
 func _process(_d: float) -> void:
+	if run != null and _vignette != null:
+		_vignette.color.a = clampf(run._vignette, 0.0, 1.0) * 0.30
 	if run != null and not run.paused:
 		if _overlay.visible:
 			_overlay.visible = false

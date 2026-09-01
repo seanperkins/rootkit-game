@@ -98,6 +98,10 @@ func _initialize() -> void:
 	if not finished_presentation:
 		print("  FAIL  case 'presentation_survives_death' never finished")
 		failures += 1
+	await hit_flash_follows_its_slot()
+	if not finished_flash:
+		print("  FAIL  case 'hit_flash_follows_its_slot' never finished")
+		failures += 1
 
 	print("")
 	if failures == 0: print("  PASS — all checks")
@@ -217,6 +221,40 @@ func presentation_survives_death() -> void:
 	finished_presentation = true
 
 var finished_presentation := false
+var finished_flash := false
+
+## The flash is set from the drain's per-pass hit list, zeroed on a recycled
+## spawn slot, and — the half a plan draft missed — MOVED when a despawn swaps
+## the tail down over a middle slot.
+func hit_flash_follows_its_slot() -> void:
+	var r: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(r)
+	await process_frame
+	r.input_override = Vector2.ZERO
+	while r.enemies.count > 0:
+		r.enemies.despawn(r.enemies.count - 1)
+
+	var a: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, 50.0, 20.0, 0)
+	r._spawn_enemy_state(a, 50.0)
+	var b: int = r.enemies.spawn(Vector2(300, 0), Vector2.ZERO, 50.0, 20.0, 0)
+	r._spawn_enemy_state(b, 50.0)
+	_check("a fresh slot starts unlit", r._hit_flash[a], 0.0)
+
+	# Light the TAIL, then kill the head so the tail compacts down into it.
+	r._hit_flash[b] = 1.0
+	r._hit_flash[a] = 0.0
+	r._relocate_enemy(a, b)
+	r.enemies.despawn(a)
+	_check("the flash followed the compacted enemy", r._hit_flash[a], 1.0)
+
+	# And a recycled slot does not inherit it.
+	var c: int = r.enemies.spawn(Vector2(400, 0), Vector2.ZERO, 50.0, 20.0, 0)
+	r._spawn_enemy_state(c, 50.0)
+	_check("a recycled slot is unlit again", r._hit_flash[c], 0.0)
+
+	r.free()
+	await process_frame
+	finished_flash = true
 
 func _auto_pick(cards: Array) -> void:
 	picks += 1

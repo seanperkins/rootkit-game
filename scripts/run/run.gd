@@ -208,6 +208,10 @@ const TARGETED_ODDS := 0.70
 
 var _pending_fusions: Array = []
 ## Out of the entity grid, and therefore untouchable and harmless.
+## How lit each enemy is from a hit landed this tick, decayed in _age_fx and
+## read by the renderer. Per-enemy, so it needs BOTH halves of the slot
+## invariant: zeroed on spawn AND relocated on despawn.
+var _hit_flash: PackedFloat32Array
 var _submerged: PackedByteArray
 ## How many times this enemy's line has already divided.
 ## Knockback impulses, decayed each tick and added to velocity. Separate from
@@ -305,6 +309,10 @@ var feel := Feel.new()
 var _shake_pref := 1.0
 ## Whether floating damage numbers are drawn. Also a preference.
 var _numbers_pref := true
+## Screen-edge damage flash, 1.0 at the moment of the hit. Read by ui.gd. This
+## is the shake-INDEPENDENT damage tell, which is what makes shake = 0 a
+## supported setting rather than a way to lose information.
+var _vignette := 0.0
 ## Longest unscaled delta the presentation half will honour. Unclamped, a first
 ## frame, a scene load or an OS suspend would expire every live effect in one
 ## step.
@@ -327,6 +335,9 @@ var _fire_cd: PackedFloat32Array
 ## what killed them. Bounded by the fire budget: 3 exploits x 4 fires x FX_LIFE
 ## worth of ticks.
 const FX_LIFE := 0.13
+## Hit flash fades in about a sixth of a second — long enough to read at 60fps,
+## short enough that a swarm under fire is not a white blob.
+const HIT_FLASH_DECAY := 6.0
 var _fx_line: Array = []      # [a, b, t, colour]
 var _fx_ring: Array = []      # [centre, radius, t, colour]
 var _order: PackedInt32Array
@@ -448,6 +459,7 @@ func _ready() -> void:
 	_execute_immune_type.resize(enemy_types.size())
 	for mi_t in enemy_types.size():
 		_execute_immune_type[mi_t] = 1 if _is_miniboss(mi_t) else 0
+	_hit_flash = PackedFloat32Array(); _hit_flash.resize(MAX_ENEMIES)
 	_submerged = PackedByteArray(); _submerged.resize(MAX_ENEMIES)
 	_knock = PackedVector2Array(); _knock.resize(MAX_ENEMIES)
 	_split_gen = PackedInt32Array(); _split_gen.resize(MAX_ENEMIES)
@@ -603,6 +615,7 @@ func _present(dt: float) -> void:
 
 	feel.step(udt)
 	_age_fx(udt)
+	_vignette = maxf(0.0, _vignette - udt * 2.5)
 
 	# The shake preference multiplies the composed offset, outside Feel and
 	# after the square — folded into trauma it would scale quadratically and a
@@ -914,6 +927,9 @@ func _step2_integrate(dt: float) -> void:
 			shards.pos[i] += d.normalized() * 300.0 * dt
 
 func _age_fx(dt: float) -> void:
+	for f in enemies.count:
+		if _hit_flash[f] > 0.0:
+			_hit_flash[f] = maxf(0.0, _hit_flash[f] - dt * HIT_FLASH_DECAY)
 	var i := 0
 	while i < _fx_line.size():
 		_fx_line[i][2] -= dt
@@ -1209,6 +1225,7 @@ func _detonate(i: int, radius: float) -> void:
 	var ei := _proj_owner[i]
 	if ei >= 0 and ei < resolved.size() and radius > 0.0:
 		var r: ResolvedExploit = resolved[ei]
+		feel.add_trauma(0.15)
 		_fx_ring.append([projectiles.pos[i], radius, FX_LIFE * 1.5,
 			Color(2.2, 1.2, 0.5)])
 		var n := grid.query_radius_into(projectiles.pos[i], radius, _buf,
@@ -1348,6 +1365,13 @@ func _damage_player(amount: float) -> void:
 			emit_signal("stats_changed")
 			return
 	player_health -= _mitigated(amount)
+	# Proportional, and the RATIO is clamped: a pulse or a hazard tick can
+	# exceed full integrity, and an unclamped ratio would put trauma past 1.0
+	# where MAX_OFFSET stops being a maximum.
+	feel.add_trauma(0.25 + 0.5 * clampf(amount / maxf(_eff_integrity(), 1.0),
+		0.0, 1.0))
+	feel.emit("hurt")
+	_vignette = 1.0
 	player_iframe = IFRAMES
 	if _low_armed and player_health < _eff_integrity() * LOW_INTEGRITY_FRACTION:
 		_low_armed = false
@@ -1391,12 +1415,42 @@ func _clear_ai(i: int) -> void:
 ## Everything a freshly spawned enemy slot needs, in one place, so that adding a
 ## per-enemy array later cannot leave one spawn site behind — which is exactly
 ## how a stale-slot bug gets in.
+## Move every run.gd-side per-enemy array from the tail slot into slot `i`.
+##
+## `Population.despawn` swap-removes the tail into `i` for ITS OWN arrays only,
+## so everything parallel to them has to follow by hand. This used to be an
+## inline block at the one despawn site that knew about it; it is a function
+## because there are TWO such sites — `_step9_recycle` and `_step2d_collapse`,
+## whose `is_void` predicate is conditional and therefore not tail-only — and a
+## second copy would have drifted the moment either changed.
+##
+## `_submerged` and the three `_ai_*` arrays were absent from the original block
+## entirely. An ambusher hid the bug by rewriting `_submerged` every tick from
+## `_ambush`; the AI arrays did not, so a compacted enemy inherited a stranger's
+## dash phase. `_order` is deliberately NOT here — `_depth_sort` refills it
+## wholesale every tick.
+func _relocate_enemy(i: int, last: int) -> void:
+	_worm_id[i] = _worm_id[last]
+	_worm_seg[i] = _worm_seg[last]
+	_spawn_hp[i] = _spawn_hp[last]
+	_slow_left[i] = _slow_left[last]
+	_slow_factor[i] = _slow_factor[last]
+	_knock[i] = _knock[last]
+	_split_gen[i] = _split_gen[last]
+	_rewarded[i] = _rewarded[last]
+	_hit_flash[i] = _hit_flash[last]
+	_submerged[i] = _submerged[last]
+	_ai_phase[i] = _ai_phase[last]
+	_ai_timer[i] = _ai_timer[last]
+	_ai_aim[i] = _ai_aim[last]
+
 func _spawn_enemy_state(i: int, hp: float,
 		behaviour: int = EnemyTable.Behaviour.CHASE) -> void:
 	_worm_id[i] = 0
 	_clear_slow(i)
 	_clear_ai(i)
 	_spawn_hp[i] = hp
+	_hit_flash[i] = 0.0
 	if behaviour == EnemyTable.Behaviour.AMBUSHER:
 		# A fresh ambusher owes a full submerged run before its first surface;
 		# a zero timer would have it breaching on the tick it spawned.
@@ -1650,6 +1704,24 @@ func _steps78_drain() -> void:
 		var resolved_n := queue.drain_pass(enemies, thresholds, _spawn_hp,
 			_execute_by_exploit, _execute_immune_type)
 
+		# Flash every target hit in THIS pass: 0 ..< hit_count, not
+		# hits_before ..< hit_count. `drain_pass` zeroes hit_count on entry
+		# (hit_queue.gd), so `hits_before` holds the PREVIOUS pass's count — a
+		# range built from it is empty whenever a pass lands fewer hits than the
+		# one before, and skips an arbitrary prefix otherwise. Silently, since
+		# the indices stay in bounds.
+		for k in queue.hit_count:
+			var ht := queue.hit_target[k]
+			if ht >= 0 and ht < enemies.count:
+				_hit_flash[ht] = 1.0
+				if _numbers_pref:
+					var ex := queue.hit_exploit[k]
+					var dmg: float = resolved[ex].damage if ex >= 0 \
+						and ex < resolved.size() else 0.0
+					if dmg >= 1.0:
+						feel.add_number(enemies.pos[ht], "%d" % int(dmg),
+							Color(1.0, 1.9, 1.4))
+
 		# ON_HIT fires per hit on an OPEN target, regardless of outcome. Gating
 		# it on death makes the cascade the fire budget exists for impossible.
 		# Fires on ANY hit the player landed, not only the owning exploit's.
@@ -1793,15 +1865,7 @@ func _step9_recycle() -> void:
 			# block below states. Six of these were missing: a compacted enemy
 			# inherited a stranger's spawn HP (which execute_below reads as its
 			# maximum), slow, knockback, split generation and reward flag.
-			var last := enemies.count - 1
-			_worm_id[i] = _worm_id[last]
-			_worm_seg[i] = _worm_seg[last]
-			_spawn_hp[i] = _spawn_hp[last]
-			_slow_left[i] = _slow_left[last]
-			_slow_factor[i] = _slow_factor[last]
-			_knock[i] = _knock[last]
-			_split_gen[i] = _split_gen[last]
-			_rewarded[i] = _rewarded[last]
+			_relocate_enemy(i, enemies.count - 1)
 			enemies.despawn(i)
 		else:
 			i += 1
@@ -1889,6 +1953,12 @@ func _step2d_collapse(dt: float) -> void:
 	# Anything still out there goes with it.
 	for i in range(enemies.count - 1, -1, -1):
 		if terrain.is_void(enemies.pos[i]):
+			# Reverse iteration does NOT make this tail-only: the predicate is
+			# conditional, so a middle enemy in the void is despawned and the
+			# tail swaps down over it. This site relocated nothing at all, which
+			# during CLEARED — when a mini-boss can be mid-arrival — stranded
+			# every parallel array.
+			_relocate_enemy(i, enemies.count - 1)
 			enemies.despawn(i)
 
 ## Blocks are only live while you are fighting. Not during the collapse: the walk
@@ -2273,7 +2343,13 @@ func _update_renderers() -> void:
 		var shade := 1.15
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
 			shade = 1.15 * (0.82 - 0.07 * mini(_worm_seg[i], 4))
-		mm.set_instance_color(n, t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade)
+		# Flash composes ON TOP of the corruption tint rather than replacing it:
+		# an enemy that is both nearly flipped and just hit is telling the
+		# player two true things.
+		var col: Color = t.color.lerp(Color(1.5, 0.25, 1.5), frac) * shade
+		if _hit_flash[i] > 0.0:
+			col = col.lerp(Color(2.4, 2.4, 2.4), _hit_flash[i] * 0.75)
+		mm.set_instance_color(n, col)
 		mm.set_instance_custom_data(n, Color(float(t.glyph), 0.0, 0.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
@@ -2513,6 +2589,18 @@ func _draw() -> void:
 			var a2 := TAU * k / 32.0
 			pts.append(to_iso(fx[0] + Vector2(cos(a2), sin(a2)) * fx[1] * (1.0 - f2 * 0.25)))
 		draw_polyline(pts, Color(c2.r, c2.g, c2.b, f2 * 0.85), 1.0 + 2.0 * f2)
+
+	# Damage numbers. ThemeDB.fallback_font ships with the engine and is not a
+	# file in this repo, so the no-font-assets rule holds. Drawn in world space
+	# under to_iso — they belong to an enemy at a place.
+	if _numbers_pref and not feel.numbers.is_empty():
+		var nf := ThemeDB.fallback_font
+		for nrow in feel.numbers:
+			var nf_a: float = clampf(nrow[3] / Feel.NUMBER_LIFE, 0.0, 1.0)
+			var nc: Color = nrow[2]
+			draw_string(nf, to_iso(nrow[0]), nrow[1],
+				HORIZONTAL_ALIGNMENT_CENTER, -1, 13,
+				Color(nc.r, nc.g, nc.b, nf_a))
 
 	# The player, drawn screen-aligned at the projected position: a glyph that
 	# tilts with the ground plane reads as debris, not as the thing you steer.
