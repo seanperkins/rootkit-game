@@ -212,6 +212,19 @@ var _pending_fusions: Array = []
 ## read by the renderer. Per-enemy, so it needs BOTH halves of the slot
 ## invariant: zeroed on spawn AND relocated on despawn.
 var _hit_flash: PackedFloat32Array
+## Seconds of arrival left, per enemy. Non-zero means MATERIALISING: out of the
+## grid, not steering, not behaving, not touched by zones, drawn as an effect
+## rather than a body.
+##
+## Kept separate from _submerged rather than folded into it because _ambush
+## writes that byte on its own schedule, and kernel_panic is both a mini-boss
+## and an AMBUSHER — one flag would have the two states clobbering each other
+## depending on tick order.
+var _arriving: PackedFloat32Array
+## _submerged OR _arriving, rebuilt whole every tick and handed to the grid.
+## Rebuilt rather than OR-ed incrementally: an incremental union never clears,
+## so an entity stays unqueryable forever after one arrival.
+var _no_grid: PackedByteArray
 var _submerged: PackedByteArray
 ## How many times this enemy's line has already divided.
 ## Knockback impulses, decayed each tick and added to velocity. Separate from
@@ -338,6 +351,14 @@ const FX_LIFE := 0.13
 ## Hit flash fades in about a sixth of a second — long enough to read at 60fps,
 ## short enough that a swarm under fire is not a white blob.
 const HIT_FLASH_DECAY := 6.0
+
+## A boss entrance, in two phases. The charge is long enough to read and move
+## out of; the pop is short enough to feel like an impact rather than a fade.
+## Not interruptible and not skippable — an arrival you can shoot through is not
+## an entrance.
+const ARRIVAL_CHARGE := 0.9
+const ARRIVAL_POP := 0.25
+const ARRIVAL_TOTAL := ARRIVAL_CHARGE + ARRIVAL_POP
 var _fx_line: Array = []      # [a, b, t, colour]
 var _fx_ring: Array = []      # [centre, radius, t, colour]
 var _order: PackedInt32Array
@@ -460,6 +481,8 @@ func _ready() -> void:
 	for mi_t in enemy_types.size():
 		_execute_immune_type[mi_t] = 1 if _is_miniboss(mi_t) else 0
 	_hit_flash = PackedFloat32Array(); _hit_flash.resize(MAX_ENEMIES)
+	_arriving = PackedFloat32Array(); _arriving.resize(MAX_ENEMIES)
+	_no_grid = PackedByteArray(); _no_grid.resize(MAX_ENEMIES)
 	_submerged = PackedByteArray(); _submerged.resize(MAX_ENEMIES)
 	_knock = PackedVector2Array(); _knock.resize(MAX_ENEMIES)
 	_split_gen = PackedInt32Array(); _split_gen.resize(MAX_ENEMIES)
@@ -699,6 +722,11 @@ func _step1_spawn(dt: float) -> void:
 			_spawn_at(player_pos + Vector2(cos(a), sin(a)) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
+		# The arena was just emptied for mechanical reasons; the side effect is
+		# a set-piece beat — empty ground, a held second, then the thing walks
+		# in. ICE arrives into that rather than into a swarm.
+		_arriving[bi] = ARRIVAL_TOTAL
+		feel.emit("ice_charge")
 		emit_signal("stats_changed")
 
 ## Longer worms later in the run: two segments at the start, up to six by the
@@ -709,11 +737,9 @@ func _worm_length() -> int:
 
 ## Mini-bosses arrive on the spawn ring like anything else, but announced: an
 ## arrival the player does not notice is not a set-piece.
-## Whether an enemy is still materialising. Defined before arrivals exist so the
-## HUD can gate its mini-boss banner on it without a forward reference; Task 9
-## gives it a real array to read.
-func is_arriving(_i: int) -> bool:
-	return false
+## Whether an enemy is still materialising.
+func is_arriving(i: int) -> bool:
+	return i >= 0 and i < _arriving.size() and _arriving[i] > 0.0
 
 func _is_miniboss(type_index: int) -> bool:
 	return enemy_types[type_index].id in SpawnDirector.MINIBOSS_IDS
@@ -754,8 +780,9 @@ func _spawn_miniboss(type_index: int) -> void:
 	if idx < 0:
 		return
 	_spawn_enemy_state(idx, hp, t.behaviour)
+	_arriving[idx] = ARRIVAL_TOTAL
+	feel.emit("miniboss_charge")
 	director.spawned += 1
-	_fx_ring.append([at, 150.0, FX_LIFE * 6.0, Color(2.0, 0.7, 0.3)])
 	emit_signal("stats_changed")
 
 func _spawn_worm(at: Vector2) -> bool:
@@ -837,6 +864,28 @@ func _step2_integrate(dt: float) -> void:
 	# segments sample it this same tick.
 	for i in enemies.count:
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
+			continue
+		# The arrival timer runs on the SIMULATION clock, not the presentation
+		# one: a boss must not finish materialising behind a card screen.
+		if _arriving[i] > 0.0:
+			var was: float = _arriving[i]
+			_arriving[i] = maxf(0.0, _arriving[i] - dt)
+			# The crossing, not the value: one flash per arrival rather than one
+			# per frame of the pop.
+			if was > ARRIVAL_POP and _arriving[i] <= ARRIVAL_POP:
+				var ice := enemies.type_index[i] == EnemyTable.ICE
+				feel.add_trauma(0.8 if ice else 0.5)
+				feel.emit("ice_arrive" if ice else "miniboss_arrive")
+				_fx_ring.append([enemies.pos[i], 40.0, FX_LIFE * 5.0,
+					Color(2.4, 2.2, 2.0)])
+			# THE pass that matters. _behave dispatches to _charge / _ranged /
+			# _pulse / _support / _ambush / _flank, so without this gate an
+			# arriving boss chases at full speed (ICE is CHASE), _ranged spawns
+			# hostile shots through _fire_hostile, and _pulse calls
+			# _damage_player directly on a line-of-sight check with no grid
+			# involved at all. Skipping _step4_steer instead — as an earlier
+			# draft of the spec proposed — would have stopped none of that.
+			enemies.vel[i] = Vector2.ZERO
 			continue
 		var t = enemy_types[enemies.type_index[i]]
 		enemies.vel[i] = _behave(i, t, dt) + enemies.force[i] + _knock[i]
@@ -969,7 +1018,10 @@ func _step3_rebuild() -> void:
 	_counts[Grid.Pop.PROJECTILE] = projectiles.count
 	_counts[Grid.Pop.BOTNET] = botnet.count
 	_counts[Grid.Pop.SHARD] = shards.count
-	_skips[Grid.Pop.ENEMY] = _submerged
+	# Rebuilt whole, every tick.
+	for i in enemies.count:
+		_no_grid[i] = 1 if (_submerged[i] != 0 or _arriving[i] > 0.0) else 0
+	_skips[Grid.Pop.ENEMY] = _no_grid
 	grid.set_centre(player_pos)
 	grid.rebuild(_pos_arrays, _counts, _skips)
 
@@ -981,6 +1033,11 @@ func _step4_steer() -> void:
 	_steer_phase = (_steer_phase + 1) % STEER_SLICES
 	var i := _steer_phase
 	while i < enemies.count:
+		# Garnish rather than the meal — the integrate gate already stops an
+		# arriving boss moving — but it keeps neighbours from shoving a ghost.
+		if _arriving[i] > 0.0:
+			i += STEER_SLICES
+			continue
 		if _worm_id[i] != 0 and _worm_seg[i] != 0:
 			i += STEER_SLICES
 			continue
@@ -1456,6 +1513,7 @@ func _relocate_enemy(i: int, last: int) -> void:
 	_split_gen[i] = _split_gen[last]
 	_rewarded[i] = _rewarded[last]
 	_hit_flash[i] = _hit_flash[last]
+	_arriving[i] = _arriving[last]
 	_submerged[i] = _submerged[last]
 	_ai_phase[i] = _ai_phase[last]
 	_ai_timer[i] = _ai_timer[last]
@@ -1468,6 +1526,7 @@ func _spawn_enemy_state(i: int, hp: float,
 	_clear_ai(i)
 	_spawn_hp[i] = hp
 	_hit_flash[i] = 0.0
+	_arriving[i] = 0.0
 	if behaviour == EnemyTable.Behaviour.AMBUSHER:
 		# A fresh ambusher owes a full submerged run before its first surface;
 		# a zero timer would have it breaching on the tick it spawned.
@@ -1703,6 +1762,13 @@ func _step2b_zones(dt: float) -> void:
 	for i in enemies.count:
 		if _slow_left[i] > 0.0:
 			_slow_left[i] -= dt
+		# Out of the grid stops the PLAYER touching it; it does not stop the
+		# floor. This pass queues damage and corruption purely by index, and
+		# corruption is the flip channel — so without this an arriving ICE could
+		# flip mid-entrance, invisible, and the flip guard, the boss spawn and
+		# the win condition all key off EnemyTable.ICE.
+		if _arriving[i] > 0.0:
+			continue
 		match terrain.zone_at(enemies.pos[i]):
 			Terrain.Kind.HAZARD:
 				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i],
@@ -2361,6 +2427,19 @@ func _update_renderers() -> void:
 		# hurt you. Drawing it anyway would be the game lying about that.
 		if _submerged[i] != 0:
 			s = 0.0
+		# _arriving is read HERE, separately: the union built in _step3_rebuild
+		# is the grid's, and this site tests _submerged directly. Without its own
+		# read the boss would draw at full size through the entire charge, before
+		# the materialise ramp began.
+		elif _arriving[i] > 0.0:
+			if _arriving[i] > ARRIVAL_POP:
+				s = 0.0
+			else:
+				# 0 -> full with a little overshoot, so it lands rather than
+				# fades in.
+				var k: float = 1.0 - _arriving[i] / ARRIVAL_POP
+				s *= 1.0 + 0.35 * sin(k * PI) - (1.0 - k) * 0.15
+				s *= k * (2.0 - k)
 		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0, to_iso(enemies.pos[i])))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		var shade := 1.15
@@ -2612,6 +2691,56 @@ func _draw() -> void:
 			var a2 := TAU * k / 32.0
 			pts.append(to_iso(fx[0] + Vector2(cos(a2), sin(a2)) * fx[1] * (1.0 - f2 * 0.25)))
 		draw_polyline(pts, Color(c2.r, c2.g, c2.b, f2 * 0.85), 1.0 + 2.0 * f2)
+
+	# Arrivals. Two phases: rings converging on the destination while glyph
+	# columns rain down the isometric vertical, then a shockwave expanding out
+	# of it as the body lands. Orange for a mini-boss, violet for ICE.
+	for i in enemies.count:
+		if _arriving[i] <= 0.0:
+			continue
+		var ai := to_iso(enemies.pos[i])
+		var is_ice := enemies.type_index[i] == EnemyTable.ICE
+		var tint := Color(1.7, 0.5, 2.2) if is_ice else Color(2.0, 0.9, 0.35)
+		if _arriving[i] > ARRIVAL_POP:
+			# CHARGE. k runs 0 -> 1 across the phase.
+			var k: float = 1.0 - (_arriving[i] - ARRIVAL_POP) / ARRIVAL_CHARGE
+			var reach: float = 150.0 if is_ice else 100.0
+			# The ground decal, growing. This is where it will land, and it is
+			# legible for most of a second before anything can hurt you.
+			draw_circle(ai, 6.0 + 26.0 * k,
+				Color(tint.r, tint.g, tint.b, 0.10 + 0.20 * k))
+			# Three rings converging inward, staggered.
+			for ring in 3:
+				var rk: float = clampf(k * 1.35 - ring * 0.16, 0.0, 1.0)
+				if rk <= 0.0:
+					continue
+				var rad: float = reach * (1.0 - rk) + 12.0
+				var pts := PackedVector2Array()
+				for step in 25:
+					var a2 := TAU * step / 24.0
+					pts.append(ai + Vector2(cos(a2), sin(a2) * 0.5) * rad)
+				draw_polyline(pts,
+					Color(tint.r, tint.g, tint.b, 0.65 * rk), 1.0 + 1.5 * rk)
+			# Glyph rain down the screen vertical, seeded off the slot so each
+			# arrival looks different but is stable frame to frame.
+			for col in 5:
+				var ox: float = float((i * 7 + col * 13) % 11 - 5) * 9.0
+				var fall: float = fmod(k * 2.2 + float(col) * 0.31, 1.0)
+				var y0: float = -120.0 + fall * 120.0
+				draw_line(ai + Vector2(ox, y0), ai + Vector2(ox, y0 + 16.0),
+					Color(tint.r, tint.g, tint.b, 0.55 * (1.0 - fall)), 2.0)
+		else:
+			# POP. A shockwave out of the landing point.
+			var pk: float = 1.0 - _arriving[i] / ARRIVAL_POP
+			var sw := PackedVector2Array()
+			var srad: float = 20.0 + 190.0 * pk
+			for step2 in 33:
+				var a3 := TAU * step2 / 32.0
+				sw.append(ai + Vector2(cos(a3), sin(a3) * 0.5) * srad)
+			draw_polyline(sw, Color(2.4, 2.3, 2.2, 0.9 * (1.0 - pk)),
+				1.0 + 3.0 * (1.0 - pk))
+			draw_circle(ai, 34.0 * (1.0 - pk),
+				Color(2.4, 2.3, 2.2, 0.5 * (1.0 - pk)))
 
 	# Damage numbers. ThemeDB.fallback_font ships with the engine and is not a
 	# file in this repo, so the no-font-assets rule holds. Drawn in world space
