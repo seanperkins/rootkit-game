@@ -27,6 +27,7 @@ func bind(r: Node2D) -> void:
 	run = r
 	_build()
 	run.level_up_offered.connect(_on_cards)
+	run.fusion_offered.connect(_on_fusion)
 	run.run_ended.connect(_on_end)
 	run.stats_changed.connect(_refresh)
 	_refresh()
@@ -106,7 +107,7 @@ func _build() -> void:
 	_decline.set_meta("base", _decline.text)
 	_decline.set_meta("tint", DIM)
 	column.add_child(_decline)
-	_decline.pressed.connect(func(): run.decline_card())
+	_decline.pressed.connect(_decline_current)
 	# Connected once, here rather than per offer: the cards are rebuilt on every
 	# level-up but this button is not, and reconnecting would stack handlers.
 	_decline.mouse_entered.connect(_hover_decline)
@@ -179,6 +180,7 @@ func _bar(f: float, w: int) -> String:
 	return "#".repeat(n) + ".".repeat(w - n)
 
 var _cards_data: Array = []
+var _fusion_buttons: Array = []
 
 func _on_cards(cards: Array) -> void:
 	_cards_data = cards
@@ -186,6 +188,7 @@ func _on_cards(cards: Array) -> void:
 	_overlay.visible = true
 
 func _show_cards() -> void:
+	_fusion_buttons = []
 	_overlay.get_node("Title").text = \
 		"  LEVEL UP  ::  arrows or WASD to choose, enter to place, esc to decline"
 	var row: HBoxContainer = card_row()
@@ -211,6 +214,76 @@ func _show_cards() -> void:
 ## The cards are rebuilt on every offer, so the selection is too. Index 0 of an
 ## enabled-only list is always a legal target; a card with no legal row at all
 ## is skipped, and if none of them has one there is only decline left.
+## One decline path for both input devices and both screens. _activate() routes
+## Enter through the button's own `pressed` signal precisely so the keyboard and
+## the mouse cannot diverge; patching only KEY_ESCAPE would have reopened that
+## gap from the other side, leaving every click calling decline_card() on a
+## fusion screen — which never clears _pending_fusions and wrongly decrements
+## pending_levels.
+func _decline_current() -> void:
+	if _fusion_buttons.is_empty():
+		run.decline_card()
+	else:
+		_fusion_buttons = []
+		run.decline_fusion()
+
+## The one screen this feature adds. It reuses the level-up overlay wholesale —
+## same row, same highlight, same keys — because a second navigation model for a
+## screen that appears once or twice a run is a second thing to get wrong.
+func _on_fusion(matches: Array) -> void:
+	_cards_data = []
+	_fusion_buttons = []
+	_overlay.get_node("Title").text = \
+		"  FUSION  ::  arrows to choose, enter to compile, esc to decline"
+	var row: HBoxContainer = card_row()
+	for c in row.get_children():
+		row.remove_child(c)
+		c.queue_free()
+	_cards.clear()
+	_nav.clear()
+	for i in matches.size():
+		var ei: int = matches[i][0]
+		var rec = matches[i][1]
+		# A PanelContainer, like _make_card produces: _apply_highlight hard-casts
+		# every entry of _cards to PanelContainer, and a VBoxContainer there
+		# yields null and takes the first offer down with a script error.
+		var card := PanelContainer.new()
+		var body := VBoxContainer.new()
+		body.add_theme_constant_override("separation", 6)
+		card.add_child(body)
+		var head := _mono(20)
+		head.text = rec.fused.display_name
+		body.add_child(head)
+		var from := _mono(13)
+		from.text = "%s + %s + %s" % [rec.vector_id, rec.trigger_id,
+			rec.payload_id]
+		from.add_theme_color_override("font_color", DIM)
+		body.add_child(from)
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(0, 34)
+		b.focus_mode = Control.FOCUS_NONE
+		b.text = " * compile into exploit_%02d" % (ei + 1)
+		b.set_meta("base", b.text)
+		b.pressed.connect(run.choose_fusion.bind(i))
+		body.add_child(b)
+		row.add_child(card)
+		_cards.append(card)
+		_nav.append([b])
+		_fusion_buttons.append(b)
+	_fusion_buttons.append(decline_button())
+	# Hover moves the highlight, exactly as _show_cards wires it, under a comment
+	# saying it exists so the mouse and the keyboard never disagree about what
+	# Enter would press. A fusion screen without it reintroduces that gap.
+	for ci in _nav.size():
+		var list: Array = _nav[ci]
+		for bi in list.size():
+			(list[bi] as Button).mouse_entered.connect(_hover.bind(ci, bi))
+	_overlay.visible = true
+	_reset_selection()
+
+func fusion_buttons() -> Array:
+	return _fusion_buttons
+
 func _reset_selection() -> void:
 	_col = 0
 	_row = 0
@@ -516,7 +589,7 @@ func _input(e: InputEvent) -> void:
 		KEY_A, KEY_LEFT:                     _move_card(-1)
 		KEY_D, KEY_RIGHT:                    _move_card(1)
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:  _activate()
-		KEY_ESCAPE:                          run.decline_card()
+		KEY_ESCAPE:                          _decline_current()
 		_:                                   return
 	var vp := get_viewport()
 	if vp != null:

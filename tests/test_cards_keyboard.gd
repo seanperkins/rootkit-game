@@ -19,6 +19,8 @@ const CASES := [
 	"down_past_the_last_row_reaches_decline",
 	"escape_declines_outright",
 	"decline_sits_clear_of_the_cards",
+	"the_fusion_screen_takes_the_keyboard",
+	"escape_declines_a_fusion",
 ]
 
 func _initialize() -> void:
@@ -32,6 +34,8 @@ func _initialize() -> void:
 	await down_past_the_last_row_reaches_decline()
 	await escape_declines_outright()
 	await decline_sits_clear_of_the_cards()
+	await the_fusion_screen_takes_the_keyboard()
+	await escape_declines_a_fusion()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -330,3 +334,67 @@ func decline_sits_clear_of_the_cards() -> void:
 		true)
 	r.free()
 	finished["decline_sits_clear_of_the_cards"] = true
+
+
+## The fusion screen reuses the level-up overlay, so it has to reuse its
+## keyboard rules too — arrows move, enter commits, esc declines.
+func the_fusion_screen_takes_the_keyboard() -> void:
+	var r := await _fresh_run()
+	var ui := _ui(r)
+	# TWO rows, both maxed. can_fuse refuses zero_day (ON_KILL) unless an
+	# INTERVAL trigger survives elsewhere, and refuses any row not at max rank —
+	# either way this would assert against an empty screen.
+	r.loadout.exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
+		_row(r, &"packet", &"interval", &"")]
+	r._recompile()
+	r._block_payout()
+	await process_frame
+
+	var buttons: Array = ui.fusion_buttons()
+	_check("one button per matching row, plus decline", buttons.size(), 2)
+	_check("the first is highlighted", ui.highlighted(), buttons[0])
+
+	buttons[0].emit_signal("pressed")
+	await process_frame
+	_check("pressing it fuses", r.loadout.exploits[0].head_is_fused(), true)
+	_check("and unpauses", r.paused, false)
+	r.free()
+	finished["the_fusion_screen_takes_the_keyboard"] = true
+
+## The other half of the screen's contract. A decline that leaves
+## _pending_fusions populated means a later choose_fusion still fuses a row the
+## player refused — and the decline BUTTON is wired once in _build, so routing
+## only the escape key would leave every mouse click calling decline_card().
+func escape_declines_a_fusion() -> void:
+	var r := await _fresh_run()
+	var ui := _ui(r)
+	r.loadout.exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
+		_row(r, &"packet", &"interval", &"")]
+	r._recompile()
+	var before: int = r.salvage
+	r._block_payout()
+	await process_frame
+
+	_key(ui, KEY_ESCAPE)
+	_check("escape unpauses", r.paused, false)
+	_check("and pays the decline salvage", r.salvage, before + 25)
+	_check("and fuses nothing", r.loadout.exploits[0].head_is_fused(), false)
+	# A stale index from the screen just dismissed must consume nothing.
+	r.choose_fusion(0)
+	_check("a stale choose_fusion after a decline does nothing",
+		r.loadout.exploits[0].head_is_fused(), false)
+	r.free()
+	finished["escape_declines_a_fusion"] = true
+
+func _row(run: Node2D, v: StringName, t: StringName, p: StringName) -> Exploit:
+	var mods := ModuleTable.by_id()
+	var ex := Exploit.new()
+	ex.place(mods[v]); ex.place(mods[t])
+	if p != &"": ex.place(mods[p])
+	return ex
+
+## Fusion needs all three at max rank.
+func _maxed(ex: Exploit) -> Exploit:
+	for em in ex.equipped():
+		em.rank = em.module.max_rank
+	return ex
