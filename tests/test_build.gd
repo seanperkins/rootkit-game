@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 76
+const EXPECTED_CHECKS := 81
 
 var failures := 0
 var checks := 0
@@ -35,6 +35,7 @@ func _init() -> void:
 	ward_folds_by_max()
 	rank_carve_outs()
 	ward_equality()
+	uniqueness_is_loadout_wide()
 	defensive_share()
 	print("")
 	if checks != EXPECTED_CHECKS:
@@ -457,3 +458,30 @@ func triggers_earn_their_keep() -> void:
 	var bad := Module.make(&"b_bad", "bad", Module.Slot.PAYLOAD, {&"burst": 3.0})
 	_check("a payload carrying burst is rejected",
 		Compiler.validate(bad).size() > 0, true)
+
+
+## One id, one slot. The old rule let a module occupy any number of slots; that
+## existed because three exploits each need a TRIGGER and the auto-slotter could
+## not place a held one. Placement is the player's decision now, and fusion is
+## the escape hatch that frees an id for another row.
+func uniqueness_is_loadout_wide() -> void:
+	var lo := Loadout.new()
+	lo.exploits = [_mk(&"packet", &"interval", [&"keylog"]),
+		_mk(&"chain", &"on_kill", []), _mk(&"spike", &"on_hit", [])]
+
+	# Held in row 0: the ONLY target is that slot, and only to rank it.
+	var t := lo.legal_targets(T[&"packet"])
+	_check("a held id offers exactly one target", t.size(), 1)
+	_check("and that target is the slot holding it", t[0].exploit, 0)
+	_check("as a rank-up", t[0].action, Loadout.Rule.RANK_UP)
+
+	# 3 = the two empty payload slots in rows 1 and 2, plus a REPLACE over
+	# keylog in row 0. Naming the number rather than "both slots", which reads
+	# as 2 and invites a wrong fix to the count.
+	var u := lo.legal_targets(T[&"corrupt"])
+	_check("an unheld payload reaches three slots", u.size(), 3)
+
+	# At max rank, a held id has no target at all — the salvage path.
+	lo.exploits[0].vector.rank = T[&"packet"].max_rank
+	_check("a maxed held id has no legal target",
+		lo.legal_targets(T[&"packet"]).size(), 0)

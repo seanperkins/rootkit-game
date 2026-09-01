@@ -2,8 +2,9 @@ class_name Loadout extends RefCounted
 
 ## Owns the player's exploits and the auto-slot rules. Pure.
 ##
-## A module may occupy any number of slots; ranks are per slot, so the same
-## module in two exploits is two independent copies.
+## A module id occupies exactly ONE slot in the whole loadout. Fusion is what
+## frees one for another row — see legal_targets for why the failure this rule
+## caused the first time does not recur.
 
 const MAX_EXPLOITS := 3
 
@@ -52,42 +53,57 @@ func holds(id: StringName) -> int:
 			return i
 	return -1
 
-## A module may occupy as many slots as the player wants to give it.
+## The exploit and slot holding this id, or [] when nothing does.
+func _slot_holding(id: StringName) -> Array:
+	for e in exploits.size():
+		for sl in Exploit.SLOT_COUNT:
+			var em: EquippedModule = exploits[e].at(sl)
+			if em != null and em.module.id == id:
+				return [e, sl]
+	return []
+
+## A module id occupies exactly ONE slot in the whole loadout.
 ##
-## Ids used to be unique across the whole loadout, which existed only to make
-## "rank up the exploit that holds it" a singular statement back when placement
-## was automatic. With the player choosing the slot that reason is gone, and the
-## restriction was actively harmful: three exploits each need a TRIGGER, there
-## are four trigger modules and one is locked, so the board could not be built
-## out of the interval triggers that actually fire on their own. Exploits two
-## and three ended up with no trigger at all — and an exploit without one is
-## inert, which is why only the interval exploit appeared to work.
-## Every slot this module may legally occupy, for the player to choose between.
-## Placement is the player's decision; this only enforces the invariants:
-##   - a module id may occupy any number of slots; ranks are per SLOT, so the
-##     same module in two slots is two independent copies, and only the slot
-##     already holding it offers a rank-up. (Compiler._fold folds ward_* and
-##     lifesteal by max precisely because of this rule.)
-##   - the last INTERVAL trigger cannot be displaced, which would leave an
-##     event-triggered loadout with no way to fire at all.
+## This rule was removed once and is back. What it broke the first time was the
+## AUTO-SLOTTER: the rules could not place a trigger that was already held, so
+## exploits two and three ended up with no trigger at all, and an exploit
+## without one is inert — only the interval exploit appeared to work.
+##
+## Three things make it safe now:
+##   - Placement is the player's decision. legal_targets offers what is legal
+##     and the player chooses; a card it cannot place falls through to the
+##     salvage path, rather than a row being silently left broken.
+##   - _is_last_interval still stands, so row one keeps an unconditional
+##     trigger and the event triggers in rows two and three bootstrap off it.
+##   - Fusion frees ids. That is the escape hatch the old design did not have,
+##     and it is why the restriction is worth its cost: the way to use
+##     `interval` twice is to fuse the row holding it.
+##
+## Ranks are per slot. With one slot per id that is now the same statement,
+## but Compiler._fold still folds ward_* and lifesteal by MAX, because a single
+## exploit can still carry them on two modules at once.
 func legal_targets(m: Module) -> Array:
 	var out := []
+	var home := _slot_holding(m.id)
 	for e in MAX_EXPLOITS:
 		var ex: Exploit = exploits[e] if e < exploits.size() else null
 		for sl in Exploit.SLOT_COUNT:
 			if Exploit.slot_type(sl) != m.slot:
 				continue
 			if ex == null:
-				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
+				if home.is_empty():
+					out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
 				continue
 			var occupant := ex.at(sl)
-			if occupant == null:
-				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
-			elif occupant.module.id == m.id:
-				# Ranks are per SLOT, not per module. The same module in two
-				# exploits is two independent copies.
+			if occupant != null and occupant.module.id == m.id:
+				# Ranks are per SLOT. With uniqueness there is only ever one.
 				if occupant.can_rank_up():
 					out.append(Target.new(e, sl, Rule.RANK_UP))
+				continue
+			if not home.is_empty():
+				continue          # one id, one slot: nowhere else is legal
+			if occupant == null:
+				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
 			elif not _is_last_interval(occupant):
 				out.append(Target.new(e, sl, Rule.REPLACE, occupant.module))
 	return out

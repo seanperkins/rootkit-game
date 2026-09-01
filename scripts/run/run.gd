@@ -423,9 +423,11 @@ func _ready() -> void:
 func _eff_integrity() -> float:
 	return _sheet[&"integrity"]
 
-## Max over live wards, never a sum. Loadout has no module-uniqueness rule, so
-## all six payload slots can hold the same ward; summing turns that into a
-## build the design explicitly rejects.
+## Max over live wards, never a sum. A module id occupies one slot now, but a
+## single exploit can still carry ward_* on two modules at once — a TRIGGER and
+## a PAYLOAD both may — so summing would buy double magnitude at zero uptime
+## cost, which is the build the design explicitly rejects. Compiler.MAX_FOLD_KEYS
+## folds the same way for the same reason.
 func _ward_max(key: StringName) -> float:
 	var best := 0.0
 	for ei in mini(_ward_left.size(), resolved.size()):

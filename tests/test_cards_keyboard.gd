@@ -131,6 +131,17 @@ func the_overlay_opens_on_a_legal_target() -> void:
 func up_and_down_walk_the_exploit_rows() -> void:
 	var r := await _fresh_run()
 	var ui := _offer(r)
+	# Onto a card that offers more than one row first. A module id occupies one
+	# slot in the whole loadout, so a card for something the starting build
+	# already holds has a single row and DOWN from it reaches decline, not
+	# exploit_02 — which is the axis this case is about, not a rule about it.
+	var mods := _offered(ui)
+	var col := 0
+	while col < mods.size() and (mods[col] == null
+			or r.loadout.legal_targets(mods[col]).size() < 2):
+		_key(ui, KEY_RIGHT)
+		col += 1
+	_check("some card offers a second row", col < mods.size(), true)
 	var first := _label(ui)
 	_key(ui, KEY_DOWN)
 	var second := _label(ui)
@@ -186,8 +197,24 @@ func enter_places_the_highlighted_target() -> void:
 	var ui := _offer(r)
 	var mods := _offered(ui)
 
-	# Down one row first, so this cannot pass by placing into row 1 by default:
-	# the module has to land in the exploit the highlight was actually on.
+	# Walk RIGHT to a card that actually offers more than one row. A module id
+	# occupies one slot in the whole loadout now, so a card for something the
+	# starting build already holds offers exactly its own slot — pressing DOWN
+	# on that one moves nothing, and the test would assert against row 0.
+	var col := 0
+	while col < mods.size() and (mods[col] == null
+			or r.loadout.legal_targets(mods[col]).size() < 2):
+		_key(ui, KEY_RIGHT)
+		col += 1
+	if col >= mods.size():
+		_check("some card offers a second row", false, true)
+		r.free()
+		finished["enter_places_the_highlighted_target"] = true
+		return
+	var picked: Module = mods[col]
+
+	# Down one row, so this cannot pass by placing into row 1 by default: the
+	# module has to land in the exploit the highlight was actually on.
 	_key(ui, KEY_DOWN)
 	_check("the highlight really is on the second row",
 		"exploit_02" in _label(ui), true)
@@ -195,13 +222,13 @@ func enter_places_the_highlighted_target() -> void:
 
 	_check("the run is running again", r.paused, false)
 	_check("the highlighted card's module went in",
-		r.loadout.holds(mods[0].id) >= 0, true)
+		r.loadout.holds(picked.id) >= 0, true)
 	# holds() reports the FIRST exploit carrying the id, which is the starting
 	# row whenever the card was a rank-up. Ask the row the highlight named.
 	_check("the second exploit row now exists",
 		r.loadout.exploits.size() >= 2, true)
 	_check("and it is the one that received the module",
-		r.loadout.exploits[1].holds(mods[0].id) != null, true)
+		r.loadout.exploits[1].holds(picked.id) != null, true)
 	r.free()
 	finished["enter_places_the_highlighted_target"] = true
 

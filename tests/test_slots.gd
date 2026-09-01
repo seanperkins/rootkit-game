@@ -10,8 +10,8 @@ var T := ModuleTable.by_id()
 func _initialize() -> void:
 	print("ROOTKIT — slot targeting\n")
 	compatibility()
-	rank_up_where_held_and_placeable_elsewhere()
-	duplicates_allowed()
+	rank_up_only_where_held()
+	duplicates_refused()
 	last_interval_protected()
 	empty_exploits_offered()
 	one_target_per_row()
@@ -51,10 +51,9 @@ func compatibility() -> void:
 				ok = false
 		_check("%s only offered %s slots" % [id, ["VECTOR","TRIGGER","PAYLOAD"][int(m.slot)]], ok, true)
 
-## An equipped module ranks up in the slot that holds it AND may be placed
-## again elsewhere. Three exploits each need a trigger and there are only four
-## trigger modules, so forbidding duplicates made the board unbuildable.
-func rank_up_where_held_and_placeable_elsewhere() -> void:
+## An equipped module ranks up in the slot that holds it, and NOWHERE else. A
+## module id occupies one slot in the whole loadout; fusion is what frees it.
+func rank_up_only_where_held() -> void:
 	var l := _fresh()
 	var ts := l.legal_targets(T[&"packet"])
 	var own: Loadout.Target = null
@@ -62,28 +61,26 @@ func rank_up_where_held_and_placeable_elsewhere() -> void:
 		if t.exploit == 0 and t.slot == 0:
 			own = t
 	_check("its own slot offers a rank-up", own != null and own.action == Loadout.Rule.RANK_UP, true)
-	_check("other vector slots are still offered", _slots(ts).has([1, 0]), true)
+	_check("other vector slots are NOT offered", _slots(ts).has([1, 0]), false)
 	l.exploits[0].vector.rank = T[&"packet"].max_rank
 	var ts2 := l.legal_targets(T[&"packet"])
 	_check("at max rank its own slot drops out", _slots(ts2).has([0, 0]), false)
-	_check("but it can still go elsewhere", _slots(ts2).has([1, 0]), true)
+	_check("and at max rank it has nowhere to go", ts2.size(), 0)
 
-## The whole point: the same trigger in every exploit.
-func duplicates_allowed() -> void:
+## The rule reversed. A module id occupies one slot in the whole loadout, and
+## fusion is what frees it — see the comment on Loadout.legal_targets for why
+## the failure this used to guard against does not recur.
+func duplicates_refused() -> void:
 	var l := _fresh()
 	l.place_at(T[&"chain"], 1, 0)
-	l.place_at(T[&"interval"], 1, 1)
-	l.place_at(T[&"broadcast"], 2, 0)
-	l.place_at(T[&"interval"], 2, 1)
-	var n := 0
-	for ex in l.exploits:
-		if ex.trigger != null and ex.trigger.module.id == &"interval":
-			n += 1
-	_check("interval can drive all three exploits", n, 3)
-	_check("and none of them is inert",
-		not (l.exploits[0].is_inert() or l.exploits[1].is_inert() or l.exploits[2].is_inert()), true)
-	l.exploits[1].trigger.rank = 4
-	_check("ranks are per slot, not shared", l.exploits[2].trigger.rank, 1)
+	var t := l.legal_targets(T[&"interval"])
+	var elsewhere := false
+	for x in t:
+		if x.exploit != 0:
+			elsewhere = true
+	_check("a held interval is offered nowhere else", elsewhere, false)
+	_check("only its own slot, as a rank-up", t.size(), 1)
+	_check("and that is a rank-up", t[0].action, Loadout.Rule.RANK_UP)
 
 ## Displacing the only interval trigger would leave an event-triggered loadout
 ## unable to fire at all, so that slot is never offered.

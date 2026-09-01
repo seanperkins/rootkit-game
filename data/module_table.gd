@@ -10,9 +10,12 @@ class_name ModuleTable extends RefCounted
 ##
 ## Split: 14 VECTOR / 7 TRIGGER / 14 PAYLOAD = 35.
 ## Unlocked at start: 7 / 3 / 11 = 21; see LOCKED below for why the rest is
-## gated. A module id may occupy any number of slots (Loadout.legal_targets),
-## so three exploits do NOT need three distinct VECTORs or TRIGGERs — the only
-## hard floor is one unlocked module of each slot type.
+## gated. A module id occupies exactly one slot (Loadout.legal_targets), so a
+## full board of three exploits needs three distinct unlocked VECTORs and three
+## distinct unlocked TRIGGERs. The starting pool clears that with room on the
+## vector side and none at all on the trigger side: interval, on_kill and
+## on_hit are exactly three. Locking a fourth trigger would make the third row
+## unfillable until an unlock lands.
 
 const S := Module.Slot
 const V := Module.VectorKind
