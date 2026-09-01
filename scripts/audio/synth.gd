@@ -63,11 +63,26 @@ const DEFAULTS := {
 ## id -> spec. Fire ids are added per VectorKind by `build_bank`, so a new
 ## vector kind cannot mint an id the bank has never heard of.
 const EVENTS := {
-	"hit":            {"wave": Wave.SQUARE, "f0": 620.0, "f1": 380.0, "dur": 0.05,
-		"decay": 0.02, "sustain": 0.2, "release": 0.02, "noise": 0.35,
-		"gain": 0.28, "steps": [0, -2, 2, -4]},
-	"kill":           {"wave": Wave.NOISE, "f0": 240.0, "f1": 90.0, "dur": 0.13,
-		"noise": 0.8, "gain": 0.5},
+	# Three weight classes, not one hit. The player lands hundreds of these a
+	# run, so they are both the loudest fatigue risk and the cheapest place to
+	# put information: how SOLID a thing feels is something the ear reads
+	# instantly and the HUD cannot show without a health bar on every enemy.
+	#
+	# Light: high, short, papery. Heavy: low, longer, more noise — it reads as
+	# thudding into something that is not going to fall over.
+	"hit_light":      {"wave": Wave.SQUARE, "f0": 780.0, "f1": 520.0, "dur": 0.035,
+		"decay": 0.015, "sustain": 0.15, "release": 0.015, "noise": 0.3,
+		"gain": 0.13, "steps": [0, -2, 2, -4, 4, -5]},
+	"hit_medium":     {"wave": Wave.SQUARE, "f0": 520.0, "f1": 330.0, "dur": 0.05,
+		"decay": 0.02, "sustain": 0.2, "release": 0.02, "noise": 0.4,
+		"gain": 0.15, "steps": [0, -2, 2, -4, 3, -5]},
+	"hit_heavy":      {"wave": Wave.SAW, "f0": 300.0, "f1": 150.0, "dur": 0.085,
+		"decay": 0.03, "sustain": 0.3, "release": 0.04, "noise": 0.55,
+		"gain": 0.18, "steps": [0, -2, 1, -3, 2, -5]},
+	# Down from 0.5. A kill now lands on top of a hit rather than instead of
+	# one, and at the enemy cap they arrive by the dozen.
+	"kill":           {"wave": Wave.NOISE, "f0": 240.0, "f1": 90.0, "dur": 0.12,
+		"noise": 0.8, "gain": 0.26, "steps": [0, -2, -4, 2, -6, -1]},
 	"flip":           {"wave": Wave.SINE, "f0": 520.0, "f1": 1180.0, "dur": 0.18,
 		"sustain": 0.6, "gain": 0.42, "steps": [0, 3, 7, 5]},
 	# The most frequent sound in the game by a wide margin — one per shard, and

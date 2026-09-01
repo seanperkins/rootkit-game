@@ -211,6 +211,9 @@ var _pending_fusions: Array = []
 ## How lit each enemy is from a hit landed this tick, decayed in _age_fx and
 ## read by the renderer. Per-enemy, so it needs BOTH halves of the slot
 ## invariant: zeroed on spawn AND relocated on despawn.
+## 0 light / 1 medium / 2 heavy, per enemy TYPE. Indexed by type, not by slot,
+## so it needs no relocation.
+var _hit_weight: PackedByteArray
 var _hit_flash: PackedFloat32Array
 ## Seconds of arrival left, per enemy. Non-zero means MATERIALISING: out of the
 ## grid, not steering, not behaving, not touched by zones, drawn as an effect
@@ -352,6 +355,9 @@ const FX_LIFE := 0.13
 ## short enough that a swarm under fire is not a white blob.
 const HIT_FLASH_DECAY := 6.0
 
+## Indexed by the weight class in _hit_weight.
+const HIT_SOUNDS := ["hit_light", "hit_medium", "hit_heavy"]
+
 ## A boss entrance, in two phases. The charge is long enough to read and move
 ## out of; the pop is short enough to feel like an impact rather than a fade.
 ## Not interruptible and not skippable — an arrival you can shoot through is not
@@ -476,6 +482,16 @@ func _ready() -> void:
 	_ai_timer = PackedFloat32Array(); _ai_timer.resize(MAX_ENEMIES)
 	_ai_aim = PackedVector2Array(); _ai_aim.resize(MAX_ENEMIES)
 	_spawn_hp = PackedFloat32Array(); _spawn_hp.resize(MAX_ENEMIES)
+	# Weight class per enemy TYPE, resolved once. Base integrity rather than
+	# spawn HP: solidity is what a thing IS, and scaling by subnet would make
+	# every daemon sound like a boss by subnet 03. The table falls naturally
+	# into three groups — worm/daemon/tracer/probe at 6-16, the mid tier at
+	# 34-70, mini-bosses and ICE at 170-700.
+	_hit_weight = PackedByteArray()
+	_hit_weight.resize(enemy_types.size())
+	for wi in enemy_types.size():
+		var hp0: float = enemy_types[wi].integrity
+		_hit_weight[wi] = 0 if hp0 < 20.0 else (1 if hp0 < 80.0 else 2)
 	_execute_immune_type = PackedByteArray()
 	_execute_immune_type.resize(enemy_types.size())
 	for mi_t in enemy_types.size():
@@ -529,6 +545,13 @@ func _ready() -> void:
 	sfx.set_script(load("res://scripts/audio/sfx.gd"))
 	sfx.feel = feel
 	add_child(sfx)
+
+	# Generative music. It POLLS this node for threat; nothing here holds a
+	# reference back, same direction as the Sfx node.
+	var music := Node.new()
+	music.set_script(load("res://scripts/audio/music.gd"))
+	music.run = self
+	add_child(music)
 
 	var ui := CanvasLayer.new()
 	ui.set_script(load("res://scripts/run/ui.gd"))
@@ -737,6 +760,38 @@ func _worm_length() -> int:
 
 ## Mini-bosses arrive on the spawn ring like anything else, but announced: an
 ## arrival the player does not notice is not a set-piece.
+## How loud the arena is, 0..1. Polled by the music node, which is the only
+## consumer — the simulation neither knows nor cares that it exists.
+##
+## Deliberately not just "how many enemies": a cleared subnet with a hundred
+## stragglers is calm, and a boss alone is not. What this reports is how much
+## trouble the player is in.
+func threat() -> float:
+	if not alive or won:
+		return 0.0
+	if phase == Phase.CLEARED:
+		# The walk to the gate. Nothing is spawning; the arrangement should
+		# breathe out.
+		return 0.08
+	var pressure: float = clampf(float(enemies.count) / 130.0, 0.0, 1.0)
+	var hurt: float = 1.0 - clampf(player_health / maxf(_eff_integrity(), 1.0),
+		0.0, 1.0)
+	var t: float = maxf(pressure, hurt * 0.85)
+	if boss_present():
+		t = maxf(t, 0.78)
+	return clampf(t, 0.0, 1.0)
+
+## True while ICE or a mini-boss is alive AND has finished arriving. Gated on
+## arrival so the pedal lands with the boss rather than under its telegraph.
+func boss_present() -> bool:
+	for i in enemies.count:
+		if _arriving[i] > 0.0:
+			continue
+		var ti := enemies.type_index[i]
+		if ti == EnemyTable.ICE or _is_miniboss(ti):
+			return true
+	return false
+
 ## Whether an enemy is still materialising.
 func is_arriving(i: int) -> bool:
 	return i >= 0 and i < _arriving.size() and _arriving[i] > 0.0
@@ -1802,6 +1857,10 @@ func _steps78_drain() -> void:
 			var ht := queue.hit_target[k]
 			if ht >= 0 and ht < enemies.count:
 				_hit_flash[ht] = 1.0
+				# How solid the thing felt. The player lands hundreds of these
+				# a run, so it is the cheapest channel the game has for
+				# information the HUD would need a health bar per enemy to show.
+				feel.emit(HIT_SOUNDS[_hit_weight[enemies.type_index[ht]]])
 				if _numbers_pref:
 					var ex := queue.hit_exploit[k]
 					var dmg: float = resolved[ex].damage if ex >= 0 \

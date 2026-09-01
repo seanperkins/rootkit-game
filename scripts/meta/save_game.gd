@@ -25,6 +25,7 @@ const BUFF_MAX := 10
 const PREF_RANGES := {
 	"volume_master": [0.0, 1.0],
 	"volume_sfx": [0.0, 1.0],
+	"volume_music": [0.0, 1.0],
 	"shake": [0.0, 2.0],
 	# Stored as a number so one _num path covers every key; read as a bool.
 	"damage_numbers": [0.0, 1.0],
@@ -72,6 +73,7 @@ static func _default() -> Dictionary:
 		"prefs": {
 			"volume_master": 0.8,
 			"volume_sfx": 0.8,
+			"volume_music": 0.5,
 			"shake": 1.0,
 			"damage_numbers": 1.0,
 		},

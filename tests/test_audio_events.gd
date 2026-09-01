@@ -53,6 +53,23 @@ func _emitted_ids() -> Array:
 			var id := m.get_string(1)
 			if not out.has(id):
 				out.append(id)
+	# INDIRECT emit sites. An id reached through a lookup table rather than a
+	# literal — feel.emit(HIT_SOUNDS[w]) — is invisible to the grep above, and
+	# a missing one is a silent dropped sound rather than a crash. Any new
+	# table of ids belongs here.
+	var tbl := RegEx.new()
+	tbl.compile("const HIT_SOUNDS := \\[([^\\]]*)\\]")
+	var f2 := FileAccess.open("res://scripts/run/run.gd", FileAccess.READ)
+	if f2 != null:
+		var body := f2.get_as_text()
+		f2.close()
+		var m2 := tbl.search(body)
+		if m2 != null:
+			var inner := RegEx.new()
+			inner.compile("\"([a-z_]+)\"")
+			for m3 in inner.search_all(m2.get_string(1)):
+				if not out.has(m3.get_string(1)):
+					out.append(m3.get_string(1))
 	return out
 
 func every_emitted_id_is_in_the_bank() -> void:
@@ -99,9 +116,9 @@ func the_limiter_drops_overflow() -> void:
 	for i in 200:
 		# Untyped: _last_played holds a float, and an int annotation
 		# truncates it so the comparison below always differs.
-		var before = n._last_played.get("hit", -1.0)
-		n.play("hit")
-		if n._last_played.get("hit", -1.0) != before:
+		var before = n._last_played.get("hit_light", -1.0)
+		n.play("hit_light")
+		if n._last_played.get("hit_light", -1.0) != before:
 			played += 1
 	_check("200 immediate plays collapse to one", played, 1)
 	n.play("nonexistent_id")

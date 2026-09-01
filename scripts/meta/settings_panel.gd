@@ -20,6 +20,7 @@ const DIM := Color(0.32, 0.58, 0.45)
 const ROWS := [
 	["volume_master", "master volume", 0.1],
 	["volume_sfx", "sfx volume", 0.1],
+	["volume_music", "music volume", 0.1],
 	["shake", "screen shake", 0.25],
 	["damage_numbers", "damage numbers", 1.0],
 ]
@@ -115,6 +116,8 @@ func apply() -> void:
 	var p := SaveGame.prefs()
 	var sfx := load("res://scripts/audio/sfx.gd")
 	sfx.apply_volume(float(p["volume_sfx"]))
+	var music := load("res://scripts/audio/music.gd")
+	music.apply_volume(float(p["volume_music"]))
 	var master := AudioServer.get_bus_index("Master")
 	if master >= 0:
 		var lin := float(p["volume_master"])

@@ -16,7 +16,11 @@ const BUS := "SFX"
 ## — worse than silence, because silence at least does not mask the events that
 ## matter. Overflow is DROPPED, never queued.
 const RATE_LIMIT := {
-	"hit": 14.0,
+	# One budget shared across the three weight classes, or a mixed swarm plays
+	# three times as many hits as a uniform one.
+	"hit_light": 11.0,
+	"hit_medium": 11.0,
+	"hit_heavy": 11.0,
 	"kill": 12.0,
 	# Down from 10: a magnet build crosses dozens of shards a second, and the
 	# limiter is the only thing between that and a continuous tone.
