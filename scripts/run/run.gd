@@ -130,6 +130,10 @@ const CONE_HALF_ANGLE := 0.785
 ## (PROJECTILE_RADIUS 4 + ENEMY_RADIUS 12) the flanking shots share a target only
 ## inside ~73 px. That is the intended shape — a spread that covers ground rather
 ## than three shots stacked on one enemy — not a convergence guarantee.
+## How far a homing projectile looks when its bound target dies, and how long it
+## waits before looking again after finding nothing.
+const HOMING_REACQUIRE := 320.0
+const HOMING_RETRY := 0.25
 const SPLIT_SPREAD := 0.22
 ## Equal to MINE_TRIGGER on purpose, so a ring's charges do not sit inside each
 ## other's fuse radius.
@@ -307,6 +311,14 @@ var _proj_last: PackedInt32Array
 ## early and make reach silently inert exactly when you run away. Max travel is
 ## 832px, so projectiles now live shorter than they used to, not longer.
 var _proj_dist_left: PackedFloat32Array
+## A homing projectile binds its target ONCE, at spawn, and re-acquires only
+## when that target dies. The naive version — a grid query per projectile per
+## tick — is a second broadcast query per shot per frame, and it is what would
+## move the perf gate. The generation guards a recycled slot; _proj_reacquire
+## backs a miss off, or a shot over cleared ground re-queries every tick.
+var _proj_target: PackedInt32Array
+var _proj_target_gen: PackedInt32Array
+var _proj_reacquire: PackedFloat32Array
 ## Mines and orbiters borrow the projectile population. Zero means "an ordinary
 ## projectile", so no branch is needed for the common case.
 var _mine_left: PackedFloat32Array
@@ -385,6 +397,9 @@ func _ready() -> void:
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
 	_proj_dist_left = PackedFloat32Array(); _proj_dist_left.resize(MAX_PROJECTILES)
+	_proj_target = PackedInt32Array(); _proj_target.resize(MAX_PROJECTILES)
+	_proj_target_gen = PackedInt32Array(); _proj_target_gen.resize(MAX_PROJECTILES)
+	_proj_reacquire = PackedFloat32Array(); _proj_reacquire.resize(MAX_PROJECTILES)
 	_mine_left = PackedFloat32Array(); _mine_left.resize(MAX_PROJECTILES)
 	_orbit_left = PackedFloat32Array(); _orbit_left.resize(MAX_PROJECTILES)
 	_orbit_phase = PackedFloat32Array(); _orbit_phase.resize(MAX_PROJECTILES)
@@ -758,6 +773,29 @@ func _step2_integrate(dt: float) -> void:
 				var mo := _proj_owner[i]
 				_detonate(i, resolved[mo].radius if mo >= 0 and mo < resolved.size() else 0.0)
 			continue
+		var pe := _proj_owner[i]
+		if pe >= 0 and pe < resolved.size() and resolved[pe].homing > 0.0:
+			var tj := _proj_target[i]
+			_proj_reacquire[i] = maxf(0.0, _proj_reacquire[i] - dt)
+			# Re-acquire when the bound target has died or its slot recycled.
+			if _proj_reacquire[i] <= 0.0 and (tj < 0 or tj >= enemies.count \
+					or enemies.generation[tj] != _proj_target_gen[i] \
+					or enemies.state[tj] != Population.ALIVE):
+				tj = _pick_target(HOMING_REACQUIRE, resolved[pe].targeting,
+					projectiles.pos[i])
+				_proj_target[i] = tj
+				_proj_target_gen[i] = enemies.generation[tj] if tj >= 0 else -1
+				# A miss backs off. Without it a homing shot over cleared ground
+				# re-runs the grid query every tick, for every such projectile —
+				# the exact per-tick cost the binding exists to avoid.
+				if tj < 0:
+					_proj_reacquire[i] = HOMING_RETRY
+			if tj >= 0:
+				var want := (enemies.pos[tj] - projectiles.pos[i]).angle()
+				var have := projectiles.vel[i].angle()
+				var turn := clampf(wrapf(want - have, -PI, PI),
+					-resolved[pe].homing * dt, resolved[pe].homing * dt)
+				projectiles.vel[i] = projectiles.vel[i].rotated(turn)
 		projectiles.pos[i] += projectiles.vel[i] * dt
 		# Population stores no scalar speed, so the step is the velocity's
 		# length: one sqrt per live projectile per tick, bounded by
@@ -966,6 +1004,9 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_pierce[mi] = 0
 				_proj_last[mi] = -1
 				_proj_dist_left[mi] = 1.0
+				_proj_target[mi] = -1
+				_proj_target_gen[mi] = -1
+				_proj_reacquire[mi] = 0.0
 				_mine_left[mi] = MINE_LIFE
 				_orbit_left[mi] = 0.0
 		Module.VectorKind.ORBIT:
@@ -981,6 +1022,10 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_pierce[oi] = 999
 				_proj_last[oi] = -1
 				_proj_dist_left[oi] = 1.0
+				_proj_target[oi] = -1
+				_proj_target_gen[oi] = -1
+				_proj_reacquire[oi] = 0.0
+				_mine_left[oi] = 0.0
 				_orbit_phase[oi] = TAU * float(k) / float(count)
 				_orbit_left[oi] = r.cooldown
 		Module.VectorKind.CHAIN:
@@ -1030,6 +1075,9 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_proj_pierce[pi] = r.pierce
 				_proj_last[pi] = -1
 				_proj_dist_left[pi] = maxf(r.travel, 1.0)
+				_proj_target[pi] = t3
+				_proj_target_gen[pi] = enemies.generation[t3] if t3 >= 0 else -1
+				_proj_reacquire[pi] = 0.0
 				# Slots are recycled: without this an ordinary shot landing on a
 				# slot that was last a mine would sit still and never fly.
 				_mine_left[pi] = 0.0
@@ -1662,6 +1710,15 @@ func _step9_recycle() -> void:
 			_proj_pierce[i] = _proj_pierce[last]
 			_proj_last[i] = _proj_last[last]
 			_proj_dist_left[i] = _proj_dist_left[last]
+			_proj_target[i] = _proj_target[last]
+			_proj_target_gen[i] = _proj_target_gen[last]
+			_proj_reacquire[i] = _proj_reacquire[last]
+			# These three were already absent, so a compacted mine lost its fuse
+			# and became an inert zero-velocity projectile. Rare with one mine at
+			# a time; routine now that split_count lays three.
+			_mine_left[i] = _mine_left[last]
+			_orbit_left[i] = _orbit_left[last]
+			_orbit_phase[i] = _orbit_phase[last]
 			projectiles.despawn(i)
 		else:
 			i += 1

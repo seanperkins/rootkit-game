@@ -59,15 +59,35 @@ func _initialize() -> void:
 	run.director.boss_spawned = true
 
 	# Worst-case loadout: packet (full-grid _pick_target), broadcast (aura over
-	# the enemy cap), chain (hop queries), all at max rank.
+	# the enemy cap), and a HOMING fused vector, all at max rank.
+	#
+	# The third row is a fused module rather than `chain` on purpose. Homing
+	# steers per live projectile per tick and re-acquires when a bound target
+	# dies, and homing exists ONLY on fused modules — with an ordinary loadout
+	# `resolved[ei].homing > 0.0` is false for every projectile the gate
+	# simulates, the whole steering path executes zero times, and the gate can
+	# only ever pass. A gate that cannot fail is not evidence.
+	#
+	# MAX_EXPLOITS is 3, so this SWAPS chain out rather than adding a fourth row:
+	# a fourth pass through _emit_vector would move the figure whether or not
+	# homing costs anything, and the point is attribution.
 	var t := ModuleTable.by_id()
 	run.loadout.exploits[0].vector.rank = 5
-	for pair in [[&"broadcast", &"on_hit"], [&"chain", &"interval"]]:
-		var ex := Exploit.new()
-		ex.place(t[pair[0]])
-		ex.place(t[pair[1]])
-		ex.vector.rank = 5
-		run.loadout.exploits.append(ex)
+	var ex2 := Exploit.new()
+	ex2.place(t[&"broadcast"])
+	ex2.place(t[&"on_hit"])
+	ex2.vector.rank = 5
+	run.loadout.exploits.append(ex2)
+
+	var homer := Module.make(&"perf_homer", "perf_homer()", Module.Slot.VECTOR,
+		{&"damage": 20.0, &"projectile_speed": 700.0, &"cooldown": 0.45,
+		 &"travel": 1200.0, &"pierce": 4.0, &"homing": 2.6}, [],
+		Module.VectorKind.PACKET, Module.TriggerKind.INTERVAL)
+	homer.is_fused = true
+	homer.targeting = Module.Targeting.STRONGEST
+	var ex3 := Exploit.new()
+	ex3.vector = EquippedModule.new(homer, 5)
+	run.loadout.exploits.append(ex3)
 	run._recompile()
 
 	_fill()

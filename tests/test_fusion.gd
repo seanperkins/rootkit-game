@@ -2,19 +2,26 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 19
+const EXPECTED_CHECKS := 25
 
 var failures := 0
 var checks := 0
 var T := ModuleTable.by_id()
 
-func _init() -> void:
+## _initialize, not _init: the recycle case stands up a real run and awaits a
+## frame, and an un-awaited coroutine under _init returns immediately — the
+## suite would print PASS and quit before the assertion ever ran.
+func _initialize() -> void:
+	SaveGame.use_test_paths()
 	print("ROOTKIT — fusion\n")
+	await process_frame
 	a_fused_row_fires_with_no_trigger()
 	targeting_comes_from_the_head_only()
 	split_count_folds_like_pierce()
 	blast_radius_ranks_at_quarter_rate()
 	execute_below_folds_by_max_and_clamps()
+	homing_sums_and_clamps()
+	await recycling_carries_every_parallel_array()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -157,3 +164,55 @@ func execute_below_folds_by_max_and_clamps() -> void:
 		{&"execute_below": 0.2})
 	_check("a payload carrying it is rejected",
 		Compiler.validate(bad).size() > 0, true)
+
+
+## Unclamped, homing converges on instant tracking — which is a hitscan with
+## extra steps, and the turn rate exists to prevent exactly that.
+func homing_sums_and_clamps() -> void:
+	var v := Module.make(&"hm_v", "hm", Module.Slot.VECTOR,
+		{&"damage": 6.0, &"cooldown": 0.5, &"homing": 2.0}, [],
+		Module.VectorKind.PACKET)
+	var ex := Exploit.new()
+	ex.vector = EquippedModule.new(v, 5)
+	ex.place(T[&"interval"])
+	_check("it clamps at the max turn rate",
+		Compiler.build(ex).homing, Compiler.MAX_HOMING)
+
+	var bad := Module.make(&"hm_bad", "bad", Module.Slot.PAYLOAD, {&"homing": 1.0})
+	_check("a payload carrying it is rejected",
+		Compiler.validate(bad).size() > 0, true)
+
+
+## Population.despawn swap-removes the tail into the freed slot, so every
+## parallel array has to move with it. The comment above _step9_recycle says
+## exactly that; the code copied four of nine. A surviving projectile inheriting
+## a dead one's target homes at the wrong enemy, and one inheriting a dead one's
+## fuse stops being a mine.
+func recycling_carries_every_parallel_array() -> void:
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(run)
+	await process_frame
+	run.input_override = Vector2.ZERO
+	run.phase = run.Phase.CLEARED
+	run.collapse_left = run.COLLAPSE_SECONDS
+	while run.projectiles.count > 0:
+		run.projectiles.despawn(run.projectiles.count - 1)
+
+	for k in 3:
+		var pi: int = run.projectiles.spawn(run.player_pos + Vector2(k * 40, 0),
+			Vector2.ZERO, 1.0, run.PROJECTILE_RADIUS, 0)
+		run._proj_owner[pi] = k
+		run._proj_target[pi] = 100 + k
+		run._proj_target_gen[pi] = 200 + k
+		run._mine_left[pi] = float(k + 1)
+		run._proj_reacquire[pi] = 0.0
+	# Kill the MIDDLE one: the tail (index 2) swaps down into index 1.
+	run.projectiles.state[1] = Population.DEAD
+	run._step9_recycle()
+
+	_check("the survivor keeps its own owner", run._proj_owner[1], 2)
+	_check("and its own bound target", run._proj_target[1], 102)
+	_check("and that target's generation", run._proj_target_gen[1], 202)
+	_check("and its own fuse", run._mine_left[1], 3.0)
+	run.queue_free()
+	await process_frame

@@ -24,6 +24,11 @@ const VECTOR_RADIUS_RANK := 0.25
 ## Above this an execute stops being a finisher and becomes the damage model.
 const MAX_EXECUTE := 0.5
 
+## The turn-rate ceiling. Above roughly this a projectile is on the target
+## within one tick at any range the view covers, which is the thing the rate is
+## there to prevent.
+const MAX_HOMING := 4.0
+
 ## Which global multiplier scales which stats. Total and non-overlapping: every
 ## stat key not named here is deliberately excluded.
 ##   - lifesteal is excluded so attack is not also the best defensive stat.
@@ -134,6 +139,7 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	r.burst = floori(r.burst)
 	r.split_count = floori(r.split_count)
 	r.execute_below = clampf(r.execute_below, 0.0, MAX_EXECUTE)
+	r.homing = minf(r.homing, MAX_HOMING)
 	return r
 
 ## Rank scales the two directions of a cadence factor differently, and each half
@@ -235,6 +241,12 @@ static func validate(m: Module) -> Array[String]:
 	# nothing else in the table has.
 	if m.slot != Module.Slot.VECTOR and m.stats.has(&"execute_below"):
 		errs.append("module '%s': only a VECTOR may carry execute_below" % m.id)
+
+	# Only a VECTOR may steer its own shots. A payload contributing homing to a
+	# BROADCAST exploit is a stat that silently does nothing — the failure mode
+	# the corruption-tag and slow-tag rules exist to catch.
+	if m.slot != Module.Slot.VECTOR and m.stats.has(&"homing"):
+		errs.append("module '%s': only a VECTOR may carry homing" % m.id)
 
 	# burst is how many times an EVENT produces a shot, so it is meaningless on
 	# anything but a trigger — and a payload carrying it would read as a damage
