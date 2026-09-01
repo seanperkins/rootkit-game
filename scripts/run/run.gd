@@ -495,6 +495,18 @@ func _ready() -> void:
 
 	_build_environment()
 
+	var pr := SaveGame.prefs()
+	_shake_pref = float(pr.get("shake", 1.0))
+	_numbers_pref = float(pr.get("damage_numbers", 1.0)) > 0.5
+
+	# The node drains feel's event list. run.gd keeps no reference to it: the
+	# simulation appends strings and forgets, which is what keeps the tick
+	# reachable headless.
+	var sfx := Node.new()
+	sfx.set_script(load("res://scripts/audio/sfx.gd"))
+	sfx.feel = feel
+	add_child(sfx)
+
 	var ui := CanvasLayer.new()
 	ui.set_script(load("res://scripts/run/ui.gd"))
 	add_child(ui)
@@ -1033,6 +1045,7 @@ func _step5_fire(dt: float) -> void:
 		_fire_acc[ei] = minf(_fire_acc[ei], r.cooldown * FIRE_BUDGET)
 
 func _emit_vector(ei: int, r: ResolvedExploit) -> void:
+	feel.emit(Synth.fire_id(r.vector_kind))
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	# Before the match, deliberately. BEAM and CHAIN return early when they have
 	# no target, and a defensive build on those vectors must still ward — it has
@@ -1375,6 +1388,7 @@ func _damage_player(amount: float) -> void:
 	player_iframe = IFRAMES
 	if _low_armed and player_health < _eff_integrity() * LOW_INTEGRITY_FRACTION:
 		_low_armed = false
+		feel.emit("low_integrity")
 		_fire_trigger(Module.TriggerKind.ON_LOW_INTEGRITY)
 	elif player_health >= _eff_integrity() * LOW_INTEGRITY_FRACTION:
 		_low_armed = true
@@ -1760,6 +1774,7 @@ func _steps78_drain() -> void:
 
 func _on_death(i: int) -> void:
 	kills += 1
+	feel.emit("kill")
 	if enemies.type_index[i] == _fork_bomb_index \
 			and _split_gen[i] < SPLIT_GENERATIONS:
 		# Flagged, not spawned: this runs inside the drain, and spawning here
@@ -1795,12 +1810,14 @@ func _on_death(i: int) -> void:
 			# to the gate. Safe to set inside the drain because it is a flag and
 			# a bool — nothing is spawned, freed, or moved.
 			phase = Phase.CLEARED
+			feel.emit("gate_open")
 			terrain.open_gate()
 			terrain.build_distance_field()
 			collapse_left = COLLAPSE_SECONDS
 			_bank_progress(true)
 		else:
 			won = true
+			feel.emit("win")
 			_bank_progress(true)
 			emit_signal("run_ended", true, salvage)
 	_drop_shards(i)
@@ -1818,6 +1835,7 @@ func _on_death(i: int) -> void:
 ## build does not starve its own level-ups in proportion to how well it works.
 func _on_flip(i: int) -> void:
 	flips += 1
+	feel.emit("flip")
 	_fire_trigger(Module.TriggerKind.ON_FLIP)
 	_drop_shards(i)
 	var cap := BOTNET_BASE_CAP
@@ -2132,9 +2150,11 @@ static func _xp_for(lvl: int) -> int:
 
 func _gain_xp(n: int) -> void:
 	xp += n
+	feel.emit("pickup")
 	while xp >= xp_needed:
 		xp -= xp_needed
 		level += 1
+		feel.emit("level_up")
 		# Was 20 + 12(n-1), taken from the spec. That curve assumed 10-14
 		# kills/sec; the actual weapons produce ~0.5-4, so it stalled the run at
 		# level 4. Measured against real play instead of derived from a rate.

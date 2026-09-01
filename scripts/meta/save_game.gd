@@ -13,11 +13,22 @@ class_name SaveGame extends RefCounted
 static var PATH := "user://save.json"
 static var BAK := "user://save.json.bak"
 static var TMP := "user://save.json.tmp"
-const VERSION := 2
+const VERSION := 3
 
 const BUFF_COST_BASE := 60
 const BUFF_COST_STEP := 30
 const BUFF_MAX := 10
+
+## Preference key -> [min, max]. One table, consulted on BOTH sides of the file
+## — _sanitise on read and set_pref on write — because a clamp that only runs on
+## load lets a bad value persist and come back as something worse.
+const PREF_RANGES := {
+	"volume_master": [0.0, 1.0],
+	"volume_sfx": [0.0, 1.0],
+	"shake": [0.0, 2.0],
+	# Stored as a number so one _num path covers every key; read as a bool.
+	"damage_numbers": [0.0, 1.0],
+}
 
 
 ## The v2 split. Two tables, because the two namespaces are read at different
@@ -58,6 +69,12 @@ static func _default() -> Dictionary:
 		"unlocked": [],
 		"kills": 0,
 		"flips": 0,
+		"prefs": {
+			"volume_master": 0.8,
+			"volume_sfx": 0.8,
+			"shake": 1.0,
+			"damage_numbers": 1.0,
+		},
 	}
 
 ## Tests must run against a known save. Progression is persistent by design —
@@ -99,10 +116,32 @@ static func _read(p: String) -> Dictionary:
 	f.close()
 	if typeof(parsed) != TYPE_DICTIONARY:
 		return {}
-	if int(parsed.get("version", 0)) > VERSION:
-		DirAccess.rename_absolute(p, "user://save.json.v%d" % int(parsed["version"]))
+	# Both reads guarded, and on FINITE-NUMBER rather than merely non-null:
+	# int(null) is "Nonexistent 'int' constructor" and aborts _read, silently
+	# discarding the save; int(INF) is 9223372036854775807, which quarantines a
+	# live save away under a nonsense suffix.
+	var ver := int(_num(parsed.get("version", 0), 0.0))
+	if ver > VERSION:
+		DirAccess.rename_absolute(p, "user://save.json.v%d" % ver)
 		return {}
 	return parsed
+
+## A total numeric read. `float(v)` and `int(v)` are NOT total: a Dictionary or
+## Array value is an invalid-type error, and `float(null)` is too — and a
+## GDScript runtime error aborts the whole function it happens in, so one bad
+## value in a hand-edited save takes out _sanitise, leaves _cache unassigned,
+## and cascades into every caller that indexes the result.
+##
+## Non-finite is rejected as well, and `clampf` is not the check: clampf(NAN,
+## 0, 2) returns nan. INF does clamp correctly, but it is rejected under the
+## same rule because one rule is easier to keep right than two — and because a
+## NaN that reaches the dictionary is stringified to `null` by JSON.stringify
+## and comes back as the abort above.
+static func _num(v, fallback: float) -> float:
+	if typeof(v) != TYPE_FLOAT and typeof(v) != TYPE_INT:
+		return fallback
+	var f := float(v)
+	return f if is_finite(f) else fallback
 
 ## Godot's JSON parser returns every number as float, so int() coercion is not
 ## optional — a typeof(v) == TYPE_INT check would reject the file the game just
@@ -110,13 +149,22 @@ static func _read(p: String) -> Dictionary:
 ## only user-controlled input in the game.
 static func _sanitise(d: Dictionary) -> Dictionary:
 	var out := _default()
-	out["salvage"] = clampi(int(d.get("salvage", 0)), 0, 1_000_000_000)
-	out["kills"] = maxi(0, int(d.get("kills", 0)))
-	out["flips"] = maxi(0, int(d.get("flips", 0)))
+	out["salvage"] = clampi(int(_num(d.get("salvage", 0), 0.0)), 0, 1_000_000_000)
+	out["kills"] = maxi(0, int(_num(d.get("kills", 0), 0.0)))
+	out["flips"] = maxi(0, int(_num(d.get("flips", 0), 0.0)))
 	var b = d.get("buffs", {})
 	if typeof(b) == TYPE_DICTIONARY:
 		for k in out["buffs"]:
-			out["buffs"][k] = clampi(int(b.get(k, 0)), 0, BUFF_MAX)
+			out["buffs"][k] = clampi(int(_num(b.get(k, 0), 0.0)), 0, BUFF_MAX)
+	# The CONTAINER type is guarded before it is indexed, exactly as buffs and
+	# unlocked are. Without it {"prefs": "owned"} makes prefs.get(...) a runtime
+	# error and takes the whole load path with it.
+	var pr = d.get("prefs", {})
+	if typeof(pr) == TYPE_DICTIONARY:
+		for k in out["prefs"]:
+			var rng: Array = PREF_RANGES[k]
+			out["prefs"][k] = clampf(_num(pr.get(k, out["prefs"][k]),
+				out["prefs"][k]), rng[0], rng[1])
 	var u = d.get("unlocked", [])
 	if typeof(u) == TYPE_ARRAY:
 		# Ids resolve against the code table. A save string never reaches a load
@@ -128,6 +176,23 @@ static func _sanitise(d: Dictionary) -> Dictionary:
 				keep.append(String(id))
 		out["unlocked"] = keep
 	return out
+
+static func prefs() -> Dictionary:
+	return load_state()["prefs"]
+
+## Clamped on WRITE as well as read. save_state stringifies _cache, which is
+## sanitised on load and then mutated freely, so a settings screen assigning
+## straight into the dictionary would get no clamp until the next cold load.
+## The write side is the sharper one: JSON.stringify turns a NaN into `null`
+## and an INF into `1e99999`, both VALID JSON — so the bad value is faithfully
+## persisted and detonates on the next read rather than being rejected here.
+static func set_pref(key: String, value: float) -> void:
+	if not PREF_RANGES.has(key):
+		return
+	var rng: Array = PREF_RANGES[key]
+	var d := load_state()
+	d["prefs"][key] = clampf(_num(value, float(_default()["prefs"][key])),
+		rng[0], rng[1])
 
 static func save_state() -> bool:
 	var d := load_state()
