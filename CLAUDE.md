@@ -100,11 +100,28 @@ the site; this is the index.
   them from one loop.
 - **Every id in `meta_screen.BUFFS` must exist in `SaveGame._default()["buffs"]`.**
   `_refresh` indexes it with no `.get`, so a missing name crashes the shop on open.
+- **Every id passed to `feel.emit` must exist in `Synth.build_bank()`.** The same
+  shape as the line above, with a worse failure: `sfx.play` returns silently on an
+  unknown id, so the result is a sound that never plays rather than a crash.
+  Fire ids are derived from `Module.VectorKind` precisely so a new vector kind
+  cannot mint one the bank has never heard of. `test_audio_events` greps `run.gd`
+  for emit sites rather than keeping a list — **an id reached through a lookup
+  table is invisible to that grep**, so a new table of ids must be added to the
+  suite's indirect-site scan the way `HIT_SOUNDS` was.
 - **`SaveGame.MILESTONES` is the single source for the unlock ladder.** The shop's
   requirement text reads it via `milestone_text`; do not hardcode a second copy.
 - **`save.json` is user-editable and treated as hostile.** The `maxf(0.0, …)`
   guards in `PlayerStats.mitigate` and the key-dropping in `sheet()`/`mults()`
-  are there for that reason, not habit.
+  are there for that reason, not habit. So is `SaveGame._num`, which every
+  numeric read goes through: `float()`/`int()` are not total, and a Dictionary,
+  Array or `null` value aborts `_sanitise` — which leaves `_cache` unassigned and
+  cascades into every caller that indexes the result. `clampf` is not a
+  finiteness check (`clampf(NAN, 0, 2)` is `nan`), and both `version` reads sit
+  in `_read`, outside `_sanitise` and therefore outside `_num`'s reach.
+  `PREF_RANGES` is clamped on write as well as read, because `JSON.stringify`
+  turns a NaN into `null` and an INF into `1e99999` — both valid JSON, so a bad
+  value is persisted intact and detonates on the next load. See
+  `codemaps/data.md` for the full guard table.
 
 ## Balance rationale
 
