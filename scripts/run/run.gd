@@ -1756,6 +1756,12 @@ func time_left() -> float:
 
 # --------------------------------------------------------------- rendering ---
 
+## Canvas order, low to high: the backdrop's ground at -10, this node's floor
+## and effects at 0, then shards, enemies and botnet, then projectiles — and
+## the Props layer above the lot. Everything an entity pool uses has to stay
+## below PROPS_Z or walls stop occluding the swarm; test_draw_order pins it.
+const PROPS_Z := 8
+
 func _make_mm(size: float, z: int) -> MultiMeshInstance2D:
 	var quad := QuadMesh.new()
 	quad.size = Vector2(size, size)
@@ -1792,11 +1798,24 @@ func _build_environment() -> void:
 	we.environment = env
 	add_child(we)
 
+	# The two canvases either side of everything else. Named, because "what
+	# occludes what" is spread across four z_index numbers in three files and a
+	# name is the only handle on it from outside.
 	var grid_lines := Node2D.new()
+	grid_lines.name = "Backdrop"
 	grid_lines.set_script(load("res://scripts/run/backdrop.gd"))
 	grid_lines.z_index = -10
 	add_child(grid_lines)
 	grid_lines.set("target", self)
+
+	# Above every entity pool: walls, rails and gate posts are things you walk
+	# BEHIND, and sharing this node's canvas drew them under the swarm.
+	var props := Node2D.new()
+	props.name = "Props"
+	props.set_script(load("res://scripts/run/props.gd"))
+	props.z_index = PROPS_Z
+	add_child(props)
+	props.set("target", self)
 
 ## Only enemies need per-frame colour (the corruption lerp) and per-frame glyph
 ## (type varies by slot). Projectiles, shards and botnet nodes are one colour and
@@ -1897,35 +1916,6 @@ func _visible_world_rect() -> Rect2:
 	var half := from_iso(vp * 0.6).abs() + from_iso(Vector2(vp.x, -vp.y) * 0.6).abs()
 	return Rect2(player_pos - half, half * 2.0)
 
-## Terrain heights. The arena slab hangs DEPTH below its surface; these stand
-## above it, so the world reads as one solid object with things on top of it
-## rather than as markings painted on a floor.
-const WALL_HEIGHT := 26.0
-const POST_HEIGHT := 78.0
-
-## One extruded box, drawn with the same face convention as the arena slab in
-## backdrop.gd: the y = max edge is the lit near face and the x = max edge is
-## the darker one turned away. Sharing that convention is what stops a wall
-## looking like it is lit from a different sun than the ground it stands on.
-func _draw_box(r: Rect2, height: float, top: Color, near: Color, side: Color,
-		edge: Color) -> void:
-	var up := Vector2(0.0, -height)
-	var g00 := to_iso(r.position)
-	var g10 := to_iso(Vector2(r.end.x, r.position.y))
-	var g11 := to_iso(r.end)
-	var g01 := to_iso(Vector2(r.position.x, r.end.y))
-	# Faces first, top last, so the top edge reads as the near silhouette.
-	draw_colored_polygon(PackedVector2Array([g01, g11, g11 + up, g01 + up]), near)
-	draw_colored_polygon(PackedVector2Array([g10, g11, g11 + up, g10 + up]), side)
-	draw_colored_polygon(PackedVector2Array([
-		g00 + up, g10 + up, g11 + up, g01 + up]), top)
-	draw_polyline(PackedVector2Array([
-		g00 + up, g10 + up, g11 + up, g01 + up, g00 + up]), edge, 1.5)
-	# The three verticals that read as corners.
-	draw_line(g01, g01 + up, edge, 1.0)
-	draw_line(g11, g11 + up, edge, 1.5)
-	draw_line(g10, g10 + up, edge, 1.0)
-
 ## Ground the collapse has already taken, as horizontal RUNS of cells, clipped
 ## to the view.
 ##
@@ -2020,18 +2010,14 @@ func _draw() -> void:
 			draw_colored_polygon(_ground_quad(pts[k] - half, pts[k] + half),
 				Color(0.35, 1.50, 1.00, (0.22 + 0.30 * f) * pulse))
 
+	# Zones stay FLAT. They are conditions of the floor, not objects on it, and
+	# giving them height would say you can stand behind one. Walls are objects
+	# and are drawn by the Props layer, above every entity.
 	for entry in terrain.rects:
 		var tr: Rect2 = entry[0]
-		if not view.intersects(tr):
-			continue
 		var kind: int = entry[1]
-		if kind == Terrain.Kind.WALL:
-			_draw_box(tr, WALL_HEIGHT, Color(0.10, 0.26, 0.21),
-				Color(0.055, 0.16, 0.13), Color(0.03, 0.10, 0.085),
-				Color(0.40, 0.95, 0.70))
+		if kind == Terrain.Kind.WALL or not view.intersects(tr):
 			continue
-		# Zones stay FLAT. They are conditions of the floor, not objects on it,
-		# and giving them height would say you can stand behind one.
 		var quad := PackedVector2Array([
 			to_iso(tr.position), to_iso(Vector2(tr.end.x, tr.position.y)),
 			to_iso(tr.end), to_iso(Vector2(tr.position.x, tr.end.y))])
@@ -2043,12 +2029,12 @@ func _draw() -> void:
 			Terrain.Kind.CORRUPTION:
 				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
 
-	# Every corridor and every gate, culled to the view rather than limited to
-	# the current subnet: the whole campaign is one map now, and the walkway you
-	# are standing in belongs to the arena BEHIND you the moment you cross.
+	# The walkway's FLOOR. Its rails and the gate's posts stand up, so they are
+	# the Props layer's; this is the ground between them.
 	#
-	# The walkway is floor first, then a raised rail either side, so the way out
-	# is visibly somewhere you can go rather than a gap in the dark.
+	# Culled to the view rather than limited to the current subnet: the whole
+	# campaign is one map, and the walkway you are standing in belongs to the
+	# arena BEHIND you the moment you cross.
 	for gi in terrain.gates.size():
 		var g: Terrain.Gate = terrain.gates[gi]
 		var along := Vector2(absf(g.dir.x), absf(g.dir.y))
@@ -2059,40 +2045,8 @@ func _draw() -> void:
 		var cr := Rect2(g.corridor.position - lap, g.corridor.size + lap * 2.0)
 		if not view.intersects(cr):
 			continue
-		draw_colored_polygon(PackedVector2Array([
-			to_iso(cr.position), to_iso(Vector2(cr.end.x, cr.position.y)),
-			to_iso(cr.end), to_iso(Vector2(cr.position.x, cr.end.y))]),
+		draw_colored_polygon(_ground_quad(cr.position, cr.end),
 			Color(0.035, 0.085, 0.075))
-		var rail := (Vector2(along.y, along.x) * 22.0
-			+ along * cr.size).max(Vector2(22, 22))
-		_draw_box(Rect2(cr.position, rail), WALL_HEIGHT,
-			Color(0.08, 0.20, 0.17), Color(0.045, 0.13, 0.11),
-			Color(0.025, 0.08, 0.07), Color(0.30, 0.72, 0.55))
-		_draw_box(Rect2(cr.end - rail, rail), WALL_HEIGHT,
-			Color(0.08, 0.20, 0.17), Color(0.045, 0.13, 0.11),
-			Color(0.025, 0.08, 0.07), Color(0.30, 0.72, 0.55))
-
-		# The gate itself: two standing posts and a lintel across them. A ring
-		# lay flat on the ground in a world drawn as solid objects, which is why
-		# it read as a marking rather than as a doorway.
-		var gside := Vector2(-g.dir.y, g.dir.x)
-		var gcol := Color(0.30, 0.50, 0.44)
-		var gtop := Color(0.07, 0.17, 0.15)
-		if g.open:
-			var gp := 0.7 + 0.3 * sin(Time.get_ticks_msec() * 0.004)
-			gcol = Color(0.45 * gp, 1.7 * gp, 1.1 * gp)
-			gtop = Color(0.12 * gp, 0.42 * gp, 0.30 * gp)
-		var reach := Terrain.CORRIDOR_HALF_WIDTH + 16.0
-		for sgn in [1.0, -1.0]:
-			var centre: Vector2 = g.pos + gside * reach * sgn
-			_draw_box(Rect2(centre - Vector2(15, 15), Vector2(30, 30)),
-				POST_HEIGHT, gtop, gtop.darkened(0.3), gtop.darkened(0.5), gcol)
-		# The lintel, spanning post top to post top.
-		var up := Vector2(0.0, -POST_HEIGHT)
-		var l1 := to_iso(g.pos + gside * reach) + up
-		var l2 := to_iso(g.pos - gside * reach) + up
-		draw_line(l1, l2, gcol, 3.0)
-		draw_line(l1 + Vector2(0, 8), l2 + Vector2(0, 8), gcol.darkened(0.4), 2.0)
 
 	# Orbiters and mines share the projectile pool, so they need to look like
 	# what they are rather than like a shot that stopped.
