@@ -2,16 +2,20 @@ extends SceneTree
 
 ## The block: when it spawns, how it fills, and what stops it.
 
-const EXPECTED_CHECKS := 12
+const EXPECTED_CHECKS := 16
 const DT := 1.0 / 60.0
 
 var failures := 0
 var checks := 0
 
-func _init() -> void:
+## _initialize, not _init: one case stands up a real run and awaits a frame.
+func _initialize() -> void:
+	SaveGame.use_test_paths()
 	print("ROOTKIT — blocks\n")
+	await process_frame
 	the_schedule()
 	the_hold()
+	await a_live_block_stands_on_open_ground()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -88,3 +92,27 @@ func the_hold() -> void:
 	var fired := _advance(b, 8.5, at, true, rng)
 	_check("eight seconds inside completes it once", fired, 1)
 	_check("and it is gone afterwards", b.alive, false)
+
+
+## Placement goes through terrain.nearest_open, so a block never stands in a
+## wall — an unreachable objective is an objective that cannot be taken.
+func a_live_block_stands_on_open_ground() -> void:
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(run)
+	await process_frame
+	run.input_override = Vector2.ZERO
+	_check("the run owns a Blocks", run.blocks != null, true)
+
+	run.blocks.elapsed = Blocks.FIRST_SPAWN
+	run.blocks.next_at = 0.0
+	run._step2e_blocks(DT)
+	_check("it spawned", run.blocks.alive, true)
+	_check("on ground you can stand on",
+		run.terrain.is_solid(run.blocks.pos), false)
+
+	# The collapse takes it away: the walk to the gate is the objective then.
+	run.phase = run.Phase.CLEARED
+	run._step2e_blocks(DT)
+	_check("and the collapse despawns it", run.blocks.alive, false)
+	run.queue_free()
+	await process_frame

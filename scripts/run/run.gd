@@ -190,6 +190,12 @@ var _spawn_hp: PackedFloat32Array
 ## per enemy TYPE — the exemption is a property of what a thing is.
 var _execute_by_exploit := PackedFloat32Array()
 var _execute_immune_type := PackedByteArray()
+
+## The capture point. Seeded from the run seed so a block schedule reproduces
+## from a bug report, and reset per arena — a block belongs to the arena you are
+## in, not to the campaign.
+var blocks := Blocks.new()
+var _block_rng := RandomNumberGenerator.new()
 ## Out of the entity grid, and therefore untouchable and harmless.
 var _submerged: PackedByteArray
 ## How many times this enemy's line has already divided.
@@ -360,6 +366,7 @@ var _camera: Camera2D
 func _ready() -> void:
 	_rng.seed = 20260830
 	_card_rng.seed = 20260830
+	_block_rng.seed = 20260831
 	enemy_types = EnemyTable.all()
 	thresholds = PackedFloat32Array()
 	thresholds.resize(enemy_types.size())
@@ -518,6 +525,7 @@ func _physics_process(dt: float) -> void:
 	_step2_integrate(dt)
 	_step2c_gate()
 	_step2d_collapse(dt)
+	_step2e_blocks(dt)
 	_step2b_zones(dt)
 	_step3_rebuild()
 	_step4_steer()
@@ -1784,6 +1792,26 @@ func _step2d_collapse(dt: float) -> void:
 		if terrain.is_void(enemies.pos[i]):
 			enemies.despawn(i)
 
+## Blocks are only live while you are fighting. Not during the collapse: the walk
+## to the gate is already the objective, and a second one competing with it makes
+## both worse.
+##
+## The condition is phase ALONE. `paused`, `alive` and `won` do not belong in it
+## — _physics_process returns before any step when any of those is set, so this
+## function does not run at all then and a card screen simply freezes a live
+## block where it stands. Naming them here would read as a despawn-on-pause rule
+## that never fires.
+func _step2e_blocks(dt: float) -> void:
+	if blocks.tick(dt, player_pos, phase == Phase.FIGHTING,
+			Callable(terrain, "nearest_open"), _block_rng):
+		_block_payout()
+
+## Filled in by the payout task. A completed hold that pays nothing is worse
+## than no block at all, so this must never stay a no-op.
+func _block_payout() -> void:
+	pending_levels += 1
+	_offer_cards()
+
 ## Crossing into the NEXT arena is the advance. The gate itself is just a mouth
 ## you walk through; touching it does nothing, which is the whole point of the
 ## rework — the transition is a walk, not a trigger.
@@ -1810,6 +1838,7 @@ func spawned_total() -> int:
 	return _spawned_before + director.spawned
 
 func _advance_subnet() -> void:
+	blocks.reset()
 	_spawned_before += director.spawned
 	subnet += 1
 	phase = Phase.FIGHTING

@@ -39,6 +39,17 @@ const RAIL_EDGE := Color(0.30, 0.72, 0.55)
 ## which is a different object from a solid you can see into.
 const BACK_EDGE_SCALE := 0.35
 
+## The block's own palette, warmer than the walls, because it is the one object
+## on the floor you are meant to walk INTO rather than around.
+const BLOCK_TOP := Color(0.28, 0.22, 0.06, FACE_ALPHA)
+const BLOCK_NEAR := Color(0.18, 0.14, 0.04, FACE_ALPHA)
+const BLOCK_SIDE := Color(0.11, 0.09, 0.03, FACE_ALPHA)
+const BLOCK_EDGE := Color(1.6, 1.15, 0.35)
+const BLOCK_SIZE := 34.0
+const BLOCK_HEIGHT := 40.0
+## Segments in the hold ring. Enough that a partial arc reads as a fraction.
+const BLOCK_ARC := 48
+
 var target: Node2D
 
 func _process(_d: float) -> void:
@@ -128,3 +139,28 @@ func _draw() -> void:
 		var l2: Vector2 = target.to_iso(g.pos - gside * reach) + up
 		draw_line(l1, l2, gcol, 3.0)
 		draw_line(l1 + Vector2(0, 8), l2 + Vector2(0, 8), gcol.darkened(0.4), 2.0)
+
+	_draw_block()
+
+## The capture point: a standing box, plus the hold ring drawn FLAT on the ground
+## rather than on the box — the ring is the area you have to be inside, and
+## putting it on the prop would read as decoration on the object instead.
+func _draw_block() -> void:
+	var b = target.blocks
+	if b == null or not b.alive:
+		return
+	var r := Rect2(b.pos - Vector2(BLOCK_SIZE, BLOCK_SIZE) * 0.5,
+		Vector2(BLOCK_SIZE, BLOCK_SIZE))
+	draw_box(r, BLOCK_HEIGHT, BLOCK_TOP, BLOCK_NEAR, BLOCK_SIDE, BLOCK_EDGE)
+
+	# The full circle dim, the held arc bright: the unfilled part has to be
+	# visible or there is nothing for the fill to read against.
+	var whole := PackedVector2Array()
+	for i in BLOCK_ARC + 1:
+		var a := TAU * float(i) / float(BLOCK_ARC) - PI * 0.5
+		whole.append(target.to_iso(b.pos + Vector2(cos(a), sin(a)) * Blocks.RADIUS))
+	draw_polyline(whole, BLOCK_EDGE.darkened(0.65), 1.0)
+
+	var filled: int = int(round(float(BLOCK_ARC) * b.fraction()))
+	if filled > 0:
+		draw_polyline(whole.slice(0, filled + 1), BLOCK_EDGE, 3.0)
