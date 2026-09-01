@@ -21,7 +21,7 @@ SUITES=(
   test_triggers test_worms test_wards test_multipliers test_travel
   test_behaviour test_effects test_minibosses test_cards_keyboard test_draw_order
   test_player_stats test_player_sheet test_meta test_meta_layout test_run
-  test_feel test_synth test_audio_events test_input
+  test_feel test_synth test_audio_events test_input test_prefs
 )
 [ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)
 

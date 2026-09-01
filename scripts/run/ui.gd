@@ -188,6 +188,21 @@ func _build() -> void:
 	pcol.add_child(pabandon)
 	pabandon.pressed.connect(_abandon)
 
+	# The same panel the shell uses. A second settings screen for the same four
+	# values would be a second thing to keep in sync.
+	_settings = Control.new()
+	_settings.set_script(load("res://scripts/meta/settings_panel.gd"))
+	add_child(_settings)
+	_settings.closed.connect(_on_settings_closed)
+	var psettings := Button.new()
+	psettings.text = " settings"
+	psettings.custom_minimum_size = Vector2(260, 34)
+	psettings.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	psettings.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	psettings.focus_mode = Control.FOCUS_NONE
+	pcol.add_child(psettings)
+	psettings.pressed.connect(_settings.open)
+
 	_end = Control.new()
 	_end.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_end.visible = false
@@ -261,6 +276,7 @@ var _recipes: PanelContainer
 var _recipes_body: Label
 var _vignette: ColorRect
 var _pause_panel: Control
+var _settings: Control
 
 func _on_cards(cards: Array) -> void:
 	_cards_data = cards
@@ -739,7 +755,9 @@ func _can_pause() -> bool:
 ## so cancel on a finished run would pause it; and the pause panel itself would
 ## have no way to close.
 func _route_cancel() -> void:
-	if _recipes != null and _recipes.visible:
+	if _settings != null and _settings.visible:
+		_settings.close()
+	elif _recipes != null and _recipes.visible:
 		_recipes.visible = false
 	elif _pause_panel != null and _pause_panel.visible:
 		_toggle_pause()
@@ -752,6 +770,16 @@ func _route_cancel() -> void:
 		_restart()
 	elif _can_pause():
 		_toggle_pause()
+
+## The live run holds its own copies of the presentation prefs, so closing the
+## panel has to push them across or a shake change would not take effect until
+## the next run.
+func _on_settings_closed() -> void:
+	if run == null:
+		return
+	var p := SaveGame.prefs()
+	run._shake_pref = float(p.get("shake", 1.0))
+	run._numbers_pref = float(p.get("damage_numbers", 1.0)) > 0.5
 
 func _toggle_pause() -> void:
 	if run == null:

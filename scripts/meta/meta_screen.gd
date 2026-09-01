@@ -27,6 +27,7 @@ const BUFFS := [
 var _rows: Array = []
 var _salvage: Label
 var _status: Label
+var _settings: Control
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -90,12 +91,32 @@ func _ready() -> void:
 	col.add_child(_status)
 	col.add_child(_spacer(22))
 
+	# Beside ./intrude rather than under it. The column already ran to roughly
+	# 505px in a 720px viewport, which is what test_meta_layout measures, so a
+	# settings row of its own would have been exactly the overflow that suite
+	# exists to catch.
+	var launch := HBoxContainer.new()
+	launch.add_theme_constant_override("separation", 12)
+	col.add_child(launch)
+
 	var start := Button.new()
 	start.text = "  ./intrude  --subnet 01     [ENTER]  "
 	start.custom_minimum_size = Vector2(340, 42)
 	start.add_theme_font_size_override("font_size", 16)
 	start.pressed.connect(_start)
-	col.add_child(start)
+	launch.add_child(start)
+
+	var settings_btn := Button.new()
+	settings_btn.text = "  settings  "
+	settings_btn.custom_minimum_size = Vector2(140, 42)
+	settings_btn.add_theme_font_size_override("font_size", 15)
+	launch.add_child(settings_btn)
+
+	_settings = Control.new()
+	_settings.set_script(load("res://scripts/meta/settings_panel.gd"))
+	add_child(_settings)
+	settings_btn.pressed.connect(_settings.open)
+
 	start.grab_focus()
 
 	_refresh()
