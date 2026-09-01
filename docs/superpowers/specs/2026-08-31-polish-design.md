@@ -88,7 +88,14 @@ spec are unimplementable, which is what the first review round found.
 timer runs 20× long — a 60ms hitstop becomes 1.2s of wall clock. The
 presentation half therefore derives its own delta from `Time.get_ticks_msec()`,
 which is unaffected by time scale and is already the idiom here (`run.gd:2327`,
-`scripts/run/props.gd:129`).
+`scripts/run/props.gd:129`). Measured during review: the physics tick *rate* is
+unchanged by time scale (still 60/s at 0.05), only the delta shrinks — so the
+above-guard release runs at full frequency during a hitstop.
+
+**That delta is clamped to 0.1s.** A wall-clock delta is unbounded across a
+first frame, a scene load, or an OS suspend-and-resume, and an unclamped one
+would expire every live effect and the hitstop in a single frame after any of
+them.
 
 ## 1. Feel
 
@@ -174,8 +181,18 @@ The mechanism, stated so it cannot be re-derived wrongly:
    reviewers found the contradiction independently: ordered before the set it is
    dead code, ordered after it cancels the hitstop at birth. Either way two of
    the three hitstops never happen. So the restore goes where the deadline check
-   stops running — `_exit_tree` / the transition back to the shell — and is
-   **conditional on no active deadline**, so it cannot preempt a live hitstop.
+   stops running — `_exit_tree` / the transition back to the shell — and there
+   it is **unconditional**.
+
+   Unconditional specifically, because this is the second thing a draft got
+   wrong. A later revision made it "conditional on no active deadline", carrying
+   a condition that was right at a *trigger* site (do not preempt a live
+   hitstop) to a site where its rationale does not hold. After teardown nothing
+   releases anything — the presentation tick goes with the scene — so declining
+   to restore because a deadline is still live leaks `Engine.time_scale` at 0.05
+   in exactly the case that matters: quitting or restarting during the 60ms
+   hitstop a death just started. Two reviewers caught it; two others approved
+   the wording without tracing that path.
 4. Entering player-pause does **not** restore. The release check runs above the
    guard, so `user_paused` no longer skips it, and cancelling there would make
    pausing during a boss kill silently different from not pausing.
@@ -311,6 +328,12 @@ runs once per *run*, not once per process. Creation is therefore guarded on
 No new resource file, no binary. Every volume write checks
 `get_bus_index("SFX") >= 0` first, because a missing bus returns `-1` and
 `set_bus_volume_db(-1, x)` errors on every slider movement.
+
+That guard needs an explicit assertion rather than trust in the runner:
+`set_bus_volume_db(-1, …)` emits `ERROR:`, not `SCRIPT ERROR:`, so
+`tools/run_tests.sh:33` does not match it and a forgotten guard would pass the
+suite silently. `test_audio_events` asserts the bus index is non-negative after
+creation directly.
 
 Volume conversion is `linear_to_db(maxf(v, 0.0001))`, with a `set_bus_mute`
 branch at zero — `linear_to_db(0.0)` is `-INF`, and a non-finite float entering
@@ -477,9 +500,21 @@ earlier draft named:
   ordinary play, not just by hand-editing: see the write-side note below.
 - **`NAN`** — `clampf(NAN, 0.0, 2.0)` returns `nan`, measured on Godot 4.7. A
   clamp is not a finiteness check.
-- **`±INF`** — same reason.
+- **`±INF`** — for a *different* reason, worth stating rather than eliding:
+  `clampf(INF, 0.0, 2.0)` does return `2.0`, so the clamp holds here. It is
+  rejected anyway because an INF that reaches the dictionary before the clamp —
+  or any key whose clamp is later loosened — persists as `1e99999`, and because
+  one rule is easier to keep right than two.
 
 The rule is `is_finite()` plus an explicit type check, not `clampf` alone.
+
+**`_num` covers more than the prefs and `buffs`.** `save_game.gd:113-115` reads
+`salvage`, `kills` and `flips` with the same unguarded `int()` coercion, and
+their blast radius is worse than the `buffs` case: `_read` succeeds, so
+`_sanitise` aborts and `load_state()` returns `{}` rather than a default
+profile — which then reaches `meta_screen.gd:116` and sticks. Three more
+one-line changes to a helper this pass already introduces; skipping them would
+leave the sharpest of the four paths open while closing the other three.
 
 ### The version read needs its own guard
 
@@ -490,6 +525,12 @@ reproduced under `godot --headless` during review — which aborts `_read`,
 discards the save silently, and after two further saves rotates the `.bak` away
 permanently. It is outside this pass's nominal scope but it is on the same code
 path the `VERSION` bump touches, and it is one guard.
+
+The guard is **finite-number**, not merely non-null: `int(INF)` is
+`9223372036854775807`, so `{"version": 1e99999}` sails past a null check and
+quarantines the live save (verified — `PATH` gone). And `save_game.gd:103` holds
+a *second* `int(parsed["version"])` for the rename suffix, which needs the same
+treatment or the guard is only half applied.
 
 ### Clamped on write as well as read
 
@@ -628,11 +669,19 @@ because the arena is emptied first.
 **Pre-existing, and fixed here because the feature is about to lean on it:**
 `_submerged`, `_ai_phase`, `_ai_timer` and `_ai_aim` are themselves absent from
 that block. An ambusher self-heals within a tick because `_ambush` rewrites the
-byte; the AI arrays do not. Enumerating the 13 arrays sized `resize(MAX_ENEMIES)`
-at `run.gd:424-445` against the eight relocated at `run.gd:1708-1716` gives
-exactly those four as the difference. Adding them alongside the two new ones is
-a six-line change to one block, and leaving them out would mean building a boss
-entrance on the same latent bug.
+byte; the AI arrays do not.
+
+Enumerating the 13 arrays sized `resize(MAX_ENEMIES)` at `run.gd:424-445`
+against the eight relocated at `run.gd:1708-1716` leaves **five**, not four:
+`_ai_phase`, `_ai_timer`, `_ai_aim`, `_submerged` — and `_order`
+(`run.gd:445`), which is the one that genuinely needs nothing, because
+`_depth_sort` refills it wholesale every tick (`run.gd:2223-2226`). Four to add,
+one to leave alone deliberately. The count is spelled out because the spec asks
+the implementer to run this enumeration, and it should come out to the number
+stated.
+
+Adding the four alongside the two new ones is a six-line change to one block,
+and leaving them out would mean building a boss entrance on the same latent bug.
 
 **There is a second despawn site, and it relocates nothing at all.**
 `_step2d_collapse` removes enemies standing on voided ground
@@ -707,19 +756,34 @@ the arena empties, holds, and then the thing arrives into open ground.
 
 An arrival that can be shot through is not an entrance.
 
-**The aggregate cost, stated correctly.** 15 arrivals per campaign × 1.15s =
-17.25s of invulnerable, non-fighting time. Two earlier drafts got the
-consequence wrong in opposite directions; the truth is that it is **not a
-duration shift at all**. `spawn_director.gd:143` is
-`elapsed = minf(elapsed + dt, SUBNET_SECONDS)`, and arrivals do not stop the
-tick, so the arrival seconds are spent *inside* the subnet's 300s rather than
-added to it. Campaign wall-clock is unchanged.
+**The aggregate cost, and it is not uniform across the 15 arrivals.** Three
+drafts of this paragraph got it wrong in three different directions, so the
+mechanism is spelled out rather than summarized:
 
-What actually moves is **fighting** time: 17.25s in which nothing can be killed.
-So the effect lands on XP and salvage at the moment ICE spawns, not on how long
-a run takes. `test_campaign`'s expectation is therefore about level-at-ICE, and
-must not assert a duration shift — an assertion that would fail for a reason
-that has nothing to do with this feature.
+- **The 12 mini-boss arrivals cost no wall-clock at all.** `MINIBOSS_TIMES` is
+  `[60, 120, 180, 240]`, every entry inside the subnet's 300s, and
+  `spawn_director.gd:143` is `elapsed = minf(elapsed + dt, SUBNET_SECONDS)`.
+  Arrivals do not stop the tick, so those seconds are spent *inside* the window
+  rather than added to it. The swarm stays alive and killable throughout — a
+  mini-boss arriving does not empty the arena.
+- **The 3 ICE arrivals each extend their subnet by the full 1.15s.**
+  `should_spawn_boss()` is `elapsed >= SUBNET_SECONDS and not boss_spawned`
+  (`spawn_director.gd:158-159`), so ICE spawns only *after* elapsed has already
+  pegged at 300 — the clamp cannot absorb it. The subnet then ends on ICE's
+  death (`run.gd:1637` for CLEARED, `run.gd:1643` for the win), and ICE cannot
+  be killed while it is arriving. The delay is strict.
+
+So campaign wall-clock shifts by **3 × 1.15 = 3.45s**, all of it ICE. The other
+13.8s is animation the player watches while the fight continues around them.
+
+**No suite asserts that 3.45s, deliberately.** `test_campaign` cannot host it:
+`_kill_ice` (`tests/test_campaign.gd:179-183`) spawns ICE and calls `_on_death`
+on the very next line — there is no autoplay, no `elapsed`, and no timing
+assertion anywhere in it. Writing the expectation there would mean building an
+autoplay harness whose flakiness would exceed its value. The 3.45s is stated
+here so nobody later reads a longer campaign as a regression; it is documentation,
+not a test. `test_campaign` does still change under this pass, but because
+`_on_death` on ICE now writes `Engine.time_scale` (§1), not because of §6.
 
 ### Telegraph gaps
 
@@ -749,10 +813,18 @@ New suites, added to `SUITES` in `tools/run_tests.sh`:
   yields defaults instead of aborting `_sanitise`; a per-key Dictionary, Array,
   **`null`, `NAN` and `INF`** each do the same; **`{"version": null}` does not
   abort `_read`**; a v2 file loads with default prefs; `set_pref` rejects
-  non-finite input rather than clamping it; a round trip preserves what was set.
-  Every one of these drives `SaveGame.load_state()` against a written file, not
-  a constructed dictionary — the failure mode is a script error inside
-  `_sanitise`, which only the real path reaches
+  non-finite input rather than clamping it; a round trip preserves what was set;
+  and `salvage` / `kills` / `flips` survive the same hostile values. Every one of
+  these drives `SaveGame.load_state()` against a written file, not a constructed
+  dictionary — the failure mode is a script error inside `_sanitise`, which only
+  the real path reaches.
+
+  **Each case must reset `SaveGame._cache = {}` first** (the idiom at
+  `tests/test_meta.gd:118`). `load_state()` returns the cache when it is
+  non-empty, so without the reset every case after the first short-circuits and
+  the suite asserts nothing at all while reporting PASS — the precise failure
+  class `tools/run_tests.sh` was written to catch, arriving by a route it
+  cannot see
 - **`test_input`** — every action the code references exists in the map; the
   overlay is drivable by **joypad** events as well as key events; `cancel`
   routes correctly through all five arms; `user_paused` gates the tick and is
@@ -790,7 +862,9 @@ indirect breakage through `_refresh`), `test_minibosses` (mini-boss death now
 crosses arrival and hitstop, `tests/test_minibosses.gd:138-145`),
 `test_behaviour` (calls `_behave` and spawn state directly,
 `tests/test_behaviour.gd:50-82`, which the `_arriving` gate now guards), and
-`test_campaign` (the 17.25s arrival shift).
+`test_campaign` (its `_kill_ice` helper drives `_on_death` on ICE directly, which
+now writes `Engine.time_scale` — see §1; it does **not** gain a timing
+assertion, for the reason given in §6).
 
 `perf_milestone0` must stay green. The per-frame additions are the flash decay,
 the number pool and the skip-mask union, all O(n) over the enemy cap.
