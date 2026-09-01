@@ -251,8 +251,11 @@ static func validate(m: Module) -> Array[String]:
 	# burst is how many times an EVENT produces a shot, so it is meaningless on
 	# anything but a trigger — and a payload carrying it would read as a damage
 	# multiplier that silently does nothing on an interval build.
-	if m.slot != Module.Slot.TRIGGER and m.stats.has(&"burst"):
-		errs.append("module '%s': only a TRIGGER may carry burst" % m.id)
+	# A FUSED module is the exception, because it IS its own trigger: it carries
+	# trigger_kind and nothing else in its row does.
+	if m.slot != Module.Slot.TRIGGER and not m.is_fused \
+			and m.stats.has(&"burst"):
+		errs.append("module '%s': only a TRIGGER or a fused module may carry burst" % m.id)
 
 	# The guarantee's other precondition: below this the ABSOLUTE floor binds for
 	# some vectors and not others, and the ratio collapses. Requires the KEY, not

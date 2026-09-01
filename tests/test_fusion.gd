@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 25
+const EXPECTED_CHECKS := 36
 
 var failures := 0
 var checks := 0
@@ -22,6 +22,8 @@ func _initialize() -> void:
 	execute_below_folds_by_max_and_clamps()
 	homing_sums_and_clamps()
 	await recycling_carries_every_parallel_array()
+	the_recipes_are_present_and_valid()
+	an_exact_triple_matches_and_one_module_off_does_not()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -216,3 +218,55 @@ func recycling_carries_every_parallel_array() -> void:
 	_check("and its own fuse", run._mine_left[1], 3.0)
 	run.queue_free()
 	await process_frame
+
+
+## The table is data, and every number in it has to survive the same validator
+## the module table does. A fused module is a VECTOR, so the cooldown floor and
+## the cadence_mult ban both apply to it.
+func the_recipes_are_present_and_valid() -> void:
+	var rs: Array = RecipeTable.all()
+	_check("twenty recipes", rs.size(), 20)
+	_check("syn_flood is deliberately near the cooldown floor",
+		float(RecipeTable.by_fused_id()[&"syn_flood"].fused.stats[&"cooldown"]), 0.42)
+
+	var ids := {}
+	var triples := {}
+	var mods := ModuleTable.by_id()
+	var errs := 0
+	var min_cd := Compiler.MIN_COOLDOWN / Compiler.MIN_CADENCE_FRACTION
+	for r in rs:
+		ids[r.fused.id] = true
+		triples["%s|%s|%s" % [r.vector_id, r.trigger_id, r.payload_id]] = true
+		errs += Compiler.validate(r.fused).size()
+		if not (mods.has(r.vector_id) and mods.has(r.trigger_id)
+				and mods.has(r.payload_id)):
+			errs += 1
+		if float(r.fused.stats.get(&"cooldown", 0.0)) < min_cd:
+			errs += 1
+	_check("every fused id is distinct", ids.size(), 20)
+	_check("every triple is distinct", triples.size(), 20)
+	_check("and every one of them validates", errs, 0)
+
+	# Coverage is the property that makes no card a dead end for a recipe hunter.
+	var vs := {}; var ts := {}; var ps := {}
+	for r in rs:
+		vs[r.vector_id] = true; ts[r.trigger_id] = true; ps[r.payload_id] = true
+	_check("every trigger has a fusion path", ts.size(), 7)
+	_check("every payload has one too", ps.size(), 14)
+	_check("every vector has one too", vs.size(), 14)
+
+func an_exact_triple_matches_and_one_module_off_does_not() -> void:
+	var ex := Exploit.new()
+	ex.place(T[&"snipe"]); ex.place(T[&"on_kill"]); ex.place(T[&"bitmask"])
+	var r: RecipeTable.Recipe = RecipeTable.match_exploit(ex)
+	_check("the triple matches", r != null and r.fused.id == &"zero_day", true)
+
+	var off := Exploit.new()
+	off.place(T[&"packet"]); off.place(T[&"on_kill"]); off.place(T[&"bitmask"])
+	_check("one module off matches nothing",
+		RecipeTable.match_exploit(off), null)
+
+	var partial := Exploit.new()
+	partial.place(T[&"snipe"]); partial.place(T[&"on_kill"])
+	_check("and an incomplete row matches nothing",
+		RecipeTable.match_exploit(partial), null)
