@@ -85,6 +85,12 @@ func _slot_holding(id: StringName) -> Array:
 func legal_targets(m: Module) -> Array:
 	var out := []
 	var home := _slot_holding(m.id)
+	# A fused module enters play by FUSING, never by being drawn. Once held it
+	# ranks like anything else — the slot-holding branch below — but unheld it
+	# has no home anywhere. Saying so here rather than leaving it to the card
+	# pool is what makes it a rule instead of a coincidence.
+	if m.is_fused and home.is_empty():
+		return out
 	for e in MAX_EXPLOITS:
 		var ex: Exploit = exploits[e] if e < exploits.size() else null
 		for sl in Exploit.SLOT_COUNT:

@@ -1872,15 +1872,33 @@ func _gain_xp(n: int) -> void:
 		_offer_cards()
 	emit_signal("stats_changed")
 
-## Multiple thresholds crossed in one tick queue; screens show in sequence.
-func _offer_cards() -> void:
-	paused = true
+## The unlocked table, plus every fused module the loadout currently holds.
+## Fused modules are never in ModuleTable — they enter the pool only by being
+## owned, and legal_targets then offers the single slot holding one, as a
+## rank-up. That is how a fused weapon climbs 1->5 like anything else.
+func _card_pool() -> Array:
 	var pool := []
+	var seen := {}
 	for m in _unlocked:
 		var targets := loadout.legal_targets(m)
 		if targets.is_empty():
 			continue          # nothing legal: not worth a card slot
+		seen[m.id] = true
 		pool.append([m, targets])
+	for ex in loadout.exploits:
+		if not ex.head_is_fused() or seen.has(ex.vector.module.id):
+			continue
+		var ft := loadout.legal_targets(ex.vector.module)
+		if ft.is_empty():
+			continue          # already at max rank
+		seen[ex.vector.module.id] = true
+		pool.append([ex.vector.module, ft])
+	return pool
+
+## Multiple thresholds crossed in one tick queue; screens show in sequence.
+func _offer_cards() -> void:
+	paused = true
+	var pool := _card_pool()
 	# Seeded so a run reproduces exactly from a bug report.
 	for i in range(pool.size() - 1, 0, -1):
 		var j := _card_rng.randi_range(0, i)

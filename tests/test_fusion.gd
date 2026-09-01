@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 51
+const EXPECTED_CHECKS := 55
 
 var failures := 0
 var checks := 0
@@ -27,6 +27,7 @@ func _initialize() -> void:
 	fusing_frees_the_ids_and_keeps_the_metronome()
 	a_refused_fusion_leaves_the_row_untouched()
 	fusing_may_not_orphan_the_loadout()
+	a_fused_module_is_drawable_only_once_held()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -329,3 +330,24 @@ func fusing_may_not_orphan_the_loadout() -> void:
 	var conditional: Module = RecipeTable.by_fused_id()[&"zero_day"].fused
 	_check("but fusing the last interval into an ON_KILL weapon is refused",
 		lo.can_fuse(0, conditional), false)
+
+
+## A fused module ranks 1->5 like anything else, so it has to be drawable — but
+## only as a rank-up, and only once you hold it. ModuleTable never lists it.
+func a_fused_module_is_drawable_only_once_held() -> void:
+	for m in ModuleTable.all():
+		if m.is_fused:
+			_check("ModuleTable lists no fused module", m.id, &"<none>")
+	_check("the table is clean", true, true)
+
+	var lo := Loadout.new()
+	var zero_day: Module = RecipeTable.by_fused_id()[&"zero_day"].fused
+	lo.exploits = [_mk(&"packet", &"interval", [])]
+	_check("not held: no legal target anywhere",
+		lo.legal_targets(zero_day).is_empty(), true)
+
+	lo.exploits.append(Exploit.new())
+	lo.exploits[1].vector = EquippedModule.new(zero_day)
+	var t := lo.legal_targets(zero_day)
+	_check("held: exactly one target, the rank-up", t.size(), 1)
+	_check("and it is a rank-up", t[0].action, Loadout.Rule.RANK_UP)
