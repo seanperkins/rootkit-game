@@ -31,10 +31,9 @@ const SAMPLE_RATE := 22050
 ## slightly different envelopes, chosen at random per play, is the cheap version
 ## of the variation pools that middleware gives you.
 ##
-## Four rather than six: the bank costs real time to synthesize, and the
-## perceptual gain from one asset to four is most of the total — the gain from
-## four to six is not worth another 50% of boot.
-const VARIANTS := 4
+## Six, so a scale-stepped sound gets a full pentatonic run rather than a
+## truncated one. The bank is cached per process, so the cost is paid once.
+const VARIANTS := 6
 
 ## 16-bit signed PCM, mono. Named rather than implied: "produces an
 ## AudioStreamWAV" is not a specification.
@@ -53,19 +52,31 @@ const DEFAULTS := {
 	"release": 0.06,
 	"noise": 0.0,      # 0..1 mixed over the tone
 	"gain": 0.7,
+	# Semitone offsets, one per variant, cycled. This is how a tonal sound gets
+	# AUDIBLE variation: detuning by a few percent is inaudible on a 50ms blip,
+	# and the noise reseed that varies `hit` and `kill` does nothing at all when
+	# `noise` is 0. Steps drawn from a scale also keep a sound that plays
+	# hundreds of times per run from fighting the music.
+	"steps": [0],
 }
 
 ## id -> spec. Fire ids are added per VectorKind by `build_bank`, so a new
 ## vector kind cannot mint an id the bank has never heard of.
 const EVENTS := {
 	"hit":            {"wave": Wave.SQUARE, "f0": 620.0, "f1": 380.0, "dur": 0.05,
-		"decay": 0.02, "sustain": 0.2, "release": 0.02, "noise": 0.35, "gain": 0.35},
+		"decay": 0.02, "sustain": 0.2, "release": 0.02, "noise": 0.35,
+		"gain": 0.28, "steps": [0, -2, 2, -4]},
 	"kill":           {"wave": Wave.NOISE, "f0": 240.0, "f1": 90.0, "dur": 0.13,
 		"noise": 0.8, "gain": 0.5},
 	"flip":           {"wave": Wave.SINE, "f0": 520.0, "f1": 1180.0, "dur": 0.18,
-		"sustain": 0.6, "gain": 0.45},
-	"pickup":         {"wave": Wave.SQUARE, "f0": 880.0, "f1": 1320.0, "dur": 0.045,
-		"decay": 0.01, "release": 0.02, "gain": 0.22},
+		"sustain": 0.6, "gain": 0.42, "steps": [0, 3, 7, 5]},
+	# The most frequent sound in the game by a wide margin — one per shard, and
+	# a magnet build sweeps up dozens a second. Quiet, short, and stepped
+	# through a minor pentatonic so a run of pickups reads as a flourish rather
+	# than as one blip stuttering.
+	"pickup":         {"wave": Wave.SQUARE, "f0": 880.0, "f1": 1180.0, "dur": 0.04,
+		"decay": 0.01, "release": 0.02, "gain": 0.085,
+		"steps": [0, 3, 5, 7, 10, 12]},
 	"level_up":       {"wave": Wave.SAW, "f0": 330.0, "f1": 990.0, "dur": 0.34,
 		"sustain": 0.75, "release": 0.12, "gain": 0.6},
 	"card_select":    {"wave": Wave.SQUARE, "f0": 700.0, "f1": 940.0, "dur": 0.07,
@@ -107,16 +118,30 @@ static func fire_id(kind: int) -> String:
 
 ## Per-kind fire timbres, indexed by VectorKind. A missing entry falls back to
 ## the first, so appending a kind yields a real sound rather than a crash.
+## Per-kind fire timbres, indexed by VectorKind. A missing entry falls back to
+## the first, so appending a kind yields a real sound rather than a crash.
+##
+## Every one carries `steps`. Fire is the most-repeated sound in the game —
+## auto-fire across three exploits, for a whole run — so it is the one that most
+## needs real variation, and pitch steps drawn from a scale give that without
+## making consecutive shots sound out of tune with each other.
 const FIRE_SPECS := [
-	{"wave": Wave.SQUARE, "f0": 760.0, "f1": 520.0, "dur": 0.06, "gain": 0.28},
-	{"wave": Wave.SQUARE, "f0": 900.0, "f1": 700.0, "dur": 0.05, "gain": 0.26},
-	{"wave": Wave.SAW, "f0": 640.0, "f1": 1000.0, "dur": 0.07, "gain": 0.26},
-	{"wave": Wave.SINE, "f0": 1200.0, "f1": 400.0, "dur": 0.09, "gain": 0.24},
+	{"wave": Wave.SQUARE, "f0": 760.0, "f1": 520.0, "dur": 0.06, "gain": 0.24,
+		"steps": [0, -2, 3, -5, 5, -7]},
+	{"wave": Wave.SQUARE, "f0": 900.0, "f1": 700.0, "dur": 0.05, "gain": 0.22,
+		"steps": [0, 3, -2, 7, -5, 2]},
+	{"wave": Wave.SAW, "f0": 640.0, "f1": 1000.0, "dur": 0.07, "gain": 0.22,
+		"steps": [0, 5, -3, 2, -7, 3]},
+	{"wave": Wave.SINE, "f0": 1200.0, "f1": 400.0, "dur": 0.09, "gain": 0.22,
+		"steps": [0, -5, 3, -2, 7, -3]},
 	{"wave": Wave.NOISE, "f0": 700.0, "f1": 300.0, "dur": 0.08, "noise": 0.7,
-		"gain": 0.26},
-	{"wave": Wave.SINE, "f0": 300.0, "f1": 620.0, "dur": 0.1, "gain": 0.3},
-	{"wave": Wave.SQUARE, "f0": 220.0, "f1": 160.0, "dur": 0.08, "gain": 0.3},
-	{"wave": Wave.SINE, "f0": 980.0, "f1": 1240.0, "dur": 0.05, "gain": 0.2},
+		"gain": 0.24, "steps": [0, -2, 2, -4, 4, -6]},
+	{"wave": Wave.SINE, "f0": 300.0, "f1": 620.0, "dur": 0.1, "gain": 0.26,
+		"steps": [0, 3, 7, -2, 5, -5]},
+	{"wave": Wave.SQUARE, "f0": 220.0, "f1": 160.0, "dur": 0.08, "gain": 0.26,
+		"steps": [0, -3, 2, -5, 3, -7]},
+	{"wave": Wave.SINE, "f0": 980.0, "f1": 1240.0, "dur": 0.05, "gain": 0.18,
+		"steps": [0, 2, -3, 5, -2, 7]},
 ]
 
 ## Every id the game can play, spec included. `build_bank` is the only caller
@@ -259,11 +284,21 @@ static func build(partial: Dictionary, variant: int = 0) -> AudioStreamWAV:
 	# Each variant is the same sound with a different noise cut and a slightly
 	# different envelope and sweep. Not a different sound — an odd one out is
 	# worse than repetition, because the ear starts listening FOR it.
+	var steps: Array = spec["steps"]
+	if steps.size() > 1:
+		# Transpose by a scale degree. Equal temperament: 2^(n/12).
+		var semis: float = float(steps[variant % steps.size()])
+		var mul: float = pow(2.0, semis / 12.0)
+		spec["f0"] = float(spec["f0"]) * mul
+		spec["f1"] = float(spec["f1"]) * mul
 	if variant > 0:
-		var wob := 1.0 + (float(variant % 3) - 1.0) * 0.035
-		spec["f0"] = float(spec["f0"]) * wob
-		spec["f1"] = float(spec["f1"]) * (2.0 - wob)
-		spec["decay"] = float(spec["decay"]) * (1.0 + (float(variant % 2) - 0.5) * 0.18)
+		# Envelope wobble on top, so two plays of the same degree are still not
+		# bit-identical. Spread across the FULL variant range rather than
+		# `variant % 3`, which silently collapsed six variants into three for
+		# any sound with neither steps nor noise — which was every fire sound.
+		var spread := float(variant) / float(maxi(VARIANTS - 1, 1))
+		spec["decay"] = float(spec["decay"]) * (0.86 + 0.28 * spread)
+		spec["dur"] = float(spec["dur"]) * (0.94 + 0.12 * spread)
 
 	var n := int(round(float(spec["dur"]) * SAMPLE_RATE))
 	n = maxi(n, 1)

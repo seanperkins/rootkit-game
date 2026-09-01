@@ -122,18 +122,21 @@ func bank_covers_every_id() -> void:
 ## onto it. So the variants must genuinely differ from each other.
 func the_pool_actually_varies() -> void:
 	var bank := Synth.build_bank()
-	var checked := 0
-	for id in ["hit", "kill", Synth.fire_id(0)]:
+	var thin := []
+	for id in bank:
 		var pool: Array = bank[id]
 		var distinct := []
 		for st in pool:
 			var sig := str(st.data.size()) + ":" + str(hash(st.data))
 			if not distinct.has(sig):
 				distinct.append(sig)
-		_check("%s has %d distinct buffers" % [id, Synth.VARIANTS],
-			distinct.size(), Synth.VARIANTS)
-		checked += 1
-	_check("three high-traffic ids were checked", checked, 3)
+		if distinct.size() < Synth.VARIANTS:
+			thin.append("%s(%d/%d)" % [id, distinct.size(), Synth.VARIANTS])
+	# EVERY id, not a sample of three. Checking three is what let every fire
+	# sound ship with six variants that collapsed to three distinct buffers —
+	# they have neither noise to reseed nor, at the time, steps to transpose.
+	_check("every id in the bank has fully distinct variants", thin, [])
+	_check("the bank is not empty", bank.size() > 0, true)
 	finished["the_pool_actually_varies"] = true
 
 ## A naive square jumps +1 to -1 between adjacent samples — a step of 2.0 — and

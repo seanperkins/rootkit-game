@@ -18,7 +18,9 @@ const BUS := "SFX"
 const RATE_LIMIT := {
 	"hit": 14.0,
 	"kill": 12.0,
-	"pickup": 10.0,
+	# Down from 10: a magnet build crosses dozens of shards a second, and the
+	# limiter is the only thing between that and a continuous tone.
+	"pickup": 7.0,
 	"flip": 8.0,
 }
 const DEFAULT_RATE := 20.0
