@@ -121,6 +121,10 @@ data/            module_table  enemy_table
 shaders/         glyph.gdshader
 ```
 
+`codemaps/` breaks each of those down further — the tick pipeline, the compiler's
+fold rules, every table value. `CLAUDE.md` collects the invariants that break
+quietly, which is the part worth reading before changing any of it.
+
 ## Tests
 
 ```
