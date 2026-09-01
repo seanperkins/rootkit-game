@@ -1,4 +1,4 @@
-> Generated: 2026-08-31 | Token-lean format for LLM context
+> Generated: 2026-09-01 | Token-lean format for LLM context
 
 # Build layer — `scripts/build/` (pure)
 
@@ -14,7 +14,7 @@ Module ──> EquippedModule (module + rank) ──> Exploit (vector/trigger/pa
                               Compiler.build(exploit, mult) ──> ResolvedExploit
 ```
 
-## `module.gd` (49 lines) — `class_name Module extends Resource`
+## `module.gd` (62 lines) — `class_name Module extends Resource`
 
 ```gdscript
 enum Slot        { VECTOR, TRIGGER, PAYLOAD }
@@ -39,7 +39,7 @@ travel cadence_mult knockback slow_amount slow_duration shield orbit_count burst
 Fields: `id, display_name, slot, tags[], max_rank=5, stats{}, vector_kind,
 trigger_kind`. Built via `Module.make(id, name, slot, stats, tags, vk, tk, max_rank)`.
 
-## `exploit.gd` (83) — one weapon
+## `exploit.gd` (107) — one weapon
 
 | Member | Note |
 |---|---|
@@ -53,7 +53,7 @@ is what lets a card offer a single button per exploit row.
 Also: `equipped()`, `holds(id)`, `at(i)`, `set_at(i, em)`, `place(m)`,
 `free_payload_slot()`, `has_free_slot_for(slot)`.
 
-## `loadout.gd` (227) — the board and the auto-slot rules
+## `loadout.gd` (305) — the board and the auto-slot rules
 
 `MAX_EXPLOITS = 3`. `enum Rule { NONE, RANK_UP, EMPTY_SLOT, NEW_EXPLOIT, REPLACE }`.
 
@@ -74,7 +74,7 @@ Invariants enforced by `legal_targets`:
 - The **last INTERVAL trigger cannot be displaced** (`_is_last_interval`) — an
   all-event loadout could otherwise never fire.
 
-## `compiler.gd` (233) — `Compiler.build(ex, mult) -> ResolvedExploit`
+## `compiler.gd` (269) — `Compiler.build(ex, mult) -> ResolvedExploit`
 
 Fold order: **flat module fold → cadence product → global multipliers → clamps.**
 
@@ -91,7 +91,7 @@ Fold order: **flat module fold → cadence product → global multipliers → cl
 Everything else sums. `_rank_factor(f, rank)` scales a stat by rank.
 `validate(m) -> Array[String]` checks a module against `STAT_KEYS`.
 
-## `resolved_exploit.gd` (94) — the flat struct combat reads
+## `resolved_exploit.gd` (122) — the flat struct combat reads
 
 `cadence_mult` is the **only** field defaulting to `1.0`; anything that resets
 fields generically breaks quietly on it.

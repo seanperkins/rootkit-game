@@ -1,11 +1,11 @@
-> Generated: 2026-08-31 | Token-lean format for LLM context
+> Generated: 2026-09-01 | Token-lean format for LLM context
 
 # UI, rendering and tooling
 
 No font files and no image assets: text is Godot's default mono, entities are
 procedural shader glyphs, and everything else is `_draw` calls.
 
-## `scripts/run/ui.gd` (529) — `CanvasLayer`, the run HUD and level-up cards
+## `scripts/run/ui.gd` (869) — `CanvasLayer`, the run HUD and its screens
 
 ```gdscript
 FG   = Color(0.55, 1.00, 0.72)   # green
@@ -13,18 +13,39 @@ DIM  = Color(0.35, 0.62, 0.48)
 WARN = Color(1.00, 0.45, 0.42)
 ```
 
-`bind(run)` wires the three run signals: `level_up_offered → _on_cards`,
-`run_ended → _on_end`, `stats_changed → _refresh`.
+`bind(run)` wires the run signals: `level_up_offered → _on_cards`,
+`fusion_offered → _on_fusion`, `run_ended → _on_end`, `stats_changed → _refresh`.
 
 | State | Meaning |
 |---|---|
-| `_hud`, `_overlay`, `_end` | the three screens |
+| `_hud`, `_overlay`, `_end`, `_pause_panel`, `_settings`, `_recipes`, `_vignette` | the screens and overlays |
 | `_cards: Array` | the card `PanelContainer`s, so the **selected card** can be lit — the card is the module; a row is only where it goes |
 | `_nav: Array` | per card, **enabled rows only** — indexing enabled-only rows is what makes Enter always do something |
 | `_col`, `_row`, `_on_decline` | keyboard cursor |
 
-Build/refresh: `_build`, `_refresh`, `_mono(size)`, `_panel(color, width)`,
-`_bar(fraction, width)`, `_spacer`, `_stats_line(m)`.
+Build/refresh: `_build`, `_refresh`, `_build_lines`, `_mono(size)`,
+`_panel(color, width)`, `_bar(fraction, width)`, `_spacer`, `_stats_line(m)`.
+
+### The HUD is four blocks, not one line
+
+`Status` (left), `Centre`, `Tally` (right), `Build` (bottom-left) — all indexed
+by `get_node(name)` with **no `.get`**, so a rename is a crash inside `_refresh`
+that the runner only surfaces as a bare `SCRIPT ERROR`. `test_hud` is the only
+guard on those names; before it, nothing tested the HUD at all.
+
+| Block | Carries |
+|---|---|
+| `Status` | integrity + bar, armor, def, level + XP bar. Warn colour is PROPORTIONAL (<30%), not a fixed threshold |
+| `Centre` | subnet, timer, and the phase banner on its own line |
+| `Tally` | salvage, botnet, kills, flips |
+| `Build` | one line per exploit, shared with the run summary via `_build_lines` |
+
+The mini-boss banner is gated on `not run.is_arriving(i)` — the entity exists
+for the whole 0.9 s charge, and naming it then spoils the entrance.
+
+`_on_end` is a run summary: outcome, subnet, time, level, kills, flips, salvage
+and the final build, tolerating a run that ended holding fewer than three
+exploits.
 
 ### The level-up card
 One card per offered module; **one button per exploit row**, all terminal —
@@ -45,13 +66,43 @@ A `null` target means the row is no legal home — after the column is fixed tha
 can only be a max-rank duplicate or the last interval trigger, both named rather
 than greyed out silently. Any card can be declined for salvage.
 
-### Keyboard navigation
-`_input(e)`, `_move_row(±1)`, `_move_card(±1)`, `_activate`, `_hover(card, row)`,
-`_hover_decline`, `_apply_highlight`, `_mark(button, on)`, `highlighted()`,
-`card_row()`, `decline_button()`. Arrows and WASD; covered by
-`tests/test_cards_keyboard.gd`.
+### Input — ACTIONS, not keycodes
+`_input(e)` matches InputMap actions. An `InputEventJoypadButton` has no
+keycode, so while this matched raw keycodes a controller player could walk and
+pause but never operate the level-up overlay. `tools/shot_cards.gd` drives
+`ui._input` too and is **not** in `SUITES` — `test_input` asserts its action
+names exist.
 
-## `scripts/meta/meta_screen.gd` (165) — `Control`, the shop (main scene)
+Actions: `move_*`, `confirm`, `cancel`, `pause`, `recipes`, `restart`
+(deadzone 0.2). `recipes` and `restart` share R, disambiguated by screen.
+
+`_move_row(±1)`, `_move_card(±1)`, `_activate`, `_toggle_recipes`,
+`_route_cancel`, `_toggle_pause`, `_abandon`, `_on_settings_closed`,
+`highlighted()`, `card_row()`, `decline_button()`.
+
+**`cancel` has five arms**, not two: settings → recipe panel → card/fusion
+overlay → end screen → otherwise pause. The recipe panel is a CHILD of
+`_overlay` and `_end` is a SIBLING of it, so a two-arm rule declined the card
+under the panel and paused a finished run. The overlay arm keys off
+`run.paused`, not `_overlay.visible`, which lags it by a frame.
+
+**Player pause is `run.user_paused`, never `run.paused`.** The latter means "a
+modal offer is open" and four sites clear it unconditionally; sharing it would
+let a card decline release a pause it never took and strand a pending fusion.
+`_refresh` runs while `user_paused` or the panel draws over a frozen HUD.
+
+## `scripts/meta/settings_panel.gd` (133) — `Control`, shared prefs UI
+
+An OVERLAY, reached from the shell and the pause panel. Rows: master / sfx /
+music volume, screen shake, damage numbers. Every write goes through
+`SaveGame.set_pref`, which clamps and rejects non-finite — one table, both
+directions. `apply()` pushes volumes at the buses.
+
+It is an overlay, and its shell entry button sits BESIDE `./intrude`, because
+the shop column already ran to ~505 px in a 720 px viewport — which is exactly
+what `test_meta_layout` measures.
+
+## `scripts/meta/meta_screen.gd` (186) — `Control`, the shop (main scene)
 
 `UNLOCK_ROWS = 2` still-locked modules listed before the rest is summarised.
 `FG`, `DIM`, `HOT = Color(1.0, 0.72, 0.35)`.
@@ -91,13 +142,21 @@ Colors: `LINE`, `EDGE`, `GLOW`, `FACE_NEAR` (y=ymax, lit), `FACE_SIDE` (x=xmax,
 turned away), `RIB`. Functions: `_draw`, `_arena(rect)`, `_slab(o, size, nx, ny)`,
 `_wall(o, size, inset, color, width)`.
 
-## `scripts/run/props.gd` (130) — `Node2D`, walls that stand over the swarm
+## `scripts/run/props.gd` (222) — `Node2D`, walls that stand over the swarm
 
 Extruded boxes so walls read as solid and can be seen through:
 `WALL_HEIGHT 26.0`, `POST_HEIGHT 78.0`, `FACE_ALPHA 0.6`,
 `BACK_EDGE_SCALE 0.35`. Two palettes — `WALL_TOP/NEAR/SIDE/EDGE` and
-`RAIL_TOP/NEAR/SIDE/EDGE`. `draw_box(rect, height, top, near, side, …)` is the
+`RAIL_TOP/NEAR/SIDE/EDGE`. `draw_box(rect, height, top, near, side, edge, drop)` is the
 shared primitive; `_draw` walks `terrain.rects`.
+
+**Walls fall with the floor.** `PROP_GRAVITY 900.0`, `PROP_FALL_LIFE 2.2`.
+`_floor_gone` checks EVERY cell under the rect, not its centre, so a wall
+spanning the collapse frontier stands until the last of its footing goes — which
+is also what stops a whole row dropping in one frame. Fall timers are keyed by
+rect index and cleared when a new subnet empties `terrain.voided`, or walls drop
+in an arena the player has not reached. The clock is unscaled: a hitstop must
+not hold a collapsing wall in mid-air.
 
 ## Rendering in `run.gd`
 
@@ -106,15 +165,26 @@ Four `MultiMeshInstance2D` (`_mm_enemy _mm_proj _mm_shard _mm_botnet`) built by
 `_update_renderers` writes transforms + `INSTANCE_CUSTOM`; `_depth_sort` buckets
 into `DEPTH_BANDS = 192` for painter's order (`_order`, `_band_count`).
 `PROPS_Z = 8`. `_draw` adds ground quads (`_ground_quad`), the voided ground
-(`_void_runs`), the lit route (`_route_points`) and the transient fx.
-Draw order is gated by `tests/test_draw_order.gd`.
+(`_void_runs`), **falling floor chunks** (`_draw_chunk`), the lit route
+(`_route_points`), boss integrity rings, arrival animations, telegraphs, damage
+numbers and the transient fx. Draw order is gated by `tests/test_draw_order.gd`.
+
+Enemy instance colour composes the corruption tint with `_hit_flash` (toward
+white) and, for an arriving boss, a scale ramp read from `_arriving`
+INDEPENDENTLY of the grid skip union — the renderer tests `_submerged` directly,
+so without its own read a boss draws full-size through its whole charge.
+
+**Boss integrity is drawn, not counted**: the ring THINS, walks from the type
+colour toward hot red, and FRAGMENTS into fewer arcs (12 → 3). Three channels,
+because any one alone is ambiguous at a glance.
 
 ## `tools/`
 
 | File | Purpose |
 |---|---|
-| `run_tests.sh` | the runner — 36 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
+| `run_tests.sh` | the runner — 37 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
 | `screenshot.gd` | shared headless capture harness |
-| `shot_cards shot_collapse shot_fx shot_gate shot_iso shot_meta shot_props shot_seam shot_slots` | one-scene screenshot scripts |
+| `shot_cards` | drives `ui._input` with ACTION events; not in `SUITES`, so only `test_input` guards its action names |
+| `shot_collapse shot_fx shot_gate shot_iso shot_meta shot_props shot_seam shot_slots` | one-scene screenshot scripts |
 | `fps_probe.gd`, `fps_collapse.gd` | interactive frame-time probes (the gate lives in `tests/perf_milestone0.gd`) |
 | `build_manual.py` + `manual_template.html` | generates `site/index.html` |

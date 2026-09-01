@@ -1,4 +1,4 @@
-> Generated: 2026-08-31 | Token-lean format for LLM context
+> Generated: 2026-09-01 | Token-lean format for LLM context
 
 # Data tables and persistence
 
@@ -111,19 +111,40 @@ the single payload slot. Magnitudes come from worked worst cases — `nice` matc
 the whole maxed `bus_speed` shop line (+60), so one module is never worth more
 than 1,950 salvage of upgrades.
 
-## `scripts/meta/save_game.gd` (246) — `SaveGame`
+## `scripts/meta/save_game.gd` (313) — `SaveGame`
 
-`VERSION = 2`. Static, cached in `_cache`. `use_fresh_state()` / `use_test_paths()`
+`VERSION = 3`. Static, cached in `_cache`. `use_fresh_state()` / `use_test_paths()`
 exist for the suites.
 
 ```json
-{ "version": 2, "salvage": 0, "kills": 0, "flips": 0, "unlocked": [],
+{ "version": 3, "salvage": 0, "kills": 0, "flips": 0, "unlocked": [],
   "buffs": { "cpu_cycles": 0, "cooling": 0, "memory": 0, "firewall": 0,
-             "encryption": 0, "bus_speed": 0, "addressing": 0, "bandwidth": 0 } }
+             "encryption": 0, "bus_speed": 0, "addressing": 0, "bandwidth": 0 },
+  "prefs": { "volume_master": 0.8, "volume_sfx": 0.8, "volume_music": 0.5,
+             "shake": 1.0, "damage_numbers": 1.0 } }
 ```
 
-`_read` / `_sanitise` treat `save.json` as hostile input; `load_state`,
-`save_state`, `bank(salvage, kills, flips)` **accumulates**.
+v2 files need **no migration**: `_sanitise` rebuilds from `_default()` and
+overlays what it can read, so an absent `prefs` simply arrives at its defaults.
+
+`load_state`, `save_state`, `prefs()`, `set_pref(key, value)`,
+`bank(salvage, kills, flips)` **accumulates**.
+
+### `save.json` is hostile input, and the guards are specific
+
+| Guard | Why |
+|---|---|
+| `typeof(prefs) == TYPE_DICTIONARY` before indexing | `{"prefs": "x"}` makes `.get` a runtime error, which aborts `_sanitise`, leaves `_cache` unassigned, and cascades into every caller that indexes the result |
+| `_num(v, fallback)` on **every** numeric read | `float()`/`int()` are not total. Rejects Dictionary, Array, **`TYPE_NIL`**, `NAN`, `±INF` |
+| `is_finite`, not `clampf` | measured: `clampf(NAN, 0, 2)` returns `nan` |
+| `_num` on `salvage`/`kills`/`flips` too | worse blast radius than `buffs`: `_read` succeeds, so `load_state()` returns `{}` rather than a default profile, and that sticks in the cache |
+| finite-number guard on **both** version reads | `int(null)` aborts `_read` and silently discards the save; `int(INF)` is 9223372036854775807 and quarantines a live save under a nonsense suffix |
+| `set_pref` clamps on WRITE | measured: `JSON.stringify` emits `null` for NaN and `1e99999` for INF — **both valid JSON**, so the bad value is faithfully persisted and detonates on the next read. A load-side clamp alone does not close this |
+
+`PREF_RANGES` is the single clamp table, consulted on both sides of the file.
+Covered by `tests/test_prefs.gd`, which drives the real load path against real
+written files and resets `_cache` per case — without that reset every case after
+the first short-circuits and asserts nothing while reporting PASS.
 
 ### The v2 split — two namespaces, read at different times
 

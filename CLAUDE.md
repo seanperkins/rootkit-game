@@ -25,25 +25,36 @@ suite claims about itself.
 
 ## Architecture
 
-Detailed maps live in `codemaps/` (`architecture.md`, `build.md`, `combat.md`,
-`data.md`, `ui.md`) — read those before a change that spans files. The shape:
+`codemaps/` describes the shape — `architecture.md`, `audio.md`, `build.md`,
+`combat.md`, `data.md`, `ui.md`. **Read those before a change that spans files.**
+They are generated; do not hand-edit them, and put anything worth keeping here
+instead.
 
-- **`scripts/build/` is pure.** No scene tree, no globals, no engine calls beyond
-  `Resource`/`RefCounted`. It compiles a `Loadout` of 3 `Exploit`s down to flat
-  `ResolvedExploit` structs. This runs once per module pick; combat reads only
-  the flat result and never touches the build layer. Keep it that way — every
-  build test drives it in isolation.
-- **Entities are packed arrays over a spatial grid**, not nodes.
-  `Population` holds parallel `PackedVector2Array`/`PackedFloat32Array` and
-  swap-removes on despawn (which is what keeps `MultiMesh.visible_instance_count`
-  correct). `Grid` is a counting-sort window that follows the player, rebuilt
-  once per tick and shared by hit detection, proximity queries and steering.
+What follows is not a description of the architecture. It is the set of rules
+that architecture depends on, each of which has been broken at least once:
+
+- **The pure layers stay pure.** `scripts/build/`, `scripts/run/feel.gd` and
+  `scripts/audio/synth.gd` touch no scene tree, no globals and no engine
+  singleton beyond `Resource`/`RefCounted`. Every one of them is driven directly
+  by a suite with no viewport, and that is the only reason those suites can
+  exist. In particular `feel.gd` REPORTS a desired `Engine.time_scale` and never
+  writes it — `run.gd` applies it.
+- **The simulation never holds a node reference.** Audio and music are reached
+  by DRAINING (`feel.sfx`) or POLLING (`run.threat()`), never by calling out.
+  Reverse that direction and the tick stops being reachable headless.
 - **All combat resolves in one ordered tick in `run.gd:_physics_process`, never
   inside a callback.** Adding a step means adding a call there, in the right
   place — not a signal.
+- **`_present(dt)` runs ABOVE the tick guard; everything else runs below it.**
+  Presentation must survive `paused`/`user_paused`/`not alive`/`won`, because all
+  three hitstop triggers set one of those flags on the frame they fire — a
+  release below the guard never runs, and `Engine.time_scale` is process-global.
+- **Entities are packed arrays over a spatial grid**, not nodes, and
+  `Population.despawn` swap-removes the tail into the freed slot. See the
+  parallel-array invariant below; it is the one that keeps costing money.
 - **The whole 3-subnet campaign is one terrain grid**, plotted before the first
-  frame. Arenas end to end, a corridor per gap. `terrain.current` is the only
-  thing that changes; nothing is generated under the player and nothing teleports.
+  frame. `terrain.current` is the only thing that changes; nothing is generated
+  under the player and nothing teleports.
 
 ## Invariants that break quietly
 

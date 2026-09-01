@@ -1,6 +1,30 @@
-> Generated: 2026-08-31 | Token-lean format for LLM context
+> Generated: 2026-09-01 | Token-lean format for LLM context
 
 # Combat, terrain and the run loop
+
+## `scripts/core/flow_field.gd` (130) — `FlowField`, boss pathing
+
+BFS flooded from the player over a window that follows them — same shape as
+`Grid`, same reason. `RADIUS 24` cells (1536 px), `SIDE 49`, `UNREACHED 1<<28`.
+
+**Bosses only.** A hundred grunts shouldering round a corner is what a swarm
+looks like; one large object stuck on a wall while the player circles it is the
+failure anybody notices. `run._approach_dir(i, to_player)` returns the field for
+ICE and mini-bosses and the straight line for everything else, and the field
+returns `Vector2.ZERO` rather than guessing when it has no gradient — so a boss
+can never path worse than before.
+
+Four-way for the flood, eight-way for the read: an eight-way flood cuts diagonal
+corners through walls that `terrain.slide` then refuses.
+
+Two measured perf constraints live here. It indexes `terrain.solid` / `voided`
+DIRECTLY — `terrain.is_solid` takes a world point, reconverts it to the cell it
+already had, and walks every dynamic blocker first, which cost 2.8 → 6.9 ms p95.
+And `run.gd` gates `rebuild` on `boss_present()`, removing it from the tick
+entirely for the part of a subnet with no boss in it.
+
+`needs_rebuild(terrain, at)` is true only on a player CELL crossing.
+Covered by `tests/test_flow.gd`.
 
 ## `scripts/core/grid.gd` (172) — `Grid`
 
@@ -42,7 +66,7 @@ generation state`, plus `capacity`, `count`, `_next_generation`.
   entity.
 - `integrate(dt)` — `vel += force*dt; pos += vel*dt`.
 
-## `scripts/combat/hit_queue.gd` (141) — `HitQueue`
+## `scripts/combat/hit_queue.gd` (196) — `HitQueue`
 
 ```gdscript
 enum Kind { DAMAGE, CORRUPTION }        enum Outcome { NONE, DEAD, FLIPPED }
@@ -68,7 +92,7 @@ resolve dead in pass 1 (drops emitted, ON_KILL fired) and flip in pass 2.
 ON_HIT = per hit landed on an open target regardless of survival;
 ON_KILL = per adjudicated DEAD; ON_DAMAGE_TAKEN = per damage the player takes.
 
-## `scripts/run/terrain.gd` (855) — `Terrain`
+## `scripts/run/terrain.gd` (862) — `Terrain`
 
 One grid for the **whole campaign**: all arenas end to end plus a corridor per gap.
 
@@ -121,7 +145,7 @@ Also: `step(dt, origin, radius) -> Array`, `due_minibosses(dt)`,
 `should_spawn_boss()`, `reset()` (zeroes `spawned`, hence run.gd's
 `_spawned_before`), `_place(formation, origin, radius)`.
 
-## `scripts/run/run.gd` (2114) — the run
+## `scripts/run/run.gd` (3057) — the run
 
 Signals: `level_up_offered(cards)`, `run_ended(won, salvage)`, `stats_changed()`.
 `enum Phase { FIGHTING, CLEARED }` — one fact replacing the old
@@ -154,6 +178,31 @@ each taking `_ward_max(key)` — wards fold as **MAX across exploits, never a su
 Per-exploit `_fire_cd` rate-limits event triggers; `_fire_acc` is the INTERVAL
 accumulator. Projectile life is bounded **only** by `_proj_dist_left` — the old
 player-relative cull made reach silently inert when you ran away.
+
+### Per-enemy arrays — BOTH halves of the slot invariant
+
+Reset on spawn in `_spawn_enemy_state`, AND relocated tail-into-slot on despawn
+by `_relocate_enemy(i, last)`. There are **two** despawn sites: `_step9_recycle`
+and `_step2d_collapse`, whose `is_void` predicate is conditional and therefore
+not tail-only. `_order` is the deliberate exception — `_depth_sort` refills it
+wholesale each tick. `tests/test_arrivals.gd` asserts the RULE structurally:
+every middle-of-pool `enemies.despawn` must relocate first.
+
+### Arrivals — `_arriving`, and the three direct walks
+
+Mini-bosses and ICE materialise over `ARRIVAL_TOTAL` (0.9 charge + 0.25 pop),
+out of the grid and untouchable. Kept separate from `_submerged` because
+`kernel_panic` is both a mini-boss and an AMBUSHER, and one flag would have the
+two states clobbering each other.
+
+Grid exclusion covers hits, targeting and contact damage (a grid query). It does
+NOT cover the three passes that walk `enemies.count` directly, which each need an
+explicit `_arriving` skip: **`_step2_integrate`'s enemy loop** (`_behave` chases,
+`_ranged` spawns shots, `_pulse` calls `_damage_player` on a line-of-sight check
+with no grid at all), **`_step2b_zones`** (hazard damage and corruption by index
+— corruption is the flip channel, so a boss could flip mid-entrance), and
+**`_step4_steer`** (garnish once the first is gated). `_step6b_hostiles` is NOT
+one of them: it iterates `hostiles`, not enemies.
 
 ### Enemy AI — `_behave(i, t, dt)` dispatches on `EnemyTable.Behaviour`
 

@@ -137,15 +137,22 @@ inside a callback. Each entity is **adjudicated exactly once per tick**, from
 the totals of the pass it was first marked in, and flip beats death.
 
 ```
-scripts/core/    grid
+scripts/core/    grid  flow_field
 scripts/build/   module  equipped_module  exploit  resolved_exploit
                  compiler  loadout  player_stats                    (pure)
 scripts/combat/  population  hit_queue
 scripts/run/     run  terrain  spawn_director  ui  backdrop  props
-scripts/meta/    save_game  meta_screen
-data/            module_table  enemy_table
+                 feel                                               (pure)
+scripts/audio/   synth                                              (pure)
+                 sfx  music
+scripts/meta/    save_game  meta_screen  settings_panel
+data/            module_table  enemy_table  recipe_table
 shaders/         glyph.gdshader
 ```
+
+Nothing under `(pure)` touches the scene tree or an engine singleton, which is
+what lets a suite drive it with no viewport. Audio is synthesized in code —
+there are no sound files either.
 
 `codemaps/` breaks each of those down further — the tick pipeline, the compiler's
 fold rules, every table value. `CLAUDE.md` collects the invariants that break
