@@ -12,9 +12,14 @@ godot                          # play, from the project root
 tools/run_tests.sh             # 36 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 godot --headless -s res://tests/test_build.gd     # one suite
-godot --headless -s res://tools/shot_cards.gd     # one screenshot
+godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)
 python3 tools/build_manual.py  # regenerate site/ (gitignored)
 ```
+
+**Screenshots cannot be taken `--headless`.** That flag selects the dummy
+rendering driver: `get_texture()` is null and every `tools/shot_*.gd` now exits 1
+saying so. Run them windowed; from a sandboxed shell that also needs
+window-server access, which the Bash sandbox denies.
 
 **Always use `tools/run_tests.sh`, never call a suite by hand and trust it.** A
 GDScript runtime error aborts only the function it happens in: the engine prints

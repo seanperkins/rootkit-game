@@ -26,10 +26,14 @@ SUITES=(
 [ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)
 
 failed=0
+inconclusive=0
 for t in "${SUITES[@]}"; do
   out=$(godot --headless -s "res://tests/$t.gd" 2>&1)
   code=$?
-  verdict=$(printf '%s\n' "$out" | grep -E "^  (PASS|FAIL)" | head -1)
+  # INCONCLUSIVE is the perf gate declining to judge a contended machine. It
+  # exits 0 with no PASS line, which used to read here as "FAIL exit 0" with
+  # a blank verdict — a real-looking failure with nothing to fix.
+  verdict=$(printf '%s\n' "$out" | grep -E "^  (PASS|FAIL|INCONCLUSIVE)" | head -1)
   errs=$(printf '%s\n' "$out" | grep -cE "SCRIPT ERROR|Parse Error")
   if [ "$errs" -gt 0 ]; then
     printf '%-20s BROKEN  %d script error(s) — a case aborted; any PASS above is meaningless\n' "$t" "$errs"
@@ -38,14 +42,19 @@ for t in "${SUITES[@]}"; do
   elif [ "$code" -ne 0 ] || [ -z "$verdict" ]; then
     printf '%-20s FAIL    exit %d  %s\n' "$t" "$code" "$verdict"
     failed=$((failed + 1))
+  elif [[ "$verdict" == *INCONCLUSIVE* ]]; then
+    printf '%-20s %s\n' "$t" "$verdict"
+    inconclusive=$((inconclusive + 1))
   else
     printf '%-20s %s\n' "$t" "$verdict"
   fi
 done
 
 echo
-if [ "$failed" -eq 0 ]; then
+if [ "$failed" -eq 0 ] && [ "$inconclusive" -eq 0 ]; then
   echo "  ALL GREEN — ${#SUITES[@]} suites, no script errors"
+elif [ "$failed" -eq 0 ]; then
+  echo "  GREEN BUT UNJUDGED — $inconclusive suite(s) inconclusive (machine too contended); rerun on a quiet machine"
 else
   echo "  $failed of ${#SUITES[@]} suites failed"
 fi
