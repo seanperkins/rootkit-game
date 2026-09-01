@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 55
+const EXPECTED_CHECKS := 58
 
 var failures := 0
 var checks := 0
@@ -28,6 +28,7 @@ func _initialize() -> void:
 	a_refused_fusion_leaves_the_row_untouched()
 	fusing_may_not_orphan_the_loadout()
 	a_fused_module_is_drawable_only_once_held()
+	fusion_demands_three_finished_modules()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -52,6 +53,12 @@ func _mk(vector_id: StringName, trigger_id: StringName, payloads: Array = []) ->
 	if vector_id != &"": ex.place(T[vector_id])
 	if trigger_id != &"": ex.place(T[trigger_id])
 	for p in payloads: ex.place(T[p])
+	return ex
+
+## Fusion needs all three at max rank, so every fusion fixture goes through this.
+func _maxed(ex: Exploit) -> Exploit:
+	for em in ex.equipped():
+		em.rank = em.module.max_rank
 	return ex
 
 ## A fused module carries its own vector_kind AND trigger_kind, so the row is
@@ -281,7 +288,7 @@ func an_exact_triple_matches_and_one_module_off_does_not() -> void:
 ## interval cannot fuse into something that fires on a condition.
 func fusing_frees_the_ids_and_keeps_the_metronome() -> void:
 	var lo := Loadout.new()
-	lo.exploits = [_mk(&"snipe", &"on_kill", [&"bitmask"]),
+	lo.exploits = [_maxed(_mk(&"snipe", &"on_kill", [&"bitmask"])),
 		_mk(&"packet", &"interval", [])]
 
 	var matches: Array = lo.matched_recipes()
@@ -312,7 +319,7 @@ func fusing_frees_the_ids_and_keeps_the_metronome() -> void:
 ## leave a row it then refused to complete.
 func a_refused_fusion_leaves_the_row_untouched() -> void:
 	var lo := Loadout.new()
-	lo.exploits = [_mk(&"packet", &"interval", [&"fork_bomb"])]
+	lo.exploits = [_maxed(_mk(&"packet", &"interval", [&"fork_bomb"]))]
 	var conditional: Module = RecipeTable.by_fused_id()[&"zero_day"].fused
 	lo.fuse(0, conditional)
 	_check("the vector is untouched", lo.exploits[0].vector.module.id, &"packet")
@@ -322,7 +329,7 @@ func a_refused_fusion_leaves_the_row_untouched() -> void:
 func fusing_may_not_orphan_the_loadout() -> void:
 	var lo := Loadout.new()
 	# The ONLY interval in the loadout, in the row that would fuse.
-	lo.exploits = [_mk(&"packet", &"interval", [&"fork_bomb"])]
+	lo.exploits = [_maxed(_mk(&"packet", &"interval", [&"fork_bomb"]))]
 	var rec: RecipeTable.Recipe = lo.matched_recipes()[0][1]
 	_check("frag_packet is INTERVAL-triggered, so this is allowed",
 		lo.can_fuse(0, rec.fused), true)
@@ -351,3 +358,24 @@ func a_fused_module_is_drawable_only_once_held() -> void:
 	var t := lo.legal_targets(zero_day)
 	_check("held: exactly one target, the rank-up", t.size(), 1)
 	_check("and it is a rank-up", t[0].action, Loadout.Rule.RANK_UP)
+
+
+## A recipe is what three FINISHED modules become. Without this gate, fusing is
+## strictly better than ranking and the fused weapon is an early-game shortcut
+## rather than the payoff for having maxed a specific triple.
+func fusion_demands_three_finished_modules() -> void:
+	var lo := Loadout.new()
+	lo.exploits = [_mk(&"packet", &"interval", [&"fork_bomb"])]
+	var rec: RecipeTable.Recipe = lo.matched_recipes()[0][1]
+	_check("a rank-1 triple matches the recipe but cannot fuse",
+		lo.can_fuse(0, rec.fused), false)
+
+	# One short is still short.
+	for em in lo.exploits[0].equipped():
+		em.rank = em.module.max_rank
+	lo.exploits[0].payloads[0].rank = 4
+	_check("and one module short of max is still refused",
+		lo.can_fuse(0, rec.fused), false)
+
+	lo.exploits[0].payloads[0].rank = T[&"fork_bomb"].max_rank
+	_check("all three maxed: allowed", lo.can_fuse(0, rec.fused), true)

@@ -226,16 +226,23 @@ func matched_recipes() -> Array:
 			out.append([i, r])
 	return out
 
-## Fusing the row that holds your last INTERVAL trigger frees `interval` but
+## Two gates. All three modules must be at max rank — see Exploit.is_fully_ranked.
+##
+## And: fusing the row that holds your last INTERVAL trigger frees `interval` but
 ## leaves nothing firing unconditionally until you re-place it — the deadlock
 ## _is_last_interval was written for, arriving by a different door. A fused
 ## module that is itself INTERVAL-triggered replaces what it consumed.
 func can_fuse(exploit_index: int, fused: Module) -> bool:
 	if exploit_index < 0 or exploit_index >= exploits.size():
 		return false
+	var ex: Exploit = exploits[exploit_index]
+	# All three at max rank. A recipe is what three finished modules become, not
+	# a way to skip finishing them — without this, fusing is strictly better than
+	# ranking and the fused weapon becomes an early-game shortcut.
+	if not ex.is_fully_ranked():
+		return false
 	if fused.trigger_kind == Module.TriggerKind.INTERVAL:
 		return true
-	var ex: Exploit = exploits[exploit_index]
 	var lost := 1 if (ex.trigger != null
 		and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL) else 0
 	return _interval_count() - lost >= 1
