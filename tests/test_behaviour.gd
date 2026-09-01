@@ -155,11 +155,15 @@ func player_velocity_is_tracked() -> void:
 	var r := await _fresh_run()
 	var before: Vector2 = r.player_pos
 	r.input_override = Vector2(1, 0)
+	# Through the seam, the way the game does it: input_override is consumed by
+	# _poll_local_input above the guard, and the step reads only its slot.
+	r._poll_local_input()
 	r._step2_integrate(1.0 / 60.0)
 	_check("moving right gives a positive x velocity", r.player_vel.x > 0.0, true)
 	_check("and it matches the step actually taken",
 		r.player_vel.is_equal_approx((r.player_pos - before) * 60.0), true)
 	r.input_override = Vector2.ZERO
+	r._poll_local_input()
 	r._step2_integrate(1.0 / 60.0)
 	_check("standing still gives zero", r.player_vel, Vector2.ZERO)
 	r.free()

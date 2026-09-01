@@ -12,7 +12,11 @@ var finished := {}
 
 const CASES := ["every_referenced_action_exists", "tools_use_real_actions",
 	"a_joypad_can_drive_the_overlay", "user_pause_gates_the_tick",
-	"a_card_decline_does_not_release_a_player_pause", "cancel_routes_by_screen"]
+	"a_card_decline_does_not_release_a_player_pause", "cancel_routes_by_screen",
+	"the_sim_reads_inputs_not_the_device", "input_override_feeds_slot_zero",
+	"the_device_is_polled_in_one_place"]
+
+const DT := 1.0 / 60.0
 
 func _initialize() -> void:
 	print("ROOTKIT — input\n")
@@ -24,6 +28,9 @@ func _initialize() -> void:
 	await user_pause_gates_the_tick()
 	await a_card_decline_does_not_release_a_player_pause()
 	await cancel_routes_by_screen()
+	await the_sim_reads_inputs_not_the_device()
+	await input_override_feeds_slot_zero()
+	the_device_is_polled_in_one_place()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -162,3 +169,65 @@ func cancel_routes_by_screen() -> void:
 	r.free()
 	await process_frame
 	finished["cancel_routes_by_screen"] = true
+
+
+## The seam a networked client drives. The tick moves the player from
+## `inputs[LOCAL_SLOT]` and from nothing else — no InputMap action is pressed
+## here and input_override is unset, so if the player moves, the array is the
+## only place the direction could have come from.
+func the_sim_reads_inputs_not_the_device() -> void:
+	var r := await _fresh_run()
+	r.input_override = null
+	r.phase = r.Phase.FIGHTING
+	var before: Vector2 = r.player_pos
+	r.inputs[r.LOCAL_SLOT] = Vector2.ZERO
+	r._step2_integrate(DT)
+	_check("zero input: the player stays put", r.player_pos, before)
+	r.inputs[r.LOCAL_SLOT] = Vector2(1, 0)
+	r._step2_integrate(DT)
+	_check("world +x input: the player moved +x", r.player_pos.x > before.x, true)
+	_check("and only along x", absf(r.player_pos.y - before.y) < 0.001, true)
+	r.queue_free()
+	finished["the_sim_reads_inputs_not_the_device"] = true
+
+## input_override is how every headless driver in this repo steers. It must keep
+## its exact meaning — a WORLD direction — and land in slot 0 through the same
+## poll a real device does, so the suites and the perf gate exercise the seam
+## rather than a side door around it.
+func input_override_feeds_slot_zero() -> void:
+	var r := await _fresh_run()
+	r.input_override = Vector2(0, 3)
+	r._poll_local_input()
+	_check("override lands in slot 0, normalised",
+		r.inputs[r.LOCAL_SLOT], Vector2(0, 1))
+	r.input_override = null
+	r._poll_local_input()
+	_check("no override and no device: slot 0 is zero",
+		r.inputs[r.LOCAL_SLOT], Vector2.ZERO)
+	r.queue_free()
+	finished["input_override_feeds_slot_zero"] = true
+
+## Structural: the device is read in exactly one function, above the tick
+## guard. A second Input.* call anywhere in the simulation would be a second
+## source of truth a remote player has no way to feed.
+func the_device_is_polled_in_one_place() -> void:
+	var f := FileAccess.open("res://scripts/run/run.gd", FileAccess.READ)
+	var body := f.get_as_text()
+	f.close()
+	var current := ""
+	var offenders := []
+	var polls := 0
+	for line in body.split("\n"):
+		if line.begins_with("func "):
+			current = line.substr(5, line.find("(") - 5)
+		var code := line.strip_edges()
+		if code.begins_with("#"):
+			continue
+		if "Input." in code:
+			polls += 1
+			if current != "_poll_local_input":
+				offenders.append(current)
+	_check("run.gd reads the device somewhere", polls > 0, true)
+	_check("and only inside _poll_local_input (offenders: %s)" % [offenders],
+		offenders.is_empty(), true)
+	finished["the_device_is_polled_in_one_place"] = true

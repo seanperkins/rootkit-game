@@ -468,6 +468,13 @@ var _skips: Array
 var _unlocked: Array = []
 ## Headless tests drive the player through this instead of the keyboard.
 var input_override = null
+## One WORLD direction per player slot. Written once per tick by
+## _poll_local_input, above the guard; read by the simulation from nowhere
+## else. This is the seam a networked peer drives: a remote player is a slot
+## whose entry arrives in a packet instead of from the InputMap, and the tick
+## cannot tell the difference — which is the whole point.
+const LOCAL_SLOT := 0
+var inputs := PackedVector2Array([Vector2.ZERO])
 var _rng := RandomNumberGenerator.new()
 var _card_rng := RandomNumberGenerator.new()
 
@@ -659,6 +666,11 @@ func _physics_process(dt: float) -> void:
 	# fraction cycled 0..1. Snapshotting unconditionally makes prev == pos the
 	# instant the simulation stops, so a paused screen is simply still.
 	_snapshot_render_state()
+	# Sampled once per TICK, not per frame, because a tick's worth of input is
+	# the unit a client sends and a host consumes. Above the guard so the seam
+	# has the same shape paused or not; the vector is simply unread while the
+	# simulation is halted.
+	_poll_local_input()
 
 	# PRESENTATION, above the guard, every frame, unconditionally.
 	#
@@ -778,6 +790,45 @@ func _process(_dt: float) -> void:
 		+ feel.shake_offset() * _shake_pref
 	_update_renderers()
 	queue_redraw()
+
+## The ONLY place run.gd reads the device. test_input asserts that
+## structurally: a second Input.* call anywhere in the simulation would be a
+## second source of truth that a remote player has no way to feed.
+##
+## input_override wins when set. It is a WORLD direction — the hook every
+## headless driver and the perf gate steer through — and it lands in the same
+## slot by the same path a real device does, so the suites exercise the seam
+## rather than a side door around it.
+##
+## Keyboard and stick are SCREEN-relative and are unprojected here, so W moves
+## you up the screen rather than up the world axis (which under the projection
+## points diagonally). The unprojection is a VIEW concern; it belongs on this
+## side of the seam, not in the tick.
+func _poll_local_input() -> void:
+	if input_override != null:
+		inputs[LOCAL_SLOT] = (input_override as Vector2).normalized()
+		return
+	# One call reads both axes, so an analog stick comes along for free — the
+	# InputMap carries the keyboard and the gamepad bindings together and
+	# neither can drift from the other.
+	var screen := Input.get_vector("move_left", "move_right",
+		"move_up", "move_down")
+	if screen.length_squared() == 0.0:
+		inputs[LOCAL_SLOT] = Vector2.ZERO
+		return
+	# Uniform SCREEN speed, not uniform world speed.
+	#
+	# Normalising the WORLD direction keeps world speed constant, which makes
+	# on-screen speed inherit the 2:1 squash — left/right moves twice as fast
+	# as up/down, which is what makes the controls feel lopsided. Because
+	# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
+	# through WITHOUT renormalising makes the on-screen velocity exactly
+	# clock_speed in every direction.
+	#
+	# The trade is that world speed now varies with heading (fastest along
+	# the screen vertical, where the projection compresses most). That is the
+	# right way round for a game where every dodge is judged on screen.
+	inputs[LOCAL_SLOT] = from_iso(screen.normalized())
 
 ## Copy every population's `pos` into its `prev_pos`. One memcpy each, not a
 ## loop over ~2700 entities — see Population.snapshot.
@@ -981,36 +1032,10 @@ func _worm_sample(id: int, steps_back: int) -> Vector2:
 	return trail[(c - steps_back + WORM_TRAIL_LEN * 2) % WORM_TRAIL_LEN]
 
 func _step2_integrate(dt: float) -> void:
-	# Polled through the InputMap: WASD, arrows, D-pad and left stick.
-	#
-	# input_override is a WORLD direction — it is a simulation hook for headless
-	# drivers, which reason in world space. Keyboard input is SCREEN-relative and
-	# is unprojected below, so W moves you up the screen rather than up the world
-	# axis (which under the projection points diagonally).
-	var input := Vector2.ZERO
-	var world_dir := Vector2.ZERO
-	if input_override != null:
-		world_dir = (input_override as Vector2).normalized()
-	else:
-		# One call reads both axes, so an analog stick comes along for free —
-		# the InputMap carries the keyboard and the gamepad bindings together
-		# and neither can drift from the other.
-		input = Input.get_vector("move_left", "move_right",
-			"move_up", "move_down")
-	if input.length_squared() > 0.0:
-		# Uniform SCREEN speed, not uniform world speed.
-		#
-		# Normalising the WORLD direction keeps world speed constant, which makes
-		# on-screen speed inherit the 2:1 squash — left/right moves twice as fast
-		# as up/down, which is what makes the controls feel lopsided. Because
-		# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
-		# through WITHOUT renormalising makes the on-screen velocity exactly
-		# clock_speed in every direction.
-		#
-		# The trade is that world speed now varies with heading (fastest along
-		# the screen vertical, where the projection compresses most). That is the
-		# right way round for a game where every dodge is judged on screen.
-		world_dir = from_iso(input.normalized())
+	# The simulation reads its slot and nothing else. Where the direction came
+	# from — keyboard, stick, a headless driver, a packet — was settled in
+	# _poll_local_input, above the guard, and is none of the tick's business.
+	var world_dir: Vector2 = inputs[LOCAL_SLOT]
 	var pos_before := player_pos
 	if world_dir.length_squared() > 0.0:
 		player_pos = terrain.slide(player_pos,
