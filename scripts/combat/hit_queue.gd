@@ -72,7 +72,16 @@ func begin_tick() -> void:
 	adjudication.fill(OPEN)
 	outcome.fill(Outcome.NONE)
 	killer_exploit.fill(-1)
-	flipper_exploit.fill(-1)
+	# -2, not -1. -1 is a legal SOURCE — the terrain corruption zones and the
+	# botnet auras append with it — so using it for "unset" made an unowned
+	# corruption crossing read back as unflipped and adjudicate DEAD. _on_flip
+	# has carried a default for exactly this case since it was written; it was
+	# simply unreachable.
+	#
+	# killer_exploit deliberately KEEPS -1: its only reader is the lifesteal
+	# guard `killer >= 0`, where "unset" and "the environment did it" must both
+	# mean no lifesteal. The asymmetry is intentional.
+	flipper_exploit.fill(-2)
 
 func append(k: int, exploit: int, tgt: int, gen: int, amt: float) -> bool:
 	if count >= _capacity:
@@ -118,7 +127,7 @@ func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
 		else:
 			pop.corruption[i] += amount[e]
 			if pop.corruption[i] >= thresholds[pop.type_index[i]]:
-				if flipper_exploit[i] == -1:
+				if flipper_exploit[i] == -2:
 					flipper_exploit[i] = source_exploit[e]
 				adjudication[i] = MARKED
 
@@ -128,7 +137,7 @@ func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
 		if adjudication[i] != MARKED:
 			continue
 		# Flip wins over death, decided from this pass's accumulated totals.
-		if flipper_exploit[i] != -1:
+		if flipper_exploit[i] != -2:
 			outcome[i] = Outcome.FLIPPED
 			pop.state[i] = Population.FLIPPED
 		else:

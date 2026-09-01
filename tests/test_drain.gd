@@ -10,17 +10,24 @@ extends SceneTree
 const THRESH := 10.0
 var failures := 0
 
-func _init() -> void:
+## _initialize, not _init: one case stands up a real run and awaits a frame, and
+## an un-awaited coroutine under _init returns immediately — the suite would
+## print PASS and quit before the assertion ever ran.
+func _initialize() -> void:
+	SaveGame.use_test_paths()
 	print("ROOTKIT — drain / adjudication semantics\n")
+	await process_frame
 	case_within_pass_damage_then_corruption()
 	case_within_pass_corruption_then_damage()
 	case_cross_pass_death_then_corruption()
 	case_cross_pass_flip_then_damage()
 	case_on_hit_fires_on_surviving_target()
 	case_stale_generation_rejected()
+	await a_step_two_detonation_reaches_the_drain()
+	environment_corruption_flips_rather_than_kills()
 	print("")
 	if failures == 0:
-		print("  PASS — all 6 cases")
+		print("  PASS — all 8 cases")
 	else:
 		print("  FAIL — %d case(s)" % failures)
 	quit(1 if failures > 0 else 0)
@@ -98,3 +105,77 @@ func case_stale_generation_rejected() -> void:
 	q.append(HitQueue.Kind.DAMAGE, 0, i, stale, 999.0)
 	q.drain_pass(pop, f[3])
 	_check("stale-generation event rejected", pop.integrity[i], 5.0)
+
+
+## A mine inside its fuse radius must actually reduce integrity. This is an
+## END-TO-END tick test on purpose: the bug it pins is not in the queue or in
+## the detonation, but in the ORDER the two run in, so nothing short of a real
+## _physics_process can see it.
+func a_step_two_detonation_reaches_the_drain() -> void:
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(run)
+	await process_frame
+	run.input_override = Vector2.ZERO
+	# CLEARED stops _step1_spawn while leaving _step2_integrate running, which is
+	# all this test needs — a live director lets a watchdog heal the probe back
+	# up and flake the assertion.
+	run.phase = run.Phase.CLEARED
+	# CLEARED without this voids the arena on tick 1: collapse_left defaults to
+	# 0.0 and is set only on the real clear transition, so _step2d_collapse
+	# computes frac 0.0, calls collapse_to(0), and every cell but the gate goes —
+	# the player dies and the probe is despawned before the fuse is ever measured.
+	run.collapse_left = run.COLLAPSE_SECONDS
+	while run.enemies.count > 0:
+		run.enemies.despawn(run.enemies.count - 1)
+
+	# The mine's owner must be an exploit whose RESOLVE HAS A RADIUS.
+	# _detonate_mine blasts with `r.radius`, and exploit 0 in a fresh run is
+	# packet + interval — packet carries no radius at all, so a zero-radius query
+	# would hit nothing and this test would fail identically before and after.
+	run.loadout.place_at(ModuleTable.by_id()[&"landmine"], 1, 0)
+	run.loadout.place_at(ModuleTable.by_id()[&"interval"], 1, 1)
+	run._recompile()
+
+	# Blank terrain zones under the probe. Once this fix lands, a HAZARD or
+	# CORRUPTION cell under the enemy damages it through the ZONE path, and the
+	# assertion would pass or fail on the terrain seed rather than on the fuse.
+	run.terrain.zone.fill(0)
+	run.terrain.clear_temp_zones()
+
+	var at: Vector2 = run.player_pos + Vector2(200.0, 0.0)
+	var e: int = run.enemies.spawn(at, Vector2.ZERO, 50.0, run.ENEMY_RADIUS, 0)
+	# A mine 30 px away: inside MINE_TRIGGER (46) and outside the step-6
+	# projectile-contact radius (PROJECTILE_RADIUS + ENEMY_RADIUS = 16), so the
+	# ONLY path that can damage it is the fuse. landmine's 16 damage leaves the
+	# enemy alive at 34, so no swap-remove can alias index `e`.
+	var mi: int = run.projectiles.spawn(at + Vector2(30.0, 0.0), Vector2.ZERO,
+		1.0, run.PROJECTILE_RADIUS, 0)
+	run._proj_owner[mi] = 1
+	run._proj_pierce[mi] = 0
+	run._proj_last[mi] = -1
+	run._proj_dist_left[mi] = 1.0
+	run._mine_left[mi] = run.MINE_LIFE
+	run._orbit_left[mi] = 0.0
+	var before: float = run.enemies.integrity[e]
+	for i in 5:
+		run._physics_process(1.0 / 60.0)
+	_check("a fuse-range mine reduces integrity",
+		run.enemies.integrity[e] < before, true)
+	run.queue_free()
+	await process_frame
+
+## Corruption from the ENVIRONMENT (source -1) must flip, not kill. -1 was both
+## "no flip happened" and "the terrain did it", and the collision was invisible
+## while the zone path was dead code.
+func environment_corruption_flips_rather_than_kills() -> void:
+	var pop := Population.new(4)
+	var th := PackedFloat32Array([10.0])
+	var q := HitQueue.new(8, 4)
+	var i := pop.spawn(Vector2.ZERO, Vector2.ZERO, 50.0, 12.0, 0)
+	q.begin_tick()
+	q.append(HitQueue.Kind.CORRUPTION, -1, i, pop.generation[i], 12.0)
+	q.drain_pass(pop, th)
+	_check("an unowned corruption crossing flips", pop.state[i],
+		Population.FLIPPED)
+	_check("and records the environment as the flipper",
+		q.flipper_exploit[i], -1)

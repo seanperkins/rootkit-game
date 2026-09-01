@@ -70,7 +70,13 @@ const IFRAMES := 0.5
 
 const FIRE_BUDGET := 4
 const CASCADE_PASSES := 8
-const EVENT_BUDGET := 7200      # 3 exploits x 4 fires x 600 enemies, derived
+## 3 exploits x 4 fires x 600 enemies. The producer set is wider than that
+## derivation: the terrain hazard and corruption zones append up to one event per
+## enemy per tick, and a mine or packet blast fans out over its own radius. Both
+## were dead code until begin_tick moved to the top of the tick, so neither was
+## counted here. The worst case still fits, but `append` drops silently past
+## capacity (hit_queue.gd), so measure before trusting the margin.
+const EVENT_BUDGET := 7200
 const BOTNET_BASE_CAP := 8
 const BOTNET_BASE_LIFETIME := 12.0
 const BOTNET_BASE_RATIO := 0.6
@@ -454,6 +460,16 @@ func _physics_process(dt: float) -> void:
 	if paused or not alive or won:
 		return
 
+	# ONCE per tick, and before any step. It used to open _step5_fire, which
+	# meant every event appended earlier in the tick — the mine fuse in
+	# _step2_integrate, and the hazard and corruption zones in _step2b_zones —
+	# was discarded before the drain ever saw it. Three shipped features dealt
+	# zero damage. Nothing caught it: landmine ships LOCKED, so the autopiloted
+	# run never equips one, and no suite asserted a zone or a fuse reduced
+	# integrity. Below the pause guard, not above it: above, it would run on
+	# every paused frame.
+	queue.begin_tick()
+
 	# The director steps in FIGHTING and nowhere else: a cleared subnet stops
 	# producing, and the corridor never produces at all.
 	if phase == Phase.FIGHTING:
@@ -818,7 +834,6 @@ func _try_event_fire(ei: int, r: ResolvedExploit) -> bool:
 	return true
 
 func _step5_fire(dt: float) -> void:
-	queue.begin_tick()
 	for ei in _fire_cd.size():
 		if _fire_cd[ei] > 0.0:
 			_fire_cd[ei] -= dt
