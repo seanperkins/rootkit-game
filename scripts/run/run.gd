@@ -82,6 +82,7 @@ const BOTNET_BASE_LIFETIME := 12.0
 const BOTNET_BASE_RATIO := 0.6
 
 signal level_up_offered(cards: Array)
+signal fusion_offered(matches: Array)
 signal run_ended(won: bool, salvage: int)
 signal stats_changed()
 
@@ -196,6 +197,16 @@ var _execute_immune_type := PackedByteArray()
 ## in, not to the campaign.
 var blocks := Blocks.new()
 var _block_rng := RandomNumberGenerator.new()
+
+enum CardMode { NORMAL, SEEDED, RANK_ONLY }
+
+## How often a block that cannot fuse still hands you the module you are closest
+## to needing. Twenty EXACT triples over a 35-module table are not reachable by
+## drawing at random — the targeted card is not a bonus, it is the delivery
+## mechanism, so the weight is high on purpose.
+const TARGETED_ODDS := 0.70
+
+var _pending_fusions: Array = []
 ## Out of the entity grid, and therefore untouchable and harmless.
 var _submerged: PackedByteArray
 ## How many times this enemy's line has already divided.
@@ -1806,11 +1817,91 @@ func _step2e_blocks(dt: float) -> void:
 			Callable(terrain, "nearest_open"), _block_rng):
 		_block_payout()
 
-## Filled in by the payout task. A completed hold that pays nothing is worse
-## than no block at all, so this must never stay a no-op.
+## What a completed hold pays, in priority order.
 func _block_payout() -> void:
-	pending_levels += 1
-	_offer_cards()
+	var matches := []
+	for m in loadout.matched_recipes():
+		if loadout.can_fuse(m[0], m[1].fused):
+			matches.append(m)
+
+	# A fusion offer PAUSES the run and waits for choose_fusion/decline_fusion.
+	# With nobody connected there is nobody to unpause it, and _physics_process
+	# returns early on `paused` forever: the run deadlocks. Every headless driver
+	# connects level_up_offered and nothing else, so this guard is what keeps an
+	# autopiloted run that happens to assemble a maxed triple from hanging the
+	# perf gate. The drivers also get a handler; the design must not depend on it.
+	if not matches.is_empty() and not fusion_offered.get_connections().is_empty():
+		_pending_fusions = matches
+		paused = true
+		emit_signal("fusion_offered", matches)
+		return
+
+	var seed_m := _targeted_module()
+	if seed_m != null and _card_rng.randf() < TARGETED_ODDS:
+		pending_levels += 1
+		_offer_cards(CardMode.SEEDED, seed_m)
+		return
+
+	var roll := _card_rng.randf()
+	if roll < 0.40:
+		salvage += 150 * subnet          # subnet starts at 1
+		emit_signal("stats_changed")
+	elif roll < 0.70:
+		# player_health is the mutable pool; _eff_integrity() is the CAP it is
+		# measured against. There is no `integrity` member.
+		player_health = minf(_eff_integrity(),
+			player_health + _eff_integrity() * 0.25)
+		emit_signal("stats_changed")
+	else:
+		pending_levels += 1
+		_offer_cards(CardMode.RANK_ONLY)
+
+func choose_fusion(index: int) -> void:
+	# Bounds-checked against the PENDING list, not against the loadout: a stale
+	# index from a screen the player already declined must consume nothing, and
+	# Loadout.fuse re-checks can_fuse for the same reason.
+	if index >= 0 and index < _pending_fusions.size():
+		var m = _pending_fusions[index]
+		loadout.fuse(m[0], m[1].fused)
+		_recompile()
+	_pending_fusions = []
+	paused = false
+	emit_signal("stats_changed")
+
+func decline_fusion() -> void:
+	# Declining costs nothing and the recipe stays matched, so the next block
+	# offers it again. A fusion is permanent; refusing one must not be.
+	_pending_fusions = []
+	salvage += 25
+	paused = false
+	emit_signal("stats_changed")
+
+## The module that would do the most for the build right now: one that completes
+## a recipe a row is a single module short of, or failing that one that fills a
+## slot keeping a row inert. The near-miss search itself lives in RecipeTable —
+## it is a question about recipes, and the arena has no business knowing a
+## recipe's shape. This only filters by what is unlocked and placeable.
+func _targeted_module() -> Module:
+	var mods := ModuleTable.by_id()
+	var unlocked := {}
+	for m in _unlocked:
+		unlocked[m.id] = true
+	for ex in loadout.exploits:
+		var want := RecipeTable.near_miss(ex)
+		if want == &"" or not unlocked.has(want):
+			continue
+		var cand: Module = mods[want]
+		if not loadout.legal_targets(cand).is_empty():
+			return cand
+	# Nothing is one short: fall back to anything that un-inerts a row.
+	for ex in loadout.exploits:
+		if not ex.is_inert():
+			continue
+		var need := Module.Slot.VECTOR if ex.vector == null else Module.Slot.TRIGGER
+		for m in _unlocked:
+			if m.slot == need and not loadout.legal_targets(m).is_empty():
+				return m
+	return null
 
 ## Crossing into the NEXT arena is the advance. The gate itself is just a mouth
 ## you walk through; touching it does nothing, which is the whole point of the
@@ -1925,13 +2016,36 @@ func _card_pool() -> Array:
 	return pool
 
 ## Multiple thresholds crossed in one tick queue; screens show in sequence.
-func _offer_cards() -> void:
+func _offer_cards(mode: int = CardMode.NORMAL, seed_module: Module = null) -> void:
 	paused = true
 	var pool := _card_pool()
+	if mode == CardMode.RANK_ONLY:
+		# Filter the TARGETS, not just the entries. Keeping a whole entry because
+		# it contains a rank-up leaves its EMPTY_SLOT and REPLACE buttons on the
+		# card, so the screen would be a guaranteed-rank-AVAILABLE screen rather
+		# than a guaranteed rank. An empty result falls through to the ordinary
+		# pool on purpose: it means nothing in the loadout can rank at all, and
+		# an ordinary draw beats an empty screen.
+		var ranked := []
+		for entry in pool:
+			var only := []
+			for t in entry[1]:
+				if t.action == Loadout.Rule.RANK_UP:
+					only.append(t)
+			if not only.is_empty():
+				ranked.append([entry[0], only])
+		if not ranked.is_empty():
+			pool = ranked
 	# Seeded so a run reproduces exactly from a bug report.
 	for i in range(pool.size() - 1, 0, -1):
 		var j := _card_rng.randi_range(0, i)
 		var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp
+	if mode == CardMode.SEEDED and seed_module != null:
+		# Front of the deck, not an extra card: the screen still shows three.
+		for i in pool.size():
+			if pool[i][0] != null and pool[i][0].id == seed_module.id:
+				var tmp2 = pool[0]; pool[0] = pool[i]; pool[i] = tmp2
+				break
 	var cards := []
 	for entry in pool:
 		if cards.size() >= 3:

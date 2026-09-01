@@ -6,6 +6,10 @@ func _initialize() -> void:
 	root.add_child(run)
 	await process_frame
 	run.level_up_offered.connect(func(cards): run.choose_card(cards[0][0], Loadout.best_target(cards[0][1])))
+	# Without a handler _block_payout refuses to offer a fusion at all (it
+	# would pause with nobody to unpause it); with one, an autopiloted run
+	# actually exercises a fused row.
+	run.fusion_offered.connect(func(_m): run.choose_fusion(0))
 func _process(_d: float) -> bool:
 	frames += 1
 	if run != null and frames > 30:

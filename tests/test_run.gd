@@ -20,6 +20,10 @@ func _initialize() -> void:
 	# never fires. One frame brings the tree up.
 	await process_frame
 	run.level_up_offered.connect(_auto_pick)
+	# Without a handler _block_payout refuses to offer a fusion at all (it
+	# would pause with nobody to unpause it); with one, an autopiloted run
+	# actually exercises a fused row.
+	run.fusion_offered.connect(func(_m): run.choose_fusion(0))
 
 	# Every subnet is 300 s of wave table plus however long ICE takes; 90 s of
 	# boss margin each has been enough at every damage level tried so far.

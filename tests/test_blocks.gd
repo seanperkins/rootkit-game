@@ -2,11 +2,12 @@ extends SceneTree
 
 ## The block: when it spawns, how it fills, and what stops it.
 
-const EXPECTED_CHECKS := 16
+const EXPECTED_CHECKS := 21
 const DT := 1.0 / 60.0
 
 var failures := 0
 var checks := 0
+var _offered: Array = []
 
 ## _initialize, not _init: one case stands up a real run and awaits a frame.
 func _initialize() -> void:
@@ -16,6 +17,7 @@ func _initialize() -> void:
 	the_schedule()
 	the_hold()
 	await a_live_block_stands_on_open_ground()
+	await the_payout_prefers_a_fusion()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -116,3 +118,49 @@ func a_live_block_stands_on_open_ground() -> void:
 	_check("and the collapse despawns it", run.blocks.alive, false)
 	run.queue_free()
 	await process_frame
+
+
+## The payout, in priority order: a fusion when a row matches AND can fuse,
+## otherwise a card seeded toward the recipe you are closest to.
+func the_payout_prefers_a_fusion() -> void:
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(run)
+	await process_frame
+	run.input_override = Vector2.ZERO
+
+	# A member field, not a local. GDScript lambdas capture the enclosing locals
+	# BY VALUE, so `_offered = m` inside a closure over a local would rebind the
+	# copy and the outer array would stay empty.
+	_offered = []
+	run.fusion_offered.connect(func(m): _offered = m)
+	run.loadout.exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
+		_row(run, &"packet", &"interval", &"")]
+	run._recompile()
+	run._block_payout()
+	_check("a matching row is offered as a fusion", _offered.size(), 1)
+	_check("and the run is paused for the choice", run.paused, true)
+
+	run.choose_fusion(0)
+	_check("choosing it fuses the row",
+		run.loadout.exploits[0].vector.module.id, &"zero_day")
+	_check("and unpauses", run.paused, false)
+
+	# One module short of frag_packet (packet + interval + fork_bomb): the
+	# targeted card is what makes an exact triple reachable at all.
+	_check("the targeted module completes the near-miss row",
+		run._targeted_module().id, &"fork_bomb")
+	run.queue_free()
+	await process_frame
+
+func _row(run: Node2D, v: StringName, t: StringName, p: StringName) -> Exploit:
+	var mods := ModuleTable.by_id()
+	var ex := Exploit.new()
+	ex.place(mods[v]); ex.place(mods[t])
+	if p != &"": ex.place(mods[p])
+	return ex
+
+## Fusion needs all three at max rank.
+func _maxed(ex: Exploit) -> Exploit:
+	for em in ex.equipped():
+		em.rank = em.module.max_rank
+	return ex

@@ -10,6 +10,10 @@ func _process(_d: float) -> bool:
 	if run == null or run.enemies == null: return false
 	if frames == 5:
 		run.level_up_offered.connect(func(c): run.choose_card(c[0][0], Loadout.best_target(c[0][1])))
+		# Without a handler _block_payout refuses to offer a fusion at all (it
+		# would pause with nobody to unpause it); with one, an autopiloted run
+		# actually exercises a fused row.
+		run.fusion_offered.connect(func(_m): run.choose_fusion(0))
 		# Do NOT jump elapsed: every wave would dump its whole backlog in one
 		# tick, since spawns are derived from elapsed rather than accumulated.
 		run.player_pos = Vector2(1180, 640)     # near corner, so the slab faces are in frame
