@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 12
+const EXPECTED_CHECKS := 14
 
 var failures := 0
 var checks := 0
@@ -12,6 +12,7 @@ func _init() -> void:
 	print("ROOTKIT — fusion\n")
 	a_fused_row_fires_with_no_trigger()
 	targeting_comes_from_the_head_only()
+	split_count_folds_like_pierce()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -95,3 +96,19 @@ func targeting_comes_from_the_head_only() -> void:
 	_check("an ordinary exploit defaults to NEAREST",
 		Compiler.build(plain).targeting, Module.Targeting.NEAREST)
 	_check("and NEAREST is enum zero", Module.Targeting.NEAREST, 0)
+
+
+## Zero means one, following `burst`, so no caller special-cases a default.
+## And it folds as a float and floors ONCE, like pierce: two halves make one.
+func split_count_folds_like_pierce() -> void:
+	var a := Module.make(&"sc_a", "a", Module.Slot.PAYLOAD, {&"split_count": 0.5})
+	var b := Module.make(&"sc_b", "b", Module.Slot.TRIGGER, {&"split_count": 0.5})
+	var ex := Exploit.new()
+	ex.place(T[&"packet"]); ex.place(a); ex.place(b)
+	var r := Compiler.build(ex)
+	_check("two halves make one split", r.split_count, 1)
+
+	var plain := Exploit.new()
+	plain.place(T[&"packet"]); plain.place(T[&"interval"])
+	_check("and the default is zero, meaning one emission",
+		Compiler.build(plain).split_count, 0)

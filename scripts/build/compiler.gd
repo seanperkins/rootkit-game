@@ -123,6 +123,7 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	r.botnet_cap = floori(r.botnet_cap)
 	r.orbit_count = floori(r.orbit_count)
 	r.burst = floori(r.burst)
+	r.split_count = floori(r.split_count)
 	return r
 
 ## Rank scales the two directions of a cadence factor differently, and each half

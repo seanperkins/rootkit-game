@@ -125,6 +125,15 @@ const KNOCK_DECAY := 6.0
 ## CONE's arc, half-angle in radians. 45 degrees either side of the aim.
 const CONE_HALF_ANGLE := 0.785
 ## A mine sits until something comes within this, then detonates in `radius`.
+## The angle between adjacent shots of a split. At 0.22 rad an off-axis shot is
+## 0.218*d from the aim line, so against a 16 px combined hit radius
+## (PROJECTILE_RADIUS 4 + ENEMY_RADIUS 12) the flanking shots share a target only
+## inside ~73 px. That is the intended shape — a spread that covers ground rather
+## than three shots stacked on one enemy — not a convergence guarantee.
+const SPLIT_SPREAD := 0.22
+## Equal to MINE_TRIGGER on purpose, so a ring's charges do not sit inside each
+## other's fuse radius.
+const MINE_SPREAD := 46.0
 const MINE_TRIGGER := 46.0
 const MINE_LIFE := 12.0
 ## Orbiters circle at this rate, and live exactly one cadence so that firing
@@ -921,14 +930,25 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 		Module.VectorKind.MINE:
 			# A projectile with no velocity and a proximity fuse, so mines cost
 			# no new population and inherit terrain collision for free.
-			var mi := projectiles.spawn(player_pos, Vector2.ZERO, 1.0,
-				PROJECTILE_RADIUS, 0)
-			if mi >= 0:
+			var mines: int = maxi(int(r.split_count), 1)
+			for sm in mines:
+				var at := player_pos
+				if mines > 1:
+					# Through nearest_open: player_pos is always walkable, so a
+					# single mine never needed this, but a ring of three can put
+					# two of them inside a wall where nothing will ever trip them.
+					at = terrain.nearest_open(at + Vector2(MINE_SPREAD, 0.0).rotated(
+						TAU * float(sm) / float(mines)))
+				var mi := projectiles.spawn(at, Vector2.ZERO, 1.0,
+					PROJECTILE_RADIUS, 0)
+				if mi < 0:
+					break
 				_proj_owner[mi] = ei
 				_proj_pierce[mi] = 0
 				_proj_last[mi] = -1
 				_proj_dist_left[mi] = 1.0
 				_mine_left[mi] = MINE_LIFE
+				_orbit_left[mi] = 0.0
 		Module.VectorKind.ORBIT:
 			# Orbiters live exactly one cadence, so refiring REPLACES the ring
 			# rather than stacking a second one on top of it.
@@ -978,9 +998,15 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# well off-screen — and made every shot walk the entire grid.
 			var t3 := _pick_target(VIEW_RANGE, r.targeting)
 			var dir2 := Vector2.RIGHT if t3 < 0 else (enemies.pos[t3] - player_pos).normalized()
-			var pi := projectiles.spawn(player_pos, dir2 * maxf(r.projectile_speed, 120.0),
-				1.0, PROJECTILE_RADIUS, 0)
-			if pi >= 0:
+			var shots: int = maxi(int(r.split_count), 1)
+			for sp in shots:
+				# Centred on the aim: 1 shot is dead on, 3 is -spread/0/+spread.
+				var off := (float(sp) - float(shots - 1) * 0.5) * SPLIT_SPREAD
+				var pi := projectiles.spawn(player_pos,
+					dir2.rotated(off) * maxf(r.projectile_speed, 120.0),
+					1.0, PROJECTILE_RADIUS, 0)
+				if pi < 0:
+					break
 				_proj_owner[pi] = ei
 				_proj_pierce[pi] = r.pierce
 				_proj_last[pi] = -1
