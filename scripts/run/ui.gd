@@ -112,6 +112,29 @@ func _build() -> void:
 	# level-up but this button is not, and reconnecting would stack handlers.
 	_decline.mouse_entered.connect(_hover_decline)
 
+	# The recipe panel, over the level-up overlay. Exact-id recipes are not
+	# discoverable by play, so this is part of the feature rather than a nicety.
+	_recipes = PanelContainer.new()
+	_recipes.name = "Recipes"
+	_recipes.add_theme_stylebox_override("panel",
+		_panel(Color(0.08, 0.18, 0.15, 0.96), 1))
+	# Explicit geometry. A PanelContainer with only an anchor preset sizes to its
+	# child's minimum and lands at an anchor-relative origin — not reliably on
+	# screen, let alone readable.
+	_recipes.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_recipes.offset_left = 80
+	_recipes.offset_right = -80
+	_recipes.offset_top = 60
+	_recipes.offset_bottom = -60
+	_recipes.visible = false
+	var scroll := ScrollContainer.new()
+	# Held by reference: the label sits under the ScrollContainer, not directly
+	# under _recipes, so a get_node("Body") off the panel would miss it.
+	_recipes_body = _mono(13)
+	scroll.add_child(_recipes_body)
+	_recipes.add_child(scroll)
+	_overlay.add_child(_recipes)
+
 	_end = Control.new()
 	_end.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_end.visible = false
@@ -181,6 +204,8 @@ func _bar(f: float, w: int) -> String:
 
 var _cards_data: Array = []
 var _fusion_buttons: Array = []
+var _recipes: PanelContainer
+var _recipes_body: Label
 
 func _on_cards(cards: Array) -> void:
 	_cards_data = cards
@@ -189,8 +214,9 @@ func _on_cards(cards: Array) -> void:
 
 func _show_cards() -> void:
 	_fusion_buttons = []
+	_recipes.visible = false
 	_overlay.get_node("Title").text = \
-		"  LEVEL UP  ::  arrows or WASD to choose, enter to place, esc to decline"
+		"  LEVEL UP  ::  arrows to choose, enter to place, r for recipes, esc to decline"
 	var row: HBoxContainer = card_row()
 	for c in row.get_children():
 		row.remove_child(c)
@@ -231,6 +257,7 @@ func _decline_current() -> void:
 ## same row, same highlight, same keys — because a second navigation model for a
 ## screen that appears once or twice a run is a second thing to get wrong.
 func _on_fusion(matches: Array) -> void:
+	_recipes.visible = false
 	_cards_data = []
 	_fusion_buttons = []
 	_overlay.get_node("Title").text = \
@@ -280,6 +307,35 @@ func _on_fusion(matches: Array) -> void:
 			(list[bi] as Button).mouse_entered.connect(_hover.bind(ci, bi))
 	_overlay.visible = true
 	_reset_selection()
+
+## One line per recipe the player could actually assemble, with a mark per slot
+## against what the loadout holds right now. Recipes whose modules are still
+## locked are omitted entirely — the point of the panel is to show what is
+## within reach, and a wall of unreachable rows is the opposite of that.
+##
+## A slot counts as filled only when the module is held AND at max rank, because
+## that is what fusion demands: a triple sitting at rank 3 is not ready, and a
+## panel that said otherwise would be lying about the only gate that matters.
+func recipe_lines() -> Array:
+	var unlocked := {}
+	for m in run._unlocked:
+		unlocked[m.id] = true
+	var out := []
+	for r in RecipeTable.all():
+		if not (unlocked.has(r.vector_id) and unlocked.has(r.trigger_id)
+				and unlocked.has(r.payload_id)):
+			continue
+		var marks := ""
+		for id in [r.vector_id, r.trigger_id, r.payload_id]:
+			var at: Array = run.loadout._slot_holding(id)
+			if at.is_empty():
+				marks += "[ ]"
+			else:
+				var em: EquippedModule = run.loadout.exploits[at[0]].at(at[1])
+				marks += "[x]" if em.rank >= em.module.max_rank else "[-]"
+		out.append("%s  %-18s %s + %s + %s" % [marks, r.fused.display_name,
+			r.vector_id, r.trigger_id, r.payload_id])
+	return out
 
 func fusion_buttons() -> Array:
 	return _fusion_buttons
@@ -588,6 +644,10 @@ func _input(e: InputEvent) -> void:
 		KEY_S, KEY_DOWN:                     _move_row(1)
 		KEY_A, KEY_LEFT:                     _move_card(-1)
 		KEY_D, KEY_RIGHT:                    _move_card(1)
+		KEY_R:
+			_recipes.visible = not _recipes.visible
+			if _recipes.visible:
+				_recipes_body.text = "\n".join(recipe_lines())
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:  _activate()
 		KEY_ESCAPE:                          _decline_current()
 		_:                                   return

@@ -80,6 +80,32 @@ button per exploit row, marked with what pressing it does: `^` rank up, `+` fill
 an empty slot, `x` replace the occupant, `*` found a new row. One click places
 the module. Any card can be declined for salvage.
 
+## Fusion
+
+A **recipe** is three exact modules — a vector, a trigger and a payload. There
+are twenty, and every vector, trigger and payload appears in at least one, so no
+card is ever a dead end. `snipe + on_kill + bitmask` is `zero_day()`: a homing
+sniper that picks the strongest thing in range.
+
+Matching the ids is not enough. **All three must be at max rank**, because a
+recipe is what three finished modules become rather than a way to skip finishing
+them. And matching does not fuse on its own — a **block** materialises in the
+arena every 45 seconds, and holding ground inside it for eight seconds is what
+compiles the recipe. Step off and the ring drains at twice the rate it filled,
+while the swarm keeps coming.
+
+Fusing consumes all three modules and **frees their ids**, which is the point: a
+module id occupies exactly one slot in the whole loadout again, so the way to put
+`interval` in a second exploit is to fuse the row holding the first. A fused row
+keeps one open payload slot, and the fused module ranks 1→5 through the ordinary
+card pool like anything else. It cannot be un-fused.
+
+A block that cannot fuse anything still pays: most often a **targeted card** —
+the module you are one short of, or one that un-inerts a row — and otherwise
+salvage, integrity, or a guaranteed rank-up. Press `r` on the level-up screen for
+the recipe list, which shows only recipes whose three modules you have unlocked,
+marked `[x]` held and maxed, `[-]` held but short, `[ ]` missing.
+
 Damage tagged `corruption` fills a second bar. An enemy that fills it **flips**
 into a botnet node that fights for you, and drops the same shards a kill does,
 so a corruption build doesn't starve its own levelling.
@@ -153,7 +179,9 @@ godot --headless -s res://tests/test_terrain_run.gd  # zones and terrain in a li
 godot --headless -s res://tests/test_gates.gd        # the gate, the corridor, the walk through
 godot --headless -s res://tests/test_collapse.gd     # distance field, collapse order, the route
 godot --headless -s res://tests/test_minibosses.gd   # the schedule and the four mechanics
-godot --headless -s res://tests/test_cards_keyboard.gd # level-up by arrows/WASD
+godot --headless -s res://tests/test_cards_keyboard.gd # level-up and fusion by keyboard
+godot --headless -s res://tests/test_fusion.gd       # recipes, the fused head, the five mechanics
+godot --headless -s res://tests/test_blocks.gd       # the block schedule, the hold, the payout
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
@@ -175,7 +203,8 @@ budget, because identical code measures 5.2 ms median on a quiet machine and
 ## Not in this build
 
 Audio, additional subnets (the node map is scaffolded but unreachable),
-controller support, and healing beyond `keylog`'s lifesteal.
+controller support, healing beyond `keylog`'s lifesteal and a block's integrity
+payout, un-fusing, and second-tier recipes that fuse a fused row again.
 
 ## Design
 
