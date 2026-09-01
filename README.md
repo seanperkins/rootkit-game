@@ -182,6 +182,7 @@ godot --headless -s res://tests/test_minibosses.gd   # the schedule and the four
 godot --headless -s res://tests/test_cards_keyboard.gd # level-up and fusion by keyboard
 godot --headless -s res://tests/test_fusion.gd       # recipes, the fused head, the five mechanics
 godot --headless -s res://tests/test_blocks.gd       # the block schedule, the hold, the payout
+godot --headless -s res://tests/test_fusion_run.gd   # a fusion taken through the real tick
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
