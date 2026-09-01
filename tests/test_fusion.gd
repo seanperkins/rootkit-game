@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 58
+const EXPECTED_CHECKS := 60
 
 var failures := 0
 var checks := 0
@@ -29,6 +29,7 @@ func _initialize() -> void:
 	fusing_may_not_orphan_the_loadout()
 	a_fused_module_is_drawable_only_once_held()
 	fusion_demands_three_finished_modules()
+	fusing_is_never_a_downgrade()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -379,3 +380,42 @@ func fusion_demands_three_finished_modules() -> void:
 
 	lo.exploits[0].payloads[0].rank = T[&"fork_bomb"].max_rank
 	_check("all three maxed: allowed", lo.can_fuse(0, rec.fused), true)
+
+
+## Fusion consumes three MAXED modules and returns a rank-1 one, so if the fused
+## module is weaker than the triple it ate, the correct play is never to fuse and
+## the whole feature is a trap. Measured at rank 1 — the moment of the trade.
+##
+## The triple's rate is taken with its cadence floored at its VECTOR's base
+## cooldown. An event trigger compounds a large cadence bonus (on_hit at rank 5
+## is 0.62^5 = 0.09x) but cannot sustainably out-fire its own events, so the
+## uncapped number is theoretical. Compare like with like.
+func fusing_is_never_a_downgrade() -> void:
+	var worse := []
+	var best_gain := 0.0
+	for rec in RecipeTable.all():
+		var tx := Exploit.new()
+		tx.vector = EquippedModule.new(T[rec.vector_id], 5)
+		tx.trigger = EquippedModule.new(T[rec.trigger_id], 5)
+		tx.payloads[0] = EquippedModule.new(T[rec.payload_id], 5)
+		var tr := Compiler.build(tx)
+		var vbase: float = float(T[rec.vector_id].stats.get(&"cooldown", 1.0))
+		var tdps: float = (tr.damage + tr.corruption) / maxf(tr.cooldown, vbase)
+
+		var fx := Exploit.new()
+		fx.vector = EquippedModule.new(rec.fused, 1)
+		var f1 := Compiler.build(fx)
+		var fdps: float = (f1.damage + f1.corruption) / maxf(f1.cooldown, 0.001)
+		# 2% slack: the values are snapped to 0.5 damage, not solved exactly.
+		if fdps < tdps * 0.98:
+			worse.append(rec.fused.id)
+
+		var fx5 := Exploit.new()
+		fx5.vector = EquippedModule.new(rec.fused, 5)
+		var f5 := Compiler.build(fx5)
+		best_gain = maxf(best_gain,
+			((f5.damage + f5.corruption) / maxf(f5.cooldown, 0.001)) / maxf(tdps, 0.001))
+	_check("no recipe is a downgrade at the moment of fusing", worse, [])
+	# And ranking it is worth doing: the payoff is the five ranks, not the fuse.
+	_check("a maxed fused module beats its triple several times over",
+		best_gain > 3.0, true)

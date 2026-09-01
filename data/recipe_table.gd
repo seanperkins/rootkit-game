@@ -13,6 +13,16 @@ class_name RecipeTable extends RefCounted
 ##
 ## Every vector, every trigger and every payload appears at least once, so no
 ## card is ever a dead end for a player hunting recipes.
+##
+## DAMAGE IS DERIVED, NOT CHOSEN. Fusion consumes three MAXED modules and returns
+## a rank-1 one, so each fused module's damage is set so its rank-1 output at
+## least matches the triple it eats — otherwise fusing is a downgrade and the
+## correct play is never to fuse. The triple's rate is measured with its cadence
+## floored at its VECTOR's base cooldown: an event trigger compounds a large
+## cadence bonus (on_hit at rank 5 is 0.62^5) but cannot sustainably out-fire its
+## own events, so the uncapped figure is theoretical rather than real. Six
+## recipes already cleared parity and were left alone.
+## tests/test_fusion.gd pins the property; re-derive rather than eyeballing.
 
 const S := Module.Slot
 const V := Module.VectorKind
@@ -51,23 +61,23 @@ static func _build() -> Array:
 	return [
 		Recipe.new(&"packet", &"on_kill", &"race_condition",
 			_f(&"hollow_point", "hollow_point()",
-				{&"damage": 22.0, &"projectile_speed": 640.0, &"cooldown": 0.55,
+				{&"damage": 49.5, &"projectile_speed": 640.0, &"cooldown": 0.55,
 				 &"travel": 900.0, &"pierce": 2.0}, V.PACKET, T.ON_KILL, G.STRONGEST)),
 		Recipe.new(&"broadcast", &"interval", &"overclock",
 			_f(&"pulse_train", "pulse_train()",
-				{&"damage": 12.0, &"radius": 150.0, &"cooldown": 0.55},
+				{&"damage": 18.0, &"radius": 150.0, &"cooldown": 0.55},
 				V.BROADCAST, T.INTERVAL)),
 		Recipe.new(&"chain", &"on_hit", &"heap_spray",
 			_f(&"arp_storm", "arp_storm()",
-				{&"damage": 11.0, &"chain_count": 8.0, &"radius": 200.0,
+				{&"damage": 20.5, &"chain_count": 8.0, &"radius": 200.0,
 				 &"cooldown": 0.62}, V.CHAIN, T.ON_HIT, G.FARTHEST)),
 		Recipe.new(&"beam", &"interval", &"buffer_overflow",
 			_f(&"railgun", "railgun()",
-				{&"damage": 14.0, &"pierce": 8.0, &"radius": 420.0,
+				{&"damage": 49.0, &"pierce": 8.0, &"radius": 420.0,
 				 &"cooldown": 0.65}, V.BEAM, T.INTERVAL, G.STRONGEST)),
 		Recipe.new(&"spike", &"on_kill", &"fork_bomb",
 			_f(&"stack_smash", "stack_smash()",
-				{&"damage": 30.0, &"radius": 210.0, &"cooldown": 0.70,
+				{&"damage": 74.5, &"radius": 210.0, &"cooldown": 0.70,
 				 &"execute_below": 0.18}, V.CONE, T.ON_KILL)),
 		Recipe.new(&"flood", &"interval", &"tarpit",
 			_f(&"dragnet", "dragnet()",
@@ -76,27 +86,27 @@ static func _build() -> Array:
 				V.BROADCAST, T.INTERVAL, G.NEAREST, [&"slow"])),
 		Recipe.new(&"snipe", &"on_kill", &"bitmask",
 			_f(&"zero_day", "zero_day()",
-				{&"damage": 52.0, &"projectile_speed": 900.0, &"cooldown": 1.05,
+				{&"damage": 59.5, &"projectile_speed": 900.0, &"cooldown": 1.05,
 				 &"travel": 1600.0, &"pierce": 6.0, &"homing": 2.6},
 				V.PACKET, T.ON_KILL, G.STRONGEST)),
 		Recipe.new(&"landmine", &"interval", &"corrupt",
 			_f(&"logic_bomb", "logic_bomb()",
-				{&"damage": 22.0, &"corruption": 14.0, &"radius": 190.0,
+				{&"damage": 42.0, &"corruption": 26.5, &"radius": 190.0,
 				 &"cooldown": 1.3}, V.MINE, T.INTERVAL, G.NEAREST,
 				[&"aoe", &"corruption"])),
 		Recipe.new(&"cascade", &"on_flip", &"worm",
 			_f(&"botnet_cascade", "botnet_cascade()",
-				{&"damage": 8.0, &"corruption": 12.0, &"chain_count": 10.0,
+				{&"damage": 9.5, &"corruption": 14.5, &"chain_count": 10.0,
 				 &"radius": 220.0, &"cooldown": 0.55}, V.CHAIN, T.ON_FLIP,
 				G.NEAREST, [&"corruption"])),
 		Recipe.new(&"bounce", &"on_hit", &"harden",
 			_f(&"bulkhead", "bulkhead()",
-				{&"damage": 8.0, &"radius": 230.0, &"cooldown": 0.80,
+				{&"damage": 11.0, &"radius": 230.0, &"cooldown": 0.80,
 				 &"knockback": 420.0, &"ward_armor": 3.0, &"ward_duration": 2.5},
 				V.PULSE, T.ON_HIT)),
 		Recipe.new(&"mirror", &"interval", &"nice",
 			_f(&"aegis", "aegis()",
-				{&"damage": 12.0, &"radius": 110.0, &"cooldown": 1.6,
+				{&"damage": 14.5, &"radius": 110.0, &"cooldown": 1.6,
 				 &"orbit_count": 8.0, &"pierce": 3.0, &"ward_clock_speed": 20.0,
 				 &"ward_duration": 1.6}, V.ORBIT, T.INTERVAL)),
 		Recipe.new(&"throttle", &"interval", &"keylog",
@@ -120,16 +130,16 @@ static func _build() -> Array:
 		# tests/test_fusion.gd so an edit trips a check, not the validator.
 		Recipe.new(&"packet", &"on_hit", &"overclock",
 			_f(&"syn_flood", "syn_flood()",
-				{&"damage": 7.0, &"projectile_speed": 560.0, &"cooldown": 0.42,
+				{&"damage": 38.0, &"projectile_speed": 560.0, &"cooldown": 0.42,
 				 &"travel": 520.0, &"split_count": 3.0}, V.PACKET, T.ON_HIT)),
 		Recipe.new(&"packet", &"interval", &"fork_bomb",
 			_f(&"frag_packet", "frag_packet()",
-				{&"damage": 14.0, &"projectile_speed": 480.0, &"cooldown": 0.55,
+				{&"damage": 55.0, &"projectile_speed": 480.0, &"cooldown": 0.55,
 				 &"travel": 620.0, &"blast_radius": 110.0}, V.PACKET, T.INTERVAL,
 				G.NEAREST, [&"aoe"])),
 		Recipe.new(&"chain", &"interval", &"botnet_expand",
 			_f(&"hivemind", "hivemind()",
-				{&"damage": 9.0, &"chain_count": 5.0, &"radius": 200.0,
+				{&"damage": 19.5, &"chain_count": 5.0, &"radius": 200.0,
 				 &"cooldown": 0.70, &"botnet_cap": 8.0, &"botnet_lifetime": 18.0,
 				 &"botnet_damage_ratio": 0.7}, V.CHAIN, T.INTERVAL)),
 		Recipe.new(&"flood", &"on_low_integrity", &"sandbox",
@@ -139,12 +149,12 @@ static func _build() -> Array:
 				V.BROADCAST, T.ON_LOW_INTEGRITY)),
 		Recipe.new(&"beam", &"on_level_up", &"buffer_overflow",
 			_f(&"core_dump", "core_dump()",
-				{&"damage": 30.0, &"pierce": 10.0, &"radius": 460.0,
+				{&"damage": 67.5, &"pierce": 10.0, &"radius": 460.0,
 				 &"cooldown": 0.9, &"burst": 12.0}, V.BEAM, T.ON_LEVEL_UP,
 				G.STRONGEST)),
 		Recipe.new(&"landmine", &"on_kill", &"bitmask",
 			_f(&"minefield", "minefield()",
-				{&"damage": 26.0, &"radius": 170.0, &"cooldown": 0.85,
+				{&"damage": 42.5, &"radius": 170.0, &"cooldown": 0.85,
 				 &"split_count": 3.0, &"pierce": 2.0}, V.MINE, T.ON_KILL,
 				G.NEAREST, [&"aoe"])),
 	]
