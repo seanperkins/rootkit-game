@@ -69,20 +69,28 @@ INTERVAL as an interval trigger, because it is one.
 
 ## The fused row
 
-`Exploit` gains `fused: EquippedModule`. When it is set:
+A fused module **is** a VECTOR — `slot == Module.Slot.VECTOR`, which is what buys
+it the right rank scaling — so it occupies `Exploit.vector`, marked by
+`is_fused`, and the TRIGGER column is simply left empty.
 
-- `vector` and `trigger` are null and stay null.
-- `at(0)` returns the fused module. `at(1)` is **absorbed** — not empty. The
-  distinction matters: `legal_targets` offers EMPTY_SLOT on a null occupant, so
-  without a separate predicate a fused row would advertise a free trigger slot.
-- `at(2)` is the payload slot, open and fillable as normal.
-- `is_inert()` is false. A fused module carries its own `vector_kind` and
-  `trigger_kind` — both fields `Module` already has — so the row fires on its
-  own terms with no trigger module in it.
+- `at(0)`, `at(1)`, `at(2)` are unchanged. A row is still three slots, which is
+  the invariant the loadout rules and the whole level-up screen are built on.
+- `is_inert()` is false: a fused module carries its own `vector_kind` **and**
+  `trigger_kind` — both fields `Module` already has — so the row fires with no
+  trigger module in it.
+- `Exploit.head_is_fused()` is the one new predicate, and `legal_targets` reads
+  it twice: never offer the absorbed TRIGGER column, never let the head be
+  replaced.
 
 A fused row therefore offers exactly two placements: ranking the fused module,
-and filling or replacing its payload. A VECTOR or TRIGGER card finds no target
-there.
+and filling or replacing its payload.
+
+**A parallel `Exploit.fused` field was the first design, and review rejected it**
+— independently, from the structural lane and the complexity lane. It forced an
+`if fused != null` branch into `at`, `equipped`, `has_free_slot_for`,
+`is_inert`, `legal_targets`, `_interval_count`, `Compiler.build` and the UI, and
+it broke the three-slot uniformity everything else assumes, for a distinction
+(`absorbed` is not `empty`) that two boolean reads express just as well.
 
 There is no un-fusing. A fused row is a decision for the rest of the run.
 
@@ -91,7 +99,7 @@ There is no un-fusing. A fused row is a decision for the rest of the run.
 | Field | For |
 |---|---|
 | `is_fused: bool` | Excludes the module from ordinary card draws |
-| `targeting: Targeting` | NEAREST (default) / STRONGEST / FARTHEST / LOWEST_HP |
+| `targeting: Targeting` | NEAREST (default) / STRONGEST / FARTHEST |
 
 `targeting` is read **only** from the VECTOR-or-fused slot, exactly as
 `vector_kind` and `trigger_kind` already are. Folding it from every module in
@@ -117,8 +125,10 @@ BEAM, CONE, CHAIN and PACKET all already call it, so all four inherit it at
 once. BROADCAST, PULSE, MINE and ORBIT resolve from the player's position and
 ignore it; no recipe on those kinds sets it.
 
-STRONGEST and LOWEST_HP read `enemies.hp[i]`, which the scan already has in
-hand. The scan stays one linear pass, so the perf gate is unaffected.
+STRONGEST reads `enemies.integrity[i]`, which the scan already has in hand. The
+scan stays one linear pass, so the perf gate is unaffected. Three modes, not
+four: a fourth (`LOWEST_HP`) that no recipe sets is a branch bought for nothing,
+and the enum is append-safe if one ever wants it.
 
 **`split_count`** — a vector emits N of its projectile fanned across a fixed
 spread rather than one. Six lines in the `_:` branch of `_emit_vector` for
@@ -276,11 +286,18 @@ mostly-unreachable combinations early in a run is a wall, not information.
 
 ## Compiler
 
-`build()` reads `vector_kind`, `trigger_kind` and `targeting` from `ex.fused`
-when it is set, and folds `fused` then the payload. Everything downstream —
-the multiplier layer, both cooldown floors, the clamps — is unchanged, because a
-fused module is a VECTOR carrying `cooldown` and the floors read exactly what
-they always read.
+`build()` reads `vector_kind` and `targeting` from the VECTOR slot as it always
+has, and takes `trigger_kind` from that same module when it is fused. Everything
+downstream — the vector fold, `vector_base`, the multiplier layer, both cooldown
+floors, the clamps — is unchanged, because a fused module is a VECTOR carrying
+`cooldown` and the floors read exactly what they always read.
+
+One consequence worth stating: a fused module may not carry `cadence_mult`
+(`validate` forbids it on any VECTOR, and the proportional floor is why), so each
+one bakes its trigger's cadence into its own `cooldown`. It **may** carry
+`burst`, which `validate` otherwise allows only on a TRIGGER — a fused module is
+its own trigger, and `panic_room()`, `last_resort()` and `core_dump()` all need
+it.
 
 ## Tests
 
@@ -326,9 +343,19 @@ gate, the binding is wrong, not the budget.
 
 ## Staging
 
-The build layer stands alone and is testable headless, so it goes first.
+One precondition comes first. `_step5_fire` opens with `queue.begin_tick()`,
+which discards every event appended earlier in the tick — including the mine
+fuse in `_step2_integrate` and the hazard and corruption zones in
+`_step2b_zones`. Mine blast damage and zone damage to enemies are dead code
+today, unnoticed because `landmine` ships LOCKED and no suite asserts either
+reduces integrity. `blast_radius` and `split_count` both land in that same
+window, so `frag_packet()`, `logic_bomb()` and `minefield()` would ship as
+visible explosions dealing nothing, with every test green.
 
-1. Uniqueness in `legal_targets`, and the rewritten comment.
+After that the build layer stands alone and is testable headless.
+
+0. `begin_tick` at the top of the tick, so step-2 damage reaches the drain.
+1. Uniqueness in `legal_targets`, the rewritten comment, and `test_slots.gd`.
 2. `Exploit.fused`, the absorbed slot, `Compiler` reading through it.
 3. The five mechanics and their fold rules. `homing` last of the five, because
    it is the one that has to be measured against the gate.
@@ -351,6 +378,12 @@ The build layer stands alone and is testable headless, so it goes first.
   to ignore the gate for five minutes has to learn a second rule for the block.
 - **`execute_below` needs its miniboss exemption to stay written down.** It is
   one comparison, and forgetting it deletes four boss fights.
+- **The queue-window fix changes shipped balance.** Mines and terrain zones have
+  never dealt damage; afterwards they do. A real difficulty change arriving
+  inside a feature branch.
+- **The perf gate had to grow a homing loadout.** Its stress build carries no
+  fused module, so the steering path would have executed zero times and the gate
+  could only ever have passed — evidence of nothing.
 
 ## Out of scope
 
