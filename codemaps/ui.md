@@ -113,7 +113,7 @@ Draw order is gated by `tests/test_draw_order.gd`.
 
 | File | Purpose |
 |---|---|
-| `run_tests.sh` | the runner — 26 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
+| `run_tests.sh` | the runner — 36 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
 | `screenshot.gd` | shared headless capture harness |
 | `shot_cards shot_collapse shot_fx shot_gate shot_iso shot_meta shot_props shot_seam shot_slots` | one-scene screenshot scripts |
 | `fps_probe.gd`, `fps_collapse.gd` | interactive frame-time probes (the gate lives in `tests/perf_milestone0.gd`) |

@@ -9,7 +9,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 
 ```bash
 godot                          # play, from the project root
-tools/run_tests.sh             # 26 suites + the perf gate
+tools/run_tests.sh             # 36 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 godot --headless -s res://tests/test_build.gd     # one suite
 godot --headless -s res://tools/shot_cards.gd     # one screenshot
@@ -72,9 +72,17 @@ the site; this is the index.
   multiplier that does not go through `Loadout.mult` reaches no exploit at all.
 - **The last INTERVAL trigger cannot be displaced** — an all-event loadout could
   never fire.
-- **Per-enemy AI arrays are sized `MAX_ENEMIES` and must be reset on every
-  spawn.** `Population.spawn` recycles slots; a stale phase means an enemy
-  commits to a dash it never wound up for. Use `_clear_ai` / `_spawn_enemy_state`.
+- **Per-enemy arrays need BOTH halves of the slot invariant.** *Reset on spawn*:
+  `Population.spawn` recycles slots, so a stale phase means an enemy commits to a
+  dash it never wound up for — use `_clear_ai` / `_spawn_enemy_state`. *Relocate
+  on despawn*: `Population.despawn` swap-removes the tail into the freed slot for
+  its OWN arrays only, so every parallel array must follow, via
+  `_relocate_enemy(i, last)`. There are **two** despawn sites — `_step9_recycle`
+  and `_step2d_collapse`, whose `is_void` predicate is conditional and therefore
+  not tail-only — and `_step2d_collapse` relocated nothing at all until the
+  polish pass. `test_arrivals` asserts the rule structurally: every
+  middle-of-pool `enemies.despawn` must relocate first. `_order` is the one
+  deliberate exception, because `_depth_sort` refills it wholesale each tick.
 - **An entity is adjudicated exactly once per tick, then CLOSED**, from the
   totals of the pass it was first marked in. Flip beats death. `ON_HIT`,
   `ON_KILL` and `ON_DAMAGE_TAKEN` are three different conditions — do not fire

@@ -26,7 +26,7 @@ scripts/run/     run spawn_director terrain ui backdrop props  the live run
 scripts/meta/    save_game meta_screen                      persistence + shop
 data/            module_table enemy_table                   code-defined registries
 shaders/         glyph.gdshader                             procedural glyph silhouettes
-tests/           26 suites + perf_milestone0                headless `-s` scripts
+tests/           36 suites + perf_milestone0                headless `-s` scripts
 tools/           run_tests.sh, shot_*.gd, fps_*.gd, build_manual.py
 ```
 
@@ -114,7 +114,7 @@ ground nobody is near. Trade: entities >½ window away are not in the grid.
 
 ```
 godot                       # from project root
-tools/run_tests.sh          # 26 suites + perf gate
+tools/run_tests.sh          # 36 suites + perf gate
 tools/run_tests.sh --fast   # skip perf gate
 godot --headless -s res://tests/<suite>.gd
 ```

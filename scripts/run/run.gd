@@ -1667,6 +1667,11 @@ func _support(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 		# restore an enemy but never inflate one.
 		enemies.integrity[j] = minf(_spawn_hp[j],
 			enemies.integrity[j] + SUPPORT_HEAL * dt)
+		# Remembered for the draw: a heal nobody can see is a fight the player
+		# is losing for reasons they cannot name. Last one wins — the link is a
+		# tell that healing IS happening and where, not an audit of every
+		# recipient.
+		_ai_aim[i] = enemies.pos[j]
 	var d := to_player.length()
 	if d < 0.001:
 		return Vector2.ZERO
@@ -2677,6 +2682,39 @@ func _draw() -> void:
 			ring.append(to_iso(enemies.pos[i]
 				+ Vector2(cos(ta), sin(ta)) * (14.0 + 26.0 * tell)))
 		draw_polyline(ring, Color(1.9, 0.9, 0.4, 0.85 * (1.0 - tell)), 2.0)
+
+	# Support links, and the ranged aim tell. Both are the same argument the
+	# charger and ambusher telegraphs above already make: a thing that happens
+	# to you with no warning reads as cheap, and the counterplay only exists if
+	# the cue does.
+	for i in enemies.count:
+		if _arriving[i] > 0.0 or _submerged[i] != 0:
+			continue
+		var bh2: int = enemy_types[enemies.type_index[i]].behaviour
+		if bh2 == EnemyTable.Behaviour.SUPPORT:
+			if _ai_aim[i] != Vector2.ZERO:
+				# Dashed rather than solid, so it reads as a beam being
+				# maintained rather than as a wall.
+				var a0 := to_iso(enemies.pos[i])
+				var b0 := to_iso(_ai_aim[i])
+				var seg := 7
+				for k2 in seg:
+					if k2 % 2 == 1:
+						continue
+					var t0 := float(k2) / seg
+					var t1 := float(k2 + 1) / seg
+					draw_line(a0.lerp(b0, t0), a0.lerp(b0, t1),
+						Color(0.5, 1.9, 1.0, 0.55), 1.5)
+		elif bh2 == EnemyTable.Behaviour.RANGED:
+			# The last fraction of the cooldown, so the tell is a wind-up and
+			# not a permanent laser sight.
+			var frac2: float = _ai_timer[i] / RANGED_COOLDOWN
+			if frac2 > 0.0 and frac2 < 0.28:
+				var k3: float = 1.0 - frac2 / 0.28
+				var from2 := to_iso(enemies.pos[i])
+				var to2 := to_iso(player_pos)
+				draw_line(from2, from2.lerp(to2, 0.35 + 0.5 * k3),
+					Color(1.9, 0.5, 0.45, 0.30 + 0.45 * k3), 1.0 + k3)
 
 	# Shot visuals, oldest fading out. Drawn under the ship.
 	for fx in _fx_line:
