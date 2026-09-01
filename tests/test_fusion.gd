@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 36
+const EXPECTED_CHECKS := 51
 
 var failures := 0
 var checks := 0
@@ -24,6 +24,9 @@ func _initialize() -> void:
 	await recycling_carries_every_parallel_array()
 	the_recipes_are_present_and_valid()
 	an_exact_triple_matches_and_one_module_off_does_not()
+	fusing_frees_the_ids_and_keeps_the_metronome()
+	a_refused_fusion_leaves_the_row_untouched()
+	fusing_may_not_orphan_the_loadout()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -270,3 +273,59 @@ func an_exact_triple_matches_and_one_module_off_does_not() -> void:
 	partial.place(T[&"snipe"]); partial.place(T[&"on_kill"])
 	_check("and an incomplete row matches nothing",
 		RecipeTable.match_exploit(partial), null)
+
+
+## Fusing frees all three ids — that is the whole reason uniqueness is
+## affordable. And it may not orphan the loadout: the row holding the last
+## interval cannot fuse into something that fires on a condition.
+func fusing_frees_the_ids_and_keeps_the_metronome() -> void:
+	var lo := Loadout.new()
+	lo.exploits = [_mk(&"snipe", &"on_kill", [&"bitmask"]),
+		_mk(&"packet", &"interval", [])]
+
+	var matches: Array = lo.matched_recipes()
+	_check("the row matches one recipe", matches.size(), 1)
+	_check("and it is row 0", matches[0][0], 0)
+
+	var rec: RecipeTable.Recipe = matches[0][1]
+	_check("fusing row 0 is allowed: row 1 still has interval",
+		lo.can_fuse(0, rec.fused), true)
+	lo.fuse(0, rec.fused)
+
+	_check("the row is now the fused module", lo.exploits[0].vector.module.id,
+		&"zero_day")
+	_check("and the head reads as fused", lo.exploits[0].head_is_fused(), true)
+	_check("its trigger column is empty", lo.exploits[0].trigger, null)
+	_check("and its payload slot is open", lo.exploits[0].at(2), null)
+	# Placeable SOMEWHERE — on_kill's home is a not-yet-created row, since row 1
+	# holds the last interval and is protected from replacement.
+	_check("snipe is placeable again",
+		lo.legal_targets(T[&"snipe"]).is_empty(), false)
+	_check("on_kill is placeable again",
+		lo.legal_targets(T[&"on_kill"]).is_empty(), false)
+	_check("bitmask is placeable again",
+		lo.legal_targets(T[&"bitmask"]).is_empty(), false)
+
+## The refusal must be inert, not partial. fuse() assigns the head LAST for this
+## reason; without the guard it would clear the trigger and payload first and
+## leave a row it then refused to complete.
+func a_refused_fusion_leaves_the_row_untouched() -> void:
+	var lo := Loadout.new()
+	lo.exploits = [_mk(&"packet", &"interval", [&"fork_bomb"])]
+	var conditional: Module = RecipeTable.by_fused_id()[&"zero_day"].fused
+	lo.fuse(0, conditional)
+	_check("the vector is untouched", lo.exploits[0].vector.module.id, &"packet")
+	_check("the trigger too", lo.exploits[0].trigger.module.id, &"interval")
+	_check("and the payload", lo.exploits[0].payloads[0].module.id, &"fork_bomb")
+
+func fusing_may_not_orphan_the_loadout() -> void:
+	var lo := Loadout.new()
+	# The ONLY interval in the loadout, in the row that would fuse.
+	lo.exploits = [_mk(&"packet", &"interval", [&"fork_bomb"])]
+	var rec: RecipeTable.Recipe = lo.matched_recipes()[0][1]
+	_check("frag_packet is INTERVAL-triggered, so this is allowed",
+		lo.can_fuse(0, rec.fused), true)
+
+	var conditional: Module = RecipeTable.by_fused_id()[&"zero_day"].fused
+	_check("but fusing the last interval into an ON_KILL weapon is refused",
+		lo.can_fuse(0, conditional), false)

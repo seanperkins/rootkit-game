@@ -170,8 +170,8 @@ func resolve(m: Module) -> Placement:
 	var best_em: EquippedModule = null
 	for i in exploits.size():
 		for em in _slot_members(exploits[i], m.slot):
-			if _is_last_interval(em):
-				continue     # see _is_last_interval
+			if _is_last_interval(em) or em.module.is_fused:
+				continue     # see _is_last_interval; a fused head is not a victim
 			if best_em == null or em.rank < best_em.rank:
 				best_em = em
 				best_ex = i
@@ -211,6 +211,55 @@ func _displace(ei: int, victim: Module) -> void:
 			ex.payloads[i] = null
 			return
 
+## Every row that exactly matches a recipe, paired with what it would become.
+func matched_recipes() -> Array:
+	var out := []
+	for i in exploits.size():
+		var r := RecipeTable.match_exploit(exploits[i])
+		if r != null:
+			out.append([i, r])
+	return out
+
+## Fusing the row that holds your last INTERVAL trigger frees `interval` but
+## leaves nothing firing unconditionally until you re-place it — the deadlock
+## _is_last_interval was written for, arriving by a different door. A fused
+## module that is itself INTERVAL-triggered replaces what it consumed.
+func can_fuse(exploit_index: int, fused: Module) -> bool:
+	if exploit_index < 0 or exploit_index >= exploits.size():
+		return false
+	if fused.trigger_kind == Module.TriggerKind.INTERVAL:
+		return true
+	var ex: Exploit = exploits[exploit_index]
+	var lost := 1 if (ex.trigger != null
+		and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL) else 0
+	return _interval_count() - lost >= 1
+
+## Consumes all three. Their ids are free from this moment, which is the point:
+## the way to use `interval` twice is to fuse the row holding it.
+func fuse(exploit_index: int, fused: Module) -> void:
+	if not can_fuse(exploit_index, fused):
+		return          # never silently clear a row a caller may not fuse
+	var ex: Exploit = exploits[exploit_index]
+	ex.trigger = null
+	for i in Exploit.PAYLOAD_SLOTS:
+		ex.payloads[i] = null
+	# The head goes into the VECTOR slot it occupies from now on. Assigned LAST,
+	# so a refused fusion above leaves the row exactly as it was.
+	ex.vector = EquippedModule.new(fused)
+
+## A fused module whose trigger_kind is INTERVAL counts as an interval trigger,
+## because it is one.
+func _interval_count() -> int:
+	var n := 0
+	for ex in exploits:
+		if ex.head_is_fused():
+			if ex.vector.module.trigger_kind == Module.TriggerKind.INTERVAL:
+				n += 1
+		elif ex.trigger != null \
+				and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL:
+			n += 1
+	return n
+
 ## The loadout must always retain at least one INTERVAL trigger.
 ##
 ## Event triggers cannot bootstrap: an ON_KILL exploit fires when it kills, and
@@ -223,11 +272,7 @@ func _is_last_interval(em: EquippedModule) -> bool:
 		return false
 	if em.module.trigger_kind != Module.TriggerKind.INTERVAL:
 		return false
-	var n := 0
-	for ex in exploits:
-		if ex.trigger != null and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL:
-			n += 1
-	return n <= 1
+	return _interval_count() <= 1
 
 func _slot_members(ex: Exploit, slot: int) -> Array:
 	match slot:
