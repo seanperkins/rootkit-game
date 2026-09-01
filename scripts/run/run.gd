@@ -182,6 +182,10 @@ var _ai_aim: PackedVector2Array
 ## The ceiling on healing: an enemy may never be healed above what its type and
 ## subnet gave it at spawn.
 var _spawn_hp: PackedFloat32Array
+## execute_below per EXPLOIT, rebuilt on recompile, and the miniboss exemption
+## per enemy TYPE — the exemption is a property of what a thing is.
+var _execute_by_exploit := PackedFloat32Array()
+var _execute_immune_type := PackedByteArray()
 ## Out of the entity grid, and therefore untouchable and harmless.
 var _submerged: PackedByteArray
 ## How many times this enemy's line has already divided.
@@ -389,6 +393,10 @@ func _ready() -> void:
 	_ai_timer = PackedFloat32Array(); _ai_timer.resize(MAX_ENEMIES)
 	_ai_aim = PackedVector2Array(); _ai_aim.resize(MAX_ENEMIES)
 	_spawn_hp = PackedFloat32Array(); _spawn_hp.resize(MAX_ENEMIES)
+	_execute_immune_type = PackedByteArray()
+	_execute_immune_type.resize(enemy_types.size())
+	for mi_t in enemy_types.size():
+		_execute_immune_type[mi_t] = 1 if _is_miniboss(mi_t) else 0
 	_submerged = PackedByteArray(); _submerged.resize(MAX_ENEMIES)
 	_knock = PackedVector2Array(); _knock.resize(MAX_ENEMIES)
 	_split_gen = PackedInt32Array(); _split_gen.resize(MAX_ENEMIES)
@@ -463,7 +471,14 @@ func _mitigated(amount: float) -> float:
 
 func _recompile() -> void:
 	resolved = loadout.compile_all()
+	_rebuild_execute_table()
 	emit_signal("stats_changed")
+
+## Rebuilt with `resolved`, so the drain always reads the current build.
+func _rebuild_execute_table() -> void:
+	_execute_by_exploit.resize(resolved.size())
+	for i in resolved.size():
+		_execute_by_exploit[i] = resolved[i].execute_below
 
 # ---------------------------------------------------------------- the tick ---
 
@@ -1486,7 +1501,8 @@ func _steps78_drain() -> void:
 		if queue.count == 0 and queue.hit_count == 0:
 			break
 		var hits_before := queue.hit_count
-		var resolved_n := queue.drain_pass(enemies, thresholds)
+		var resolved_n := queue.drain_pass(enemies, thresholds, _spawn_hp,
+			_execute_by_exploit, _execute_immune_type)
 
 		# ON_HIT fires per hit on an OPEN target, regardless of outcome. Gating
 		# it on death makes the cascade the fire budget exists for impossible.
@@ -1617,9 +1633,20 @@ func _step9_recycle() -> void:
 		# FLIPPED retires the enemy slot too — it became a botnet node. Freeing
 		# only DEAD leaves flipped entities in the swarm forever.
 		if enemies.state[i] != Population.ALIVE:
+			# Population.despawn swap-removes the tail into slot i, so every
+			# parallel array must move with it — the same rule the projectile
+			# block below states. Six of these were missing: a compacted enemy
+			# inherited a stranger's spawn HP (which execute_below reads as its
+			# maximum), slow, knockback, split generation and reward flag.
 			var last := enemies.count - 1
 			_worm_id[i] = _worm_id[last]
 			_worm_seg[i] = _worm_seg[last]
+			_spawn_hp[i] = _spawn_hp[last]
+			_slow_left[i] = _slow_left[last]
+			_slow_factor[i] = _slow_factor[last]
+			_knock[i] = _knock[last]
+			_split_gen[i] = _split_gen[last]
+			_rewarded[i] = _rewarded[last]
 			enemies.despawn(i)
 		else:
 			i += 1

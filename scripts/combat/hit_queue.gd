@@ -52,6 +52,12 @@ var hit_exploit: PackedInt32Array
 var hit_target: PackedInt32Array
 var hit_count: int = 0
 
+## The strongest execute threshold contributed to each entity this pass, and
+## which exploit contributed it. Reset per PASS, like hit_count — an execute is
+## decided from the damage of the pass that marks the entity, nothing earlier.
+var execute_best: PackedFloat32Array
+var execute_by: PackedInt32Array
+
 func _init(capacity: int, entity_capacity: int) -> void:
 	_capacity = capacity
 	kind.resize(capacity)
@@ -65,6 +71,8 @@ func _init(capacity: int, entity_capacity: int) -> void:
 	outcome.resize(entity_capacity)
 	killer_exploit.resize(entity_capacity)
 	flipper_exploit.resize(entity_capacity)
+	execute_best.resize(entity_capacity)
+	execute_by.resize(entity_capacity)
 
 func begin_tick() -> void:
 	count = 0
@@ -96,12 +104,29 @@ func append(k: int, exploit: int, tgt: int, gen: int, amt: float) -> bool:
 
 ## Applies every queued event to `pop`, then adjudicates each entity this pass
 ## marked. Returns the number adjudicated. Events are consumed.
-func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
+## `max_hp`, `execute` and `immune_type` are optional so every existing caller
+## keeps working. `execute` is indexed by EXPLOIT and `immune_type` by enemy
+## TYPE, not by entity: the exemption is a property of what a thing is.
+func drain_pass(pop: Population, thresholds: PackedFloat32Array,
+		max_hp: PackedFloat32Array = PackedFloat32Array(),
+		execute: PackedFloat32Array = PackedFloat32Array(),
+		immune_type: PackedByteArray = PackedByteArray()) -> int:
 	# hit_count is PER PASS. It was reset only in begin_tick while the arrays
 	# are sized for a single pass's events, so eight passes could drive the
 	# write index to 7200 + 7*1800 = 19800 into a 7200-element array — an
 	# out-of-bounds write aborting the drain mid-tick at max density.
 	hit_count = 0
+	execute_best.fill(0.0)
+	execute_by.fill(-1)
+	# Gated on a threshold actually being SET, not merely on the arrays being
+	# passed: run.gd sizes `execute` to resolved.size() (>= 1) and `max_hp` to
+	# MAX_ENEMIES, so a bare size check is true for every build in the game.
+	var executes := false
+	for x in execute:
+		if x > 0.0:
+			executes = true
+			break
+	executes = executes and max_hp.size() > 0
 
 	# --- apply -------------------------------------------------------------
 	for e in count:
@@ -124,6 +149,11 @@ func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
 			hit_exploit[hit_count] = source_exploit[e]
 			hit_target[hit_count] = i
 			hit_count += 1
+			if executes:
+				var se := source_exploit[e]
+				if se >= 0 and se < execute.size() and execute[se] > execute_best[i]:
+					execute_best[i] = execute[se]
+					execute_by[i] = se
 		else:
 			pop.corruption[i] += amount[e]
 			if pop.corruption[i] >= thresholds[pop.type_index[i]]:
@@ -134,6 +164,15 @@ func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
 	# --- adjudicate --------------------------------------------------------
 	var resolved := 0
 	for i in pop.count:
+		# The execute marks in the SAME adjudication that would otherwise have
+		# left the entity alive. A second pass over the survivors would break
+		# "adjudicated exactly once per tick".
+		if executes and adjudication[i] == OPEN and execute_best[i] > 0.0 \
+				and pop.integrity[i] > 0.0 \
+				and pop.integrity[i] < max_hp[i] * execute_best[i] \
+				and not _immune(immune_type, pop.type_index[i]):
+			adjudication[i] = MARKED
+			killer_exploit[i] = execute_by[i]
 		if adjudication[i] != MARKED:
 			continue
 		# Flip wins over death, decided from this pass's accumulated totals.
@@ -148,3 +187,10 @@ func drain_pass(pop: Population, thresholds: PackedFloat32Array) -> int:
 
 	count = 0
 	return resolved
+
+
+## Minibosses are exempt. A threshold that deletes fork_bomb, packet_filter,
+## null_ptr and kernel_panic off the bottom of their health bars removes the
+## four fights the run is built around.
+static func _immune(immune_type: PackedByteArray, ti: int) -> bool:
+	return ti >= 0 and ti < immune_type.size() and immune_type[ti] != 0

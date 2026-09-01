@@ -21,6 +21,9 @@ const MUL_FOLD_KEYS := [&"cadence_mult"]
 ## _fold for what linear growth did, and why zero growth was no better.
 const VECTOR_RADIUS_RANK := 0.25
 
+## Above this an execute stops being a finisher and becomes the damage model.
+const MAX_EXECUTE := 0.5
+
 ## Which global multiplier scales which stats. Total and non-overlapping: every
 ## stat key not named here is deliberately excluded.
 ##   - lifesteal is excluded so attack is not also the best defensive stat.
@@ -38,6 +41,8 @@ const MAX_FOLD_KEYS := [
 	# The slow and the shield join on the same argument: they are magnitudes
 	# bought once, and summing them across slots buys uptime for free.
 	&"slow_amount", &"slow_duration", &"shield",
+	# A fraction. Two sources summing to 0.5 is not "a bit more execute".
+	&"execute_below",
 ]
 
 const MULT_KEYS := {
@@ -128,6 +133,7 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	r.orbit_count = floori(r.orbit_count)
 	r.burst = floori(r.burst)
 	r.split_count = floori(r.split_count)
+	r.execute_below = clampf(r.execute_below, 0.0, MAX_EXECUTE)
 	return r
 
 ## Rank scales the two directions of a cadence factor differently, and each half
@@ -224,6 +230,12 @@ static func validate(m: Module) -> Array[String]:
 	# reads the raw base — so its only distinct behaviour IS the broken ratio.
 	if m.slot == Module.Slot.VECTOR and m.stats.has(&"cadence_mult"):
 		errs.append("module '%s': a VECTOR may not carry cadence_mult" % m.id)
+	# The same argument that keeps cooldown off payloads: a payload granting an
+	# execute threshold to every vector it is slotted into is a balance surface
+	# nothing else in the table has.
+	if m.slot != Module.Slot.VECTOR and m.stats.has(&"execute_below"):
+		errs.append("module '%s': only a VECTOR may carry execute_below" % m.id)
+
 	# burst is how many times an EVENT produces a shot, so it is meaningless on
 	# anything but a trigger — and a payload carrying it would read as a damage
 	# multiplier that silently does nothing on an interval build.

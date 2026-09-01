@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 16
+const EXPECTED_CHECKS := 19
 
 var failures := 0
 var checks := 0
@@ -14,6 +14,7 @@ func _init() -> void:
 	targeting_comes_from_the_head_only()
 	split_count_folds_like_pierce()
 	blast_radius_ranks_at_quarter_rate()
+	execute_below_folds_by_max_and_clamps()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -131,3 +132,28 @@ func blast_radius_ranks_at_quarter_rate() -> void:
 	r1.vector = EquippedModule.new(v, 1)
 	r1.place(T[&"interval"])
 	_check("rank 1 is the base", Compiler.build(r1).blast_radius, 100.0)
+
+
+## A fraction, so it folds by MAX. Two sources summing to 0.5 is not "a bit
+## more execute", it is a different game.
+func execute_below_folds_by_max_and_clamps() -> void:
+	var a := Module.make(&"ex_a", "a", Module.Slot.VECTOR,
+		{&"damage": 5.0, &"cooldown": 0.5, &"execute_below": 0.20}, [],
+		Module.VectorKind.CONE)
+	var ex := Exploit.new()
+	ex.vector = EquippedModule.new(a, 1)
+	ex.place(T[&"interval"])
+	_check("a single source is itself", Compiler.build(ex).execute_below, 0.20)
+
+	# Rank scales it like any other stat, and the clamp is what stops rank 5
+	# turning an 18% threshold into a 90% one.
+	var hi := Exploit.new()
+	hi.vector = EquippedModule.new(a, 5)
+	hi.place(T[&"interval"])
+	_check("and it clamps at a half", Compiler.build(hi).execute_below, 0.5)
+
+	# It is a VECTOR-only stat, for the reason cooldown is.
+	var bad := Module.make(&"ex_bad", "bad", Module.Slot.PAYLOAD,
+		{&"execute_below": 0.2})
+	_check("a payload carrying it is rejected",
+		Compiler.validate(bad).size() > 0, true)

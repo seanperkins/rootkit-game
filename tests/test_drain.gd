@@ -25,9 +25,10 @@ func _initialize() -> void:
 	case_stale_generation_rejected()
 	await a_step_two_detonation_reaches_the_drain()
 	environment_corruption_flips_rather_than_kills()
+	execute_finishes_the_weak_and_spares_a_boss()
 	print("")
 	if failures == 0:
-		print("  PASS — all 8 cases")
+		print("  PASS — all 9 cases")
 	else:
 		print("  FAIL — %d case(s)" % failures)
 	quit(1 if failures > 0 else 0)
@@ -179,3 +180,24 @@ func environment_corruption_flips_rather_than_kills() -> void:
 		Population.FLIPPED)
 	_check("and records the environment as the flipper",
 		q.flipper_exploit[i], -1)
+
+
+## The execute marks in the same adjudication, and minibosses are exempt.
+func execute_finishes_the_weak_and_spares_a_boss() -> void:
+	var pop := Population.new(8)
+	var th := PackedFloat32Array([999.0, 999.0])
+	var max_hp := PackedFloat32Array([100.0, 100.0])
+	var execute := PackedFloat32Array([0.25])       # exploit 0
+	var immune := PackedByteArray([0, 1])           # type 1 is a miniboss
+	var q := HitQueue.new(16, 8)
+
+	var a := pop.spawn(Vector2.ZERO, Vector2.ZERO, 100.0, 12.0, 0)
+	var b := pop.spawn(Vector2.ZERO, Vector2.ZERO, 100.0, 12.0, 1)
+	q.begin_tick()
+	q.append(HitQueue.Kind.DAMAGE, 0, a, pop.generation[a], 80.0)
+	q.append(HitQueue.Kind.DAMAGE, 0, b, pop.generation[b], 80.0)
+	q.drain_pass(pop, th, max_hp, execute, immune)
+	_check("20 of 100 left is under the threshold: dead",
+		pop.state[a], Population.DEAD)
+	_check("a miniboss at the same fraction survives",
+		pop.state[b], Population.ALIVE)
