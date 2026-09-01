@@ -15,7 +15,26 @@ enum Wave { SINE, SQUARE, SAW, NOISE }
 
 ## One rate for every sound. This was briefly a per-spec field, which is a
 ## constant in disguise — no entry in the table below varies it.
+##
+## 22050 is enough once the oscillators are band-limited. Raising it to 44100
+## was tried and reverted: band-LIMITING is what removes the aliasing, not
+## headroom, and at 44100 the bank cost 4.6 MB and twelve seconds of boot. At
+## 22050 a 400 Hz tone still carries 27 harmonics to 10.8 kHz, which is more
+## than a 50 ms blip needs.
 const SAMPLE_RATE := 22050
+
+## How many distinct buffers are generated per event id.
+##
+## This is the fix for the failure mode game audio writing warns about most
+## loudly: one asset plus pitch randomisation is still recognisably one asset,
+## and the ear locks onto it. Six buffers cut from different noise seeds and
+## slightly different envelopes, chosen at random per play, is the cheap version
+## of the variation pools that middleware gives you.
+##
+## Four rather than six: the bank costs real time to synthesize, and the
+## perceptual gain from one asset to four is most of the total — the gain from
+## four to six is not worth another 50% of boot.
+const VARIANTS := 4
 
 ## 16-bit signed PCM, mono. Named rather than implied: "produces an
 ## AudioStreamWAV" is not a specification.
@@ -110,10 +129,28 @@ static func all_specs() -> Dictionary:
 		out[fire_id(k)] = spec
 	return out
 
+## Built ONCE per process and cached.
+##
+## There are no autoloads in this project and the game shuttles between the
+## shell and a run all session, so anything scoped to a scene runs once per RUN.
+## Synthesizing the bank is about a second of work; paying it on every ./intrude
+## would be a visible hitch at the exact moment the player expects the game to
+## start. Same reasoning as the audio bus guard in sfx.gd, different mechanism —
+## a static here, because this class is pure and has no tree to hang off.
+static var _bank_cache: Dictionary = {}
+
+## id -> Array[AudioStreamWAV], VARIANTS deep. sfx.gd picks one per play.
 static func build_bank() -> Dictionary:
+	if not _bank_cache.is_empty():
+		return _bank_cache
 	var out := {}
-	for id in all_specs():
-		out[id] = build(all_specs()[id])
+	var specs := all_specs()
+	for id in specs:
+		var pool: Array[AudioStreamWAV] = []
+		for v in VARIANTS:
+			pool.append(build(specs[id], v))
+		out[id] = pool
+	_bank_cache = out
 	return out
 
 ## ADSR that does not fit the duration is SCALED to fit rather than rejected.
@@ -148,10 +185,85 @@ static func _envelope(spec: Dictionary, n: int) -> PackedFloat32Array:
 		out[i] = clampf(e, 0.0, 1.0)
 	return out
 
-static func build(partial: Dictionary) -> AudioStreamWAV:
+## BAND-LIMITED square and saw, as wavetables built once per octave.
+##
+## The naive forms — `sin(phase) >= 0 ? 1 : -1` and `fmod(phase, TAU)/PI - 1` —
+## carry harmonics to infinity. Everything above Nyquist folds back as
+## INHARMONIC partials: a 1.2 kHz square put its 11th harmonic at 13.2 kHz,
+## which reflects to 8.85 kHz — not a multiple of 1200, and it does not move
+## with a pitch sweep the way a real overtone would. That inharmonic grit is
+## what made these read as cheap and grating, and it is a bug rather than a
+## taste.
+##
+## Summing the harmonics per SAMPLE is correct and far too slow: measured at
+## twelve seconds to build the bank. So each waveform is summed once into a
+## table per octave band — the band's top frequency decides how many harmonics
+## fit under Nyquist — and synthesis is a lookup with linear interpolation.
+const TABLE_SIZE := 2048
+## Band i covers [BASE_HZ << i, BASE_HZ << (i+1)).
+const BASE_HZ := 55.0
+const BANDS := 6
+
+static var _tables: Dictionary = {}
+
+static func _band_of(freq: float) -> int:
+	if freq <= BASE_HZ:
+		return 0
+	return clampi(int(log(freq / BASE_HZ) / log(2.0)), 0, BANDS - 1)
+
+## One table: `wave` summed to every harmonic that stays under Nyquist for the
+## TOP of this band, so nothing in the band can alias.
+static func _build_table(wave: int, band: int) -> PackedFloat32Array:
+	var top := BASE_HZ * pow(2.0, float(band + 1))
+	var max_h := int(floor((SAMPLE_RATE * 0.5) / maxf(top, 1.0)))
+	max_h = maxi(max_h, 1)
+	var out := PackedFloat32Array()
+	out.resize(TABLE_SIZE)
+	var norm := 0.0
+	var step := 1 if wave == Wave.SAW else 2
+	var h := 1
+	while h <= max_h:
+		norm += 1.0 / float(h)
+		h += step
+	norm = maxf(norm, 0.0001)
+	for i in TABLE_SIZE:
+		var ph := TAU * float(i) / float(TABLE_SIZE)
+		var acc := 0.0
+		var n := 1
+		while n <= max_h:
+			acc += sin(ph * n) / float(n)
+			n += step
+		out[i] = acc / norm
+	return out
+
+static func _table(wave: int, band: int) -> PackedFloat32Array:
+	var key := wave * 100 + band
+	if not _tables.has(key):
+		_tables[key] = _build_table(wave, band)
+	return _tables[key]
+
+static func _sample_table(wave: int, freq: float, phase: float) -> float:
+	var tbl := _table(wave, _band_of(freq))
+	var x := fmod(phase, TAU) / TAU * float(TABLE_SIZE)
+	if x < 0.0:
+		x += float(TABLE_SIZE)
+	var i0 := int(x)
+	var i1 := (i0 + 1) % TABLE_SIZE
+	var frac := x - float(i0)
+	return lerpf(tbl[i0 % TABLE_SIZE], tbl[i1], frac)
+
+static func build(partial: Dictionary, variant: int = 0) -> AudioStreamWAV:
 	var spec := DEFAULTS.duplicate()
 	for k in partial:
 		spec[k] = partial[k]
+	# Each variant is the same sound with a different noise cut and a slightly
+	# different envelope and sweep. Not a different sound — an odd one out is
+	# worse than repetition, because the ear starts listening FOR it.
+	if variant > 0:
+		var wob := 1.0 + (float(variant % 3) - 1.0) * 0.035
+		spec["f0"] = float(spec["f0"]) * wob
+		spec["f1"] = float(spec["f1"]) * (2.0 - wob)
+		spec["decay"] = float(spec["decay"]) * (1.0 + (float(variant % 2) - 0.5) * 0.18)
 
 	var n := int(round(float(spec["dur"]) * SAMPLE_RATE))
 	n = maxi(n, 1)
@@ -159,7 +271,7 @@ static func build(partial: Dictionary) -> AudioStreamWAV:
 	var rng := RandomNumberGenerator.new()
 	# Seeded from the spec, so the same spec twice yields identical bytes and a
 	# noise sound is still deterministic.
-	rng.seed = hash(str(spec))
+	rng.seed = hash(str(spec)) + variant * 7919
 
 	var data := PackedByteArray()
 	data.resize(n * 2)
@@ -171,8 +283,8 @@ static func build(partial: Dictionary) -> AudioStreamWAV:
 		var tone := 0.0
 		match int(spec["wave"]):
 			Wave.SINE:   tone = sin(phase)
-			Wave.SQUARE: tone = 1.0 if sin(phase) >= 0.0 else -1.0
-			Wave.SAW:    tone = fmod(phase, TAU) / PI - 1.0
+			Wave.SQUARE: tone = _sample_table(Wave.SQUARE, freq, phase)
+			Wave.SAW:    tone = _sample_table(Wave.SAW, freq, phase)
 			Wave.NOISE:  tone = rng.randf_range(-1.0, 1.0)
 		var nz: float = spec["noise"]
 		if nz > 0.0 and int(spec["wave"]) != Wave.NOISE:

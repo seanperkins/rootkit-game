@@ -93,7 +93,9 @@ func play(id: String) -> void:
 	_last_played[id] = now
 	var p: AudioStreamPlayer = _players[_next]
 	_next = (_next + 1) % _players.size()
-	p.stream = _bank[id]
-	# Jitter, so repeats do not phase against each other into a single tone.
+	# A different BUFFER each time, not just a different pitch. Pitch jitter on
+	# one asset is still one asset, and the ear locks onto it inside a minute.
+	var pool: Array = _bank[id]
+	p.stream = pool[_rng.randi() % pool.size()]
 	p.pitch_scale = _rng.randf_range(0.94, 1.07)
 	p.play()
