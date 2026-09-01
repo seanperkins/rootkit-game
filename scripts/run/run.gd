@@ -231,6 +231,9 @@ var _pending_fusions: Array = []
 ## invariant: zeroed on spawn AND relocated on despawn.
 ## 0 light / 1 medium / 2 heavy, per enemy TYPE. Indexed by type, not by slot,
 ## so it needs no relocation.
+## Player-centred flow field, rebuilt when the player crosses a cell. Read by
+## bosses only — see FlowField's own note on why the swarm does not want it.
+var _flow := FlowField.new()
 var _hit_weight: PackedByteArray
 var _hit_flash: PackedFloat32Array
 ## Seconds of arrival left, per enemy. Non-zero means MATERIALISING: out of the
@@ -669,6 +672,12 @@ func _physics_process(dt: float) -> void:
 	_step2e_blocks(dt)
 	_step2b_zones(dt)
 	_step3_rebuild()
+	# Only while something reads it. _approach_dir consults the field for bosses
+	# and nothing else, so flooding 2401 cells through a wave of daemons buys
+	# precisely nothing — and this is the whole of its cost, so gating it here
+	# takes the flow field out of the tick entirely for most of a subnet.
+	if boss_present() and _flow.needs_rebuild(terrain, player_pos):
+		_flow.rebuild(terrain, player_pos)
 	_step4_steer()
 	_step5_fire(dt)
 	_step6_detect(dt)
@@ -1628,6 +1637,25 @@ func _spawn_enemy_state(i: int, hp: float,
 		_ai_timer[i] = AMBUSH_UNDER
 		_submerged[i] = 1
 
+## Which way this enemy should walk to close on the player.
+##
+## The straight line for the swarm — a hundred of them shouldering through each
+## other around a wall IS what a swarm looks like, and a flood per enemy would
+## be the most expensive thing in the tick. Bosses get the flow field, because
+## one large object stuck on a corner while the player circles it is not a
+## fight, and it is the failure the player actually notices.
+##
+## Falls back to the straight line whenever the field has no gradient — outside
+## its window, or walled in — so this can only ever be as bad as the old
+## behaviour.
+func _approach_dir(i: int, to_player: Vector2) -> Vector2:
+	var straight := to_player.normalized()
+	var ti := enemies.type_index[i]
+	if ti != EnemyTable.ICE and not _is_miniboss(ti):
+		return straight
+	var f := _flow.dir_at(terrain, enemies.pos[i])
+	return f if f != Vector2.ZERO else straight
+
 ## The desired velocity for one enemy, before separation and avoidance forces.
 ##
 ## A match in a loop that already runs, so a CHASE enemy costs one branch. The
@@ -1651,8 +1679,8 @@ func _behave(i: int, t, dt: float) -> Vector2:
 		EnemyTable.Behaviour.RANGED:
 			return _ranged(i, sp, to_player, dt)
 		_:
-			return to_player.normalized() * sp
-	return to_player.normalized() * sp
+			return _approach_dir(i, to_player) * sp
+	return _approach_dir(i, to_player) * sp
 
 ## Approach, telegraph, commit, overshoot.
 ##
@@ -1669,7 +1697,7 @@ func _charge(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 				_ai_phase[i] = CH_WINDUP
 				_ai_timer[i] = CHARGE_WINDUP
 				return Vector2.ZERO
-			return to_player.normalized() * sp
+			return _approach_dir(i, to_player) * sp
 		CH_WINDUP:
 			if _ai_timer[i] <= 0.0:
 				_ai_phase[i] = CH_DASH
@@ -1714,7 +1742,7 @@ func _ranged(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 		return Vector2.ZERO
 	var toward := to_player / d
 	if d > RANGED_STANDOFF + 60.0:
-		return toward * sp
+		return _approach_dir(i, to_player) * sp
 	if d < RANGED_STANDOFF - 60.0:
 		return -toward * sp
 	return Vector2.ZERO
@@ -1772,7 +1800,7 @@ func _support(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 		return Vector2.ZERO
 	var toward := to_player / d
 	if d > SUPPORT_STANDOFF + 40.0:
-		return toward * sp
+		return _approach_dir(i, to_player) * sp
 	if d < SUPPORT_STANDOFF - 40.0:
 		return -toward * sp
 	return Vector2.ZERO
