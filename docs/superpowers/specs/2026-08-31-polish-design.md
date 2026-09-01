@@ -9,7 +9,7 @@ mechanics — every change here is feedback about something that already happens
 Six features, in build order:
 
 1. **Feel** — screen shake, hitstop, hit flash, damage numbers, damage vignette
-2. **Audio** — a procedural synth, a bank, and a rate-limited playback pool
+2. **Audio** — a procedural synth and a rate-limited playback pool
 3. **Input** — an InputMap, gamepad support, and pause
 4. **Preferences** — a settings screen, persisted, gating shake and volume
 5. **HUD** — the status line broken into blocks, plus a run summary
@@ -27,164 +27,307 @@ pause to be reachable mid-run.
 | Sound production | Procedural — `AudioStreamWAV` synthesized in code, no files |
 | Music | Out of scope |
 | Hitstop scope | Rare events only: ICE kill, mini-boss kill, player death |
+| Hitstop clock | Wall clock (`Time.get_ticks_msec`), restored above the tick guard |
 | Damage numbers | Pooled, hard cap 24, `ThemeDB.fallback_font` |
 | Font assets | Still none — the fallback font is engine-provided, not a file |
 | Settings | Volume, shake scale, damage numbers; persisted in `save.json` v3 |
 | HUD direction | Panelized, still monospace and ASCII — no graphical bars |
+| Player pause | Its own flag, never `run.paused` |
 | Arrival duration | 1.15s, not interruptible, not skippable |
-| Arrival invulnerability | Yes — out of the grid, exactly like a submerged ambusher |
+| Arrival gate site | `_step2_integrate`'s enemy loop — not steer, not hostiles |
 | New per-enemy arrays | Two: `_hit_flash`, `_arriving` |
+
+## 0. The presentation split
+
+Everything below depends on one structural change, so it comes first.
+
+`_physics_process` returns before any step when the run is not running
+(`run.gd:518-520`):
+
+```gdscript
+func _physics_process(dt: float) -> void:
+	if paused or not alive or won:
+		return
+```
+
+The camera write and `queue_redraw()` (`run.gd:551-552`) sit **below** that
+guard, along with everything else. That is correct for simulation and wrong for
+presentation: the moment the run ends or an overlay opens, the view stops
+updating entirely.
+
+So the tick splits in two. Above the guard, every frame, unconditionally:
+
+- advance the feel clock on **unscaled** time
+- release an expired hitstop
+- age the visual effects — see below
+- write the camera (position plus shake offset)
+- `queue_redraw()`
+
+Below the guard, only when the run is live: `queue.begin_tick()` and the ordered
+simulation steps, exactly as today. `begin_tick` stays below deliberately — the
+comment at `run.gd:523-530` records why, and nothing here changes it.
+
+**`_age_fx` has to move, and it is not currently where it looks.** It is called
+at `run.gd:832`, which is *inside* `_step2_integrate` (686-856) — below the
+guard. Hoisting `queue_redraw()` while leaving the aging behind it produces the
+precise failure §0 exists to prevent: on death the world redraws every frame
+with `_fx_line`, `_fx_ring`, `_hit_flash` and the damage numbers frozen at their
+last live values, forever.
+
+So the presentation half calls `_age_fx` on the unscaled delta, and the call at
+`run.gd:832` is removed. Nothing in `_age_fx` touches simulation state — it
+decays four presentation-only collections — so the move is safe, but it must be
+explicit or an implementer will hoist the redraw and leave the decay.
+
+This is what makes the death shake animate, the pause panel render at full
+speed, and the hitstop release reachable. Without it, three features in this
+spec are unimplementable, which is what the first review round found.
+
+**Unscaled time.** `Engine.time_scale` scales the delta the engine hands
+`_process` and `_physics_process` alike, so at `time_scale = 0.05` a `dt`-fed
+timer runs 20× long — a 60ms hitstop becomes 1.2s of wall clock. The
+presentation half therefore derives its own delta from `Time.get_ticks_msec()`,
+which is unaffected by time scale and is already the idiom here (`run.gd:2327`,
+`scripts/run/props.gd:129`).
 
 ## 1. Feel
 
-### The layer is pure
+### The layer is pure, and does not own the engine
 
-`scripts/run/feel.gd` is a `RefCounted` holding shake, hitstop and the damage
-number pool. No scene tree, no engine calls — the same discipline
-`scripts/build/` keeps, and for the same reason: the numbers that decide whether
-this feels good are the ones worth testing, and a test should not need a
-viewport to reach them.
+`scripts/run/feel.gd` is a `RefCounted` holding shake trauma, the hitstop
+deadline and the damage number pool. No scene tree, no engine calls — the same
+discipline `scripts/build/` keeps, so the numbers that decide whether this feels
+good are testable without a viewport.
 
-`run.gd` owns the instance, feeds it events, and reads back an offset, a time
-scale and a list of numbers to draw. Everything stateful lives in `feel.gd`;
-everything visual stays in `_draw`.
+`feel` **reports** a desired time scale; `run.gd` **applies** it. `feel` never
+writes `Engine.time_scale`, because a `RefCounted` that touches an engine
+singleton is not pure and the analogy to `scripts/build/` would be false. This
+splits the testing too, and the split matters: `test_feel` asserts the deadline
+arithmetic on a bare object, and `test_run` asserts the engine actually got
+restored. The first cannot catch a stranded time scale; only the second can.
 
 ### Shake is trauma, not offset
 
-The naive version — add a random offset per event — accumulates badly and looks
-identical for a scratch and a death. Instead `feel` holds a single `trauma`
-float in `0..1`, events *add* trauma, and it decays linearly. The offset applied
-is:
+`trauma` is a single float, events add to it, and it decays linearly. The offset
+applied is:
 
 ```
 offset = MAX_OFFSET * trauma * trauma * noise()
 ```
 
-Squaring is the whole point: at trauma 0.3 the shake is 9% of maximum and reads
-as a nudge; at 1.0 it is violent. One tunable produces the full range, and
-overlapping events saturate rather than stacking into nausea.
+Squaring is the point: at trauma 0.3 the shake is 9% of maximum and reads as a
+nudge; at 1.0 it is violent. One tunable produces the full range.
 
-Trauma sources, with the reasoning that sets them:
+**Trauma is clamped: `trauma = clampf(trauma + add, 0.0, 1.0)`.** The clamp is
+what makes "overlapping events saturate rather than stack" true, and without it
+the `MAX_OFFSET` name is a lie — twelve detonations reach 1.8 and an offset of
+3.24 × `MAX_OFFSET`. `noise()` returns a vector of magnitude ≤ 1, not
+independent per-axis values in `[-1, 1]`, or the diagonal exceeds the bound the
+test asserts.
+
+Trauma sources:
 
 | Event | Trauma | Why |
 |---|---|---|
-| Player damage | `0.25 + 0.5 * (amount / max_integrity)` | Proportional. A chip hit and a hit that takes a third of your bar are not the same event. |
+| Player damage | `0.25 + 0.5 * clampf(amount / max_integrity, 0.0, 1.0)` | Proportional, and the ratio is clamped because a boss pulse can exceed full integrity. |
 | Detonation | `0.15` | Frequent enough that anything larger is constant motion. |
 | Mini-boss materialize | `0.5` | A set-piece. |
 | ICE materialize | `0.8` | The largest in the game, once per subnet. |
-| Player death | `0.7` | The run is over; nothing after it needs to stay readable. |
+| Player death | `0.7` | Animates because of §0; without that split it would render zero frames. |
 
-The camera is written in exactly one place, `run.gd:551`, so the offset is added
-there and nowhere else.
+The `shake` preference (§4) multiplies the **composed offset in `run.gd`**,
+outside `feel`, after the square. Folded into trauma before squaring, a legal
+`shake = 2.0` would yield 4× rather than 2×. So `feel`'s own invariant is
+`|offset| <= MAX_OFFSET`, and that is what `test_feel` asserts; the preference
+scales it afterward.
 
-### Hitstop is global, and therefore rare
+The camera is written in exactly one place (`run.gd:551`), now above the guard
+per §0.
 
-Hitstop is `Engine.time_scale`, dropped to `0.05` and restored after a real-time
-interval. The simulation is entirely dt-driven, so a global scale stays
-internally consistent — there is no desync to manage, only a cost.
+### Hitstop: wall clock, released above the guard
 
-That cost is why it fires on **ICE kills, mini-boss kills and player death
-only**. At the enemy cap a per-kill hitstop is not emphasis, it is a permanent
-stutter — the tick routinely resolves dozens of deaths, and freezing on each
-would mean the game never runs at full speed during the part where it is
-working.
+Hitstop drops `Engine.time_scale` to `0.05` for a wall-clock interval. The
+simulation is dt-driven, so a global scale stays internally consistent.
 
-The coupling to accept explicitly: hitstop is real time the run clock does not
-count, so a run gains roughly 60ms per boss kill. Nothing reads the run clock
-with that precision, and the alternative — a separate unscaled clock threaded
-through the director — buys nothing for a few hundred milliseconds a run.
+**The restore is the hard part, and the first review round found the naive
+version unimplementable.** All three chosen triggers halt the tick on the same
+frame they fire:
+
+- ICE kill → `won = true` (`run.gd:1643`)
+- Player death → `alive = false` (`run.gd:1290`)
+- Mini-boss kill → `_offer_cards()` (`run.gd:1626`) → `paused = true` (`run.gd:2020`)
+
+A restore driven from inside the gated tick therefore never runs, and
+`Engine.time_scale` is process-global — it survives scene changes, so the end
+screen, the shell, the shop and every later run would sit at 5% speed until the
+process exits.
+
+The mechanism, stated so it cannot be re-derived wrongly:
+
+1. `feel` stores `_hitstop_until_ms`, an absolute `Time.get_ticks_msec()` value.
+2. The check-and-release runs in the presentation half of the tick, **above**
+   the `run.gd:519` guard, so `paused` / `not alive` / `won` cannot skip it.
+3. **The safety restore lives at run teardown / scene exit, not at the
+   triggers.** An earlier revision of this spec put an unconditional
+   `Engine.time_scale = 1.0` in `_die()` and at the `won = true` branch — which
+   are the death and ICE-kill paths, i.e. two of the three trigger sites. Five
+   reviewers found the contradiction independently: ordered before the set it is
+   dead code, ordered after it cancels the hitstop at birth. Either way two of
+   the three hitstops never happen. So the restore goes where the deadline check
+   stops running — `_exit_tree` / the transition back to the shell — and is
+   **conditional on no active deadline**, so it cannot preempt a live hitstop.
+4. Entering player-pause does **not** restore. The release check runs above the
+   guard, so `user_paused` no longer skips it, and cancelling there would make
+   pausing during a boss kill silently different from not pausing.
+5. `test_run` asserts **both** halves: `Engine.time_scale == 0.05` immediately
+   after the death path (proving the hitstop engaged), and `1.0` after the
+   wall-clock deadline passes (proving it released). Asserting only the second
+   is what an earlier draft specified, and it passes identically whether the
+   hitstop fired or was cancelled at birth — it tests the safety property while
+   appearing to test the feature. A headless suite that leaked 0.05 would slow
+   the whole `godot --headless` process and could quietly distort
+   `perf_milestone0`.
+
+Hitstop stays on rare events only. At the enemy cap a per-kill hitstop is not
+emphasis, it is a permanent stutter.
+
+**Cost, corrected.** `MINIBOSS_TIMES` has 4 entries and `reset()` re-arms them
+per subnet, so a full campaign is 4 × 3 mini-bosses plus 3 ICE fights = 15
+hitstop events. At 60ms each that is ~0.9s of wall clock, of which the run clock
+loses 57ms per event (it advances at 5%, not zero) — ~0.86s per campaign, not
+"a few hundred milliseconds a run". Still small enough that nothing reading the
+run clock cares, but the number is stated rather than guessed.
 
 ### Hit flash
 
 `_hit_flash` is a `PackedFloat32Array` sized `MAX_ENEMIES`, decayed in
-`_age_fx`, and read in `_update_renderers` to lerp the instance colour toward
-white.
+`_age_fx`, read in `_update_renderers` to lerp the instance colour toward white.
+It composes on top of the existing corruption tint rather than replacing it.
 
-It is set from the drain, and `hit_queue.gd` does not change to allow it.
-`HitQueue` already publishes `hit_exploit` / `hit_target` / `hit_count` — the
-per-pass list of hits landed on open targets — and `_steps78_drain` already
-reads `hits_before` and `hit_count` around each pass to decide whether ON_HIT
-fires. The flash is set by walking `hit_target` across that same window.
+It is set from the drain, and `hit_queue.gd` does not change. `HitQueue`
+publishes `hit_exploit` / `hit_target` / `hit_count` — the per-pass list of hits
+landed on open targets.
 
-That range is the right one on its own terms: it is every hit that landed on a
-target still open to being hit, which is exactly the set that should flash.
-Corruption-only events are outside it and stay outside it — the instance colour
-already lerps toward magenta by corruption fraction, so those are communicated
-by a channel that exists.
+**The walk is `0 ..< queue.hit_count`, after each `drain_pass`.** Not a
+`hits_before`-to-`hit_count` window: `drain_pass` zeroes `hit_count` on entry
+(`hit_queue.gd:118`, a deliberate fix for an out-of-bounds write), so the
+`hits_before` captured at `run.gd:1570` holds the **previous** pass's count. A
+range built from it is empty whenever a pass lands fewer hits than the one
+before it, and skips an arbitrary prefix otherwise — silently, since the indices
+stay in bounds. An earlier draft of this spec specified that window and defended
+it; it was wrong.
 
-**This is a new per-enemy array and falls under the reset invariant.**
-`Population.spawn` recycles slots, so `_spawn_enemy_state` must zero it. A stale
-flash is a fresh enemy spawning lit — visible, wrong, and exactly the class of
-bug the invariant exists to prevent.
+`hit_target` records a hit whenever `adjudication[i] == OPEN`, including events
+that change no integrity. Those flash too: the flash means "this was hit", not
+"this lost HP", and splitting the two would need state the queue does not keep.
 
-The colour already lerps toward magenta by corruption fraction. Flash composes
-on top of that rather than replacing it, because an enemy that is both nearly
-flipped and just hit is telling the player two true things.
+**Pre-existing, out of scope, but noted here because this spec is the reason
+anyone looked:** the ON_HIT gate at `run.gd:1580` (`if queue.hit_count >
+hits_before`) has the same cross-pass comparison and appears to be a leftover
+from when `hit_count` was reset only in `begin_tick`. Two reviewers flagged it
+independently. Changing it alters combat behaviour, so it is **not** part of
+this pass — it is raised for a separate decision.
 
 ### Damage numbers
 
-Drawn with `draw_string(ThemeDB.fallback_font, ...)` in `_draw`. The fallback
-font ships with the engine and is not a file in this repo, so the no-font-assets
-rule holds.
+Drawn with `draw_string(ThemeDB.fallback_font, ...)`. The fallback font ships
+with the engine and is not a file in this repo, so the no-font-assets rule
+holds.
 
-The pool is capped at **24 live numbers, oldest evicted**. Uncapped, a working
-build at the enemy cap produces thousands of strings a second, which costs more
-than the entire rest of the frame and communicates nothing — a number nobody can
-read is noise. Eviction rather than refusal keeps the most recent hits visible,
-which are the ones the player is looking at.
+The pool is capped at **24 live, oldest evicted**, and entries are pruned on
+expiry in `_age_fx` so expired rows cannot hold the cap. Uncapped, a working
+build at the enemy cap produces thousands of strings a second.
 
-Numbers rise, fade, and drift slightly by index so two hits on one enemy do not
-draw on top of each other. Off by default is wrong for a game about numbers
-going up; the preference exists for players who disagree.
+Numbers are **world-space** — they belong to an enemy at a place, so they are
+drawn in `_draw` under the same `to_iso` projection as everything else and move
+with the camera. The vignette below is the screen-space one.
 
 ### Damage vignette
 
-A red edge-flash on `_damage_player`, decaying over ~0.4s. It is drawn in the UI
-layer rather than the world, because it is a fact about the player and not about
-a place.
+A red edge-flash on `_damage_player`, decaying over ~0.4s, drawn in the UI layer
+because it is a fact about the player and not about a place. It is also the
+shake-independent damage tell for anyone who sets `shake = 0`.
 
 ## 2. Audio
 
-Three files, and only the last one touches the scene tree.
+Two files. An earlier draft had three; `bank.gd` was a const spec table plus a
+build call, which is pure data next to a pure builder, so it folds into
+`synth.gd` with the discipline intact.
 
 ### `scripts/audio/synth.gd` — pure
 
 Builds an `AudioStreamWAV` from a spec: waveform (sine, square, saw, noise),
-frequency envelope, amplitude ADSR, noise mix, duration, sample rate.
+frequency envelope, amplitude ADSR, noise mix, duration. Also holds the event
+table and `build_bank()`.
+
+Format is pinned, because "produces an `AudioStreamWAV`" is not a specification:
+**16-bit signed PCM, mono, `const SAMPLE_RATE := 22050`**, sample count
+`int(round(duration * SAMPLE_RATE))`. Sample rate is a const, not a per-spec
+field — every sound uses the same one, and a per-spec knob nobody varies is a
+constant in disguise.
+
+ADSR phases are **normalized to fit duration** when attack + decay + release
+exceed it, rather than rejected, so "the envelope ends at silence" is achievable
+for every spec in the table rather than for most of them.
+
 `AudioStreamWAV` is a `Resource`, which keeps this inside the same purity rule
-`scripts/build/` follows, and makes it testable headless — buffer length,
-clipping, determinism and envelope tail are all assertable without a viewport.
+`scripts/build/` follows and makes it testable headless.
 
-Procedural rather than sampled because the project has no image assets and no
-font files, and a folder of `.ogg` files would be the first binary content in
-the repo. It also means every sound is a few numbers in a table that can be
-tuned in a diff.
+### `scripts/audio/sfx.gd` — the only part that touches the tree
 
-### `scripts/audio/bank.gd`
+A node holding a round-robin pool of `AudioStreamPlayer`s, pitch jitter, and
+**per-event rate limiting**. Six hundred enemies and a magnet radius produce
+kills, hits and pickups by the hundred per second; played faithfully that is
+white noise. Each event id carries a maximum plays-per-second and overflow is
+dropped, not queued.
 
-Builds the fixed set of streams once at boot, keyed by event id.
+### The simulation never calls the node
 
-**Every event id played must exist in the bank.** This is the same failure shape
-already documented for `meta_screen.BUFFS` against `SaveGame._default()`: a
-direct index with no fallback, crashing on a name that was added on one side
-only. A test asserts the two sets match, because the alternative is discovering
-it when a rare event fires mid-run.
+`run.gd` must not hold a reference to `sfx.gd`, or the tick becomes coupled to
+the scene tree and the headless testability §1 just protected is lost — the most
+expensive thing in this spec to reverse later, since the hooks are spread across
+every combat, economy and lifecycle path.
 
-### `scripts/audio/sfx.gd`
+Instead **`feel` accumulates a per-tick list of event ids** (it is already the
+pure sink for presentation events), and `sfx.gd` drains that list after the
+tick. Headless suites never instantiate the node; the events are assertable as
+data. One boundary, one direction, no node reference below it.
 
-A node holding a round-robin pool of `AudioStreamPlayer`s, with pitch jitter so
-repeats do not phase against each other, and **per-event rate limiting**.
+### Buses are created in code
 
-The rate limiter is not a nicety. Six hundred enemies, a working build and a
-magnet radius produce kills, hits and shard pickups by the hundred per second.
-Played faithfully that is white noise at full volume — worse than silence,
-because silence at least does not hide the events that matter. Each event id
-carries a maximum plays-per-second; overflow is dropped, not queued.
+There is no `[audio]` section that declares buses. Godot takes buses from the
+bus-layout resource named by `audio/buses/default_bus_layout`, or from runtime
+`AudioServer.add_bus`. An earlier draft said "`project.godot` gains an `[audio]`
+section with Master and SFX", which is not a thing the engine supports.
 
-### Buses and events
+So: **create the SFX bus with `AudioServer.add_bus`, idempotently.**
+`add_bus` takes an index, not a name — the name is a second call,
+`set_bus_name`. And "at boot" is wrong for this codebase in the same way the
+hitstop restore was: there are no autoloads, and the game shuttles between
+`meta_screen.gd:161` and `ui.gd:540` all session, so anything scoped to a scene
+runs once per *run*, not once per process. Creation is therefore guarded on
+`get_bus_index("SFX") < 0` and is safe to call on every scene entry.
 
-`project.godot` gains an `[audio]` section with Master and SFX. Preferences
-drive `AudioServer.set_bus_volume_db`.
+No new resource file, no binary. Every volume write checks
+`get_bus_index("SFX") >= 0` first, because a missing bus returns `-1` and
+`set_bus_volume_db(-1, x)` errors on every slider movement.
+
+Volume conversion is `linear_to_db(maxf(v, 0.0001))`, with a `set_bus_mute`
+branch at zero — `linear_to_db(0.0)` is `-INF`, and a non-finite float entering
+an engine setter is worth avoiding even where the engine tolerates it.
+
+### Event ids
+
+Per-vector-kind fire ids are **derived from the `VectorKind` enum**, not
+constructed ad hoc, so a new vector kind cannot mint an id the bank has never
+heard of. `Module.VectorKind` is append-only (CLAUDE.md), which makes the enum a
+safe key source.
+
+`test_audio_events` enumerates the ids the code can actually generate —
+iterating `VectorKind` — and asserts each resolves in the bank. Comparing two
+static sets would pass while a runtime-generated id crashed, which is the exact
+failure shape already documented for `meta_screen.BUFFS` against
+`SaveGame._default()`.
 
 Events: per-vector-kind fire, hit, kill, flip, shard pickup, level up, card
 select, card decline, player hurt, low integrity, mini-boss charge, mini-boss
@@ -193,35 +336,103 @@ arrival, ICE charge, ICE arrival, gate open, collapse start, win, death.
 ### No music
 
 A procedural ambient bed is a subsystem with its own tempo, mixing and state
-machine, and it does not belong in the same pass as everything above. Out of
-scope, worth doing later.
+machine. Out of scope, worth doing later.
 
 ## 3. Input and pause
 
-### An InputMap, at last
+### An InputMap, with bindings
 
-There is no `[input]` section in `project.godot`. Movement is four direct
-`Input.is_physical_key_pressed` calls at `run.gd:698-705`.
+There is no `[input]` section in `project.godot`; movement is four direct
+`Input.is_physical_key_pressed` calls at `run.gd:698-705`. Naming actions
+without binding them leaves `Input.get_vector` permanently zero — that would
+break keyboard movement while delivering no gamepad support, so the bindings are
+part of the spec, not an implementation detail:
 
-Adding actions — `move_left/right/up/down`, `confirm`, `cancel`, `pause`,
-`recipes` — and switching movement to `Input.get_vector` brings analog gamepad
-sticks along at no extra cost, because the two-axis read is the same call.
+| Action | Keyboard | Gamepad |
+|---|---|---|
+| `move_left` / `move_right` | A / D, ←  / → | D-pad, left stick X |
+| `move_up` / `move_down` | W / S, ↑ / ↓ | D-pad, left stick Y |
+| `confirm` | Enter, KP-Enter, Space | A / cross |
+| `cancel` | Escape | B / circle |
+| `pause` | Escape (see routing) | Start |
+| `recipes` | R | Y / triangle |
+| `restart` | R | X / square |
 
-`input_override` stays exactly as it is. It is a world-space simulation hook for
-headless drivers and has nothing to do with devices.
+Stick deadzone 0.2. `Input.get_vector` reads both axes in one call, so analog
+movement comes along for free.
 
-### Pause, and the one conflict
+`recipes` and `restart` share R because `ui.gd:637` already binds R to
+`_restart()` on the end screen while R toggles the recipe panel elsewhere. They
+are two actions rather than one because a gamepad has no shared key to
+disambiguate, and the routing below decides between them by screen — the same
+"one rule, one place" discipline the `cancel` arms follow.
 
-Escape currently declines a card (`ui.gd:652`). It should also pause. The rule:
+`input_override` stays as it is — a world-space simulation hook for headless
+drivers, unrelated to devices.
 
-> **Overlay visible → decline. Otherwise → pause.**
+### `ui.gd` moves to actions
 
-One rule, checked in one place, so the keyboard and the gamepad cannot diverge —
-the same reasoning `ui.gd:243-248` already records for routing Enter through the
-button's own `pressed` signal.
+`ui.gd:640-656` matches raw keycodes. `InputEventJoypadButton` has no keycode,
+so with movement on actions and nothing else changed, a gamepad player could
+walk and pause but could not navigate, confirm or decline a level-up — unable to
+operate the build system the game is named for.
 
-The pause panel offers resume, settings and abandon. `run.paused` already exists
-and already gates the tick; nothing currently sets it from player input.
+So the overlay handler moves from `e.keycode` to action queries. This is what
+makes "one rule, both devices" true rather than aspirational, and it is why
+`test_cards_keyboard` changes: it synthesizes `InputEventKey` and sets
+`.keycode` (`tests/test_cards_keyboard.gd:78-79`), which action matching will
+not resolve without a `physical_keycode` and a loaded InputMap. `test_input`
+drives the overlay with joypad events as well as key events.
+
+**`tools/shot_cards.gd` is the second consumer, and it is not a test.** Its
+`_key()` helper (`tools/shot_cards.gd:17-21`) builds an `InputEventKey`, sets
+`.keycode`, and calls `ui._input(e)` directly to drive the level-up overlay for
+a screenshot. `grep -rn keycode tools/ tests/` returns exactly two hits — that
+file and `test_cards_keyboard` — so this is the complete consumer set, and the
+tool is the half no suite covers. Migrated with `ui.gd` or not at all: left
+behind, it still writes PNGs, they just show the wrong button selected, which is
+a broken screenshot that looks like a working one.
+
+### Player pause gets its own flag
+
+`run.paused` is not free real estate. It means "a modal offer is open", it is
+set at `run.gd:1835` (fusion) and `run.gd:2020` (cards), and **four sites clear
+it unconditionally** (`run.gd:1868`, `1876`, `2065`, `2073`). `ui.gd:658-662`
+force-hides the card overlay whenever `not run.paused`.
+
+Overload it and this happens: a card offer is open, the player presses Start,
+the pause panel opens, Resume sets `paused = false`, and `ui.gd:658-662` hides
+the cards. Pending cards self-heal at `run.gd:1991`; a pending fusion does not —
+`_pending_fusions` is stranded until the next block payout.
+
+So player pause is **`user_paused`, a separate bool**, OR-ed into the tick gate
+at `run.gd:519`. The modal protocol's four unconditional clears can then never
+release a pause they did not take.
+
+Second-order, and handled: `ui.gd:_process` skips `_refresh()` while paused, so
+the new HUD blocks would freeze under the pause panel. `_refresh()` moves to
+run on `user_paused` too, or the panel draws over a stale HUD.
+
+### Escape routing needs four arms
+
+"Overlay visible → decline, otherwise → pause" does not cover the screens that
+exist. Enumerated from `ui.gd`:
+
+| State | `cancel` does |
+|---|---|
+| Recipe panel open (child of `_overlay`, `ui.gd:117`/`136`) | Close the panel |
+| Card or fusion overlay up | Decline |
+| End screen (`_end`, a **sibling** of `_overlay`, `ui.gd:138`) | Back to shell |
+| Pause panel up | Resume |
+| Otherwise | Pause |
+
+Checked in one place, so the keyboard and the gamepad cannot diverge — the
+reasoning `ui.gd:243-248` already records. Without the recipe arm, Escape with
+the panel open declines the card underneath it; without the end-screen arm,
+Escape on a finished run pauses it.
+
+One input edge produces one transition — the routing reads a just-pressed edge,
+not a held state.
 
 ## 4. Preferences
 
@@ -235,154 +446,377 @@ and already gates the tick; nothing currently sets it from player input.
 | `damage_numbers` | true | bool |
 
 `_sanitise` rebuilds from `_default()` and overlays what it can read, so a v2
-file loads with default prefs and **no migration is needed**. Every key still
-gets an explicit clamp there: `save.json` is user-editable and treated as
-hostile, and a shake scale of 10000 read straight through is a crash dressed as
-a preference.
+file loads with default prefs and **no migration is needed** — verified against
+`save_game.gd:102`, which quarantines only `version > VERSION`.
 
-The settings screen copies the row-and-scroll pattern `meta_screen.gd` already
-uses for buffs, and is reachable from both the shell and the pause panel.
+### The container guard, not just the clamps
 
-Shake scale reaching zero is deliberate. Screen shake is one of the two effects
-here that can make a game unplayable for some people rather than merely
-annoying, and the other one — flashing — is why damage numbers and the vignette
-are tuned to fade rather than strobe.
+An earlier draft promised "an explicit clamp" per key and stopped there. That is
+half the existing contract: `_sanitise` guards the **container type** before
+indexing it, for `buffs` (`save_game.gd:117`) and `unlocked`
+(`save_game.gd:121`) alike.
+
+Without it, `{"prefs": "owned"}` or `{"prefs": [1,2,3]}` makes
+`prefs.get(key, default)` a runtime error. Per CLAUDE.md, a GDScript runtime
+error aborts the function it happens in — so `_sanitise` aborts, `_cache =
+_sanitise(d)` at `save_game.gd:89` never runs, `load_state()` returns null, and
+every caller that indexes it errors in turn. A one-token edit to a plaintext
+file cascades into the boot path.
+
+So: `var p = d.get("prefs", {})` / `if typeof(p) == TYPE_DICTIONARY:`, exactly
+as `buffs` does, with `out["prefs"]` seeded from `_default()` so a failed guard
+yields defaults.
+
+Per-key values get a type check too — `float(v)` and `int(v)` are not total. A
+small `_num(v, default)` helper closes it for the new keys and the existing
+`buffs` block at once, and it must reject **four** things, not the one an
+earlier draft named:
+
+- a Dictionary or Array value — invalid-type error, same abort semantics
+- **`TYPE_NIL`** — `float(null)` aborts `_sanitise`. This one is reachable in
+  ordinary play, not just by hand-editing: see the write-side note below.
+- **`NAN`** — `clampf(NAN, 0.0, 2.0)` returns `nan`, measured on Godot 4.7. A
+  clamp is not a finiteness check.
+- **`±INF`** — same reason.
+
+The rule is `is_finite()` plus an explicit type check, not `clampf` alone.
+
+### The version read needs its own guard
+
+`_num` lives in `_sanitise` and therefore does not cover `_read`, which does
+`int(parsed.get("version", 0))` at `save_game.gd:102` with no type guard at all.
+`{"version": null}` produces `Invalid call. Nonexistent 'int' constructor` —
+reproduced under `godot --headless` during review — which aborts `_read`,
+discards the save silently, and after two further saves rotates the `.bak` away
+permanently. It is outside this pass's nominal scope but it is on the same code
+path the `VERSION` bump touches, and it is one guard.
+
+### Clamped on write as well as read
+
+`save_state()` stringifies `_cache`, which is sanitised on load and then freely
+mutated (`bank()` at `save_game.gd:147`, `buy()` at 243 both write it directly).
+A settings screen assigning `prefs["shake"] = value` gets no clamp until the
+next cold load.
+
+**The reason an earlier draft gave for this was wrong, and the truth is worse.**
+That draft claimed `JSON.stringify` emits `inf`/`nan`, producing invalid JSON
+that `_read` discards. Measured on Godot 4.7 during review: `JSON.stringify`
+turns `NAN` into `null` and `INF` into `1e99999`, which parses back as `inf`.
+Both are valid JSON, so the file is never discarded — the bad value is
+faithfully **persisted**. A NaN written once comes back as `null` on the next
+load, and `float(null)` aborts `_sanitise`, which cascades exactly as the
+container-guard case above. The save is not lost to a parse failure; it is lost
+to a permanent crash on read.
+
+So a `SaveGame.set_pref(key, value)` applies the same clamp table and the same
+`is_finite` rejection `_sanitise` uses, and the settings screen goes through it.
+One definition, both directions — a clamp on the write side alone would not have
+caught this, since `clampf(NAN, …)` is `nan`.
+
+### The screen
+
+Copies the row-and-scroll pattern `meta_screen.gd` already uses, reachable from
+the shell and the pause panel.
+
+Shake scale reaching zero is deliberate: it is one of the two effects here that
+can make a game unplayable rather than merely annoying for some players, and the
+other — flashing — is why the vignette and numbers fade rather than strobe.
+
+**`test_meta_layout` is the suite at risk from this section**, not from §5.
+It exists because the shop column "already ran to roughly 505px in a 720px
+viewport"; adding a settings entry point to that screen is exactly the overflow
+it was written to catch.
 
 ## 5. HUD
 
-`ui.gd:167` builds one format string carrying integrity, armor, defense, subnet,
+`ui.gd:166` builds one format string carrying integrity, armor, defense, subnet,
 timer, level, XP bar, salvage, botnet count, kills and flips, then appends the
-mini-boss banner and the collapse countdown to the same line. It reads as a
-debug printout because it is one.
+mini-boss banner and the collapse countdown to it. It reads as a debug printout
+because it is one.
 
-It splits into blocks, all still monospace, still ASCII bars, no graphical
-chrome:
+It splits into blocks, all still monospace, still ASCII bars:
 
 - **Left** — integrity bar, armor, defense, level, XP bar
 - **Centre** — subnet, timer, and the phase banner as its own line
 - **Right** — salvage, botnet, kills, flips
 - **Bottom left** — the build panel, which already exists as its own label
 
-The aesthetic does not change. A terminal HUD is the right look for this game;
-what is wrong is that eleven unrelated values share one line with no grouping,
-so nothing can be found by position.
+The aesthetic does not change. What is wrong is that eleven unrelated values
+share one line with no grouping, so nothing can be found by position.
+
+**The mini-boss banner is gated on arrival.** `ui.gd:174-181` scans the
+population for `_is_miniboss` and appends `":: <NAME> ACTIVE"` the moment the
+entity exists — which under §6 is the start of the 0.9s charge, before anything
+is visible. That spoils the entrance the telegraph is building. Gate it on
+`_arriving[i] <= 0.0`.
 
 ### Run summary
 
-The end screen is currently a label and a restart button. It becomes a summary:
-outcome, time survived, subnet reached, level, kills, flips, salvage banked, and
-the three final exploits with their resolved stats.
+`_on_end` (`ui.gd:527-537`) already prints subnet, kills and flips on a loss and
+banked salvage on a win, so this is an improvement on a real starting point
+rather than a rescue. It becomes: outcome, time survived, subnet reached, level,
+kills, flips, salvage banked, and the three final exploits with resolved stats —
+tolerating a run that ended with fewer than three, rather than indexing three
+unconditionally.
 
-A bullet heaven's end screen is where a run becomes a story the player can
-compare against the next one. Ending on `disconnect -> shell` throws that away.
+### Test impact, corrected
 
-### Test impact
+An earlier draft said `test_meta_layout` and `test_cards_keyboard` "assert
+against HUD node paths". They do not: `grep -rn '_hud|get_node("Top")|"Build"'
+tests/` returns nothing. **The HUD has zero test coverage today**, so
+`ui.gd:165` and `ui.gd:199` — which index `get_node("Top")` and
+`get_node("Build")` with no `.get` — can be renamed with no suite noticing.
 
-`test_meta_layout` and `test_cards_keyboard` assert against HUD node paths and
-will need updating alongside this. A new `test_hud` suite covers the blocks and
-the summary.
+`test_hud` is therefore not a supplement, it is the only guard, and it pins
+those node names or their successors.
+
+Both suites do still break, but indirectly: `test_meta_layout` duck-types the UI
+layer (`tests/test_meta_layout.gd:127-134`) and reaches `ui.recipe_lines()`, so
+a script error inside a restructured `_refresh` fails them through the runner's
+SCRIPT ERROR discipline rather than through their own assertions.
 
 ## 6. Arrivals
 
-### The mechanism already exists
+### The mechanism exists, with a caveat
 
 `_submerged` is a `PackedByteArray` handed to `grid.rebuild` as the enemy skip
-mask (`run.gd:866`). An entity in it is out of the grid, which means it cannot be
-hit, cannot hit you and cannot be targeted, and `_update_renderers` draws it at
-scale zero (`run.gd:2179-2181`). An arriving boss is the same condition.
+mask (`run.gd:866`). An entity in it is out of the grid — unhittable,
+untargetable — and `_update_renderers` draws it at scale zero (`run.gd:2182`).
+Player contact damage is a grid query (`run.gd:1240-1245`), so grid exclusion
+does cover contact.
 
-### `_arriving`, and why it is a separate array
+It does **not** cover everything, which is where the first draft of this section
+was wrong. See "the three direct walks" below.
 
-`_arriving` is a `PackedFloat32Array` of seconds remaining, sized `MAX_ENEMIES`,
-**reset in `_spawn_enemy_state`** under the same invariant as `_hit_flash`.
+### `_arriving`, and why it is separate
 
-It is not folded into `_submerged` because `_ambush` writes that byte on its own
-schedule, and a mini-boss with the AMBUSHER behaviour would have two independent
-states fighting over one flag — arrival clearing a submersion the ambush logic
-had just set, or the reverse, depending on tick order. Instead `_step3_rebuild`
-unions the two into a dedicated skip array before handing it to the grid. That is
-one O(count) pass over at most 600 entries, which does not register against the
-rest of the tick, and it keeps both states independently testable.
+`_arriving` is a `PackedFloat32Array` of seconds remaining, sized `MAX_ENEMIES`.
 
-Being out of the grid covers hits and targeting. Two passes walk the population
-directly rather than through the grid and need an explicit skip:
+Not folded into `_submerged` because `_ambush` writes that byte on its own
+schedule, and `kernel_panic` — a real mini-boss (`spawn_director.gd:65`) — would
+have two independent states fighting over one flag. `_step3_rebuild` unions them
+into a dedicated skip array, **fully rebuilt every tick**, not incrementally
+OR-ed; an incremental union leaves an entity permanently unqueryable after
+arrival. One O(count) pass over at most 600 entries.
 
-- `_step4_steer` — or an arriving boss drifts toward the player mid-materialize
-- `_step6b_hostiles` — or it shoots while still transparent
+The renderer reads `_arriving` **independently**. The union array is grid-only,
+and `run.gd:2182` tests `_submerged[i]` directly — so without its own read the
+boss draws at full scale through the entire 0.9s charge phase, before the
+materialize ramp begins.
+
+### Both halves of the slot invariant
+
+`_hit_flash` and `_arriving` are per-enemy arrays and need **both** halves:
+
+**Spawn reset** — `_spawn_enemy_state` zeroes them, because `Population.spawn`
+recycles slots.
+
+**Swap relocation** — `run.gd:1708-1716` hand-moves eight parallel arrays
+tail-into-slot on every despawn, under a comment that says why: *"Population
+.despawn swap-removes the tail into slot i, so every parallel array must move
+with it. Six of these were missing."* An earlier draft cited only the spawn
+half.
+
+That omission is not cosmetic. A mini-boss spawns at the tail; during its 1.15s
+arrival the swarm is dying every tick, and every recycle swaps the tail down into
+a freed slot. The boss's timer is left behind — it materializes instantly and is
+hittable during its own entrance, the feature's headline behaviour gone in
+exactly the case it was built for — while the enemy that inherits the old slot
+goes invulnerable and invisible for up to a second. ICE escapes only by accident,
+because the arena is emptied first.
+
+**Pre-existing, and fixed here because the feature is about to lean on it:**
+`_submerged`, `_ai_phase`, `_ai_timer` and `_ai_aim` are themselves absent from
+that block. An ambusher self-heals within a tick because `_ambush` rewrites the
+byte; the AI arrays do not. Enumerating the 13 arrays sized `resize(MAX_ENEMIES)`
+at `run.gd:424-445` against the eight relocated at `run.gd:1708-1716` gives
+exactly those four as the difference. Adding them alongside the two new ones is
+a six-line change to one block, and leaving them out would mean building a boss
+entrance on the same latent bug.
+
+**There is a second despawn site, and it relocates nothing at all.**
+`_step2d_collapse` removes enemies standing on voided ground
+(`run.gd:1802-1804`):
+
+```gdscript
+for i in range(enemies.count - 1, -1, -1):
+	if terrain.is_void(enemies.pos[i]):
+		enemies.despawn(i)
+```
+
+Reverse iteration does not make this tail-only — the predicate is conditional,
+so any enemy in the void is despawned from the middle and the tail is swapped
+down over it. This runs during `CLEARED`, which is precisely when a mini-boss
+can be mid-arrival. Either it gets the same relocation block, or the relocation
+becomes a `_relocate(i, last)` helper both sites call — the second is better,
+since a third despawn site added later would otherwise repeat the bug a third
+time.
+
+### The three direct walks
+
+Grid exclusion covers hits, targeting and contact. Three passes walk
+`enemies.count` directly and need an explicit `_arriving` skip. An earlier draft
+named two, and **named the wrong two**:
+
+1. **`_step2_integrate`'s enemy loop (`run.gd:737-752`)** — the one that
+   matters, and the one the earlier draft missed entirely. It computes
+   `enemies.vel[i] = _behave(i, t, dt) + ...` and integrates position.
+   `_behave` (`run.gd:1333`) dispatches to `_charge` / `_ranged` / `_pulse` /
+   `_support` / `_ambush` / `_flank`. So without a skip here an arriving boss
+   chases at full speed (ICE is CHASE behaviour, `data/enemy_table.gd:11,57`)
+   and lands nowhere near where the telegraph promised; `_ranged`
+   (`run.gd:1401`) spawns hostile shots via `_fire_hostile`; and `_pulse`
+   (`run.gd:1391-1399`) calls `_damage_player` directly on a line-of-sight
+   check, with no grid involved at all. An arriving `kernel_panic` would damage
+   the player from a body that cannot be seen or hit.
+2. **`_step2b_zones` (`run.gd:1553-1564`)** — queues `DAMAGE` for a HAZARD tile
+   and `CORRUPTION` for a CORRUPTION tile purely by index. Corruption is the
+   flip channel, so a boss can flip mid-entrance while invisible, and per
+   CLAUDE.md the flip guard, the boss spawn and the win condition all key off
+   `EnemyTable.ICE`.
+3. **`_step4_steer`** — writes `enemies.force[i]` only. Skipping it is garnish
+   once (1) is gated, but it keeps neighbours from shoving a ghost.
+
+`_step6b_hostiles` is **not** on this list, contrary to the earlier draft: it
+iterates `hostiles`, not `enemies` (`run.gd:1427-1440`), advancing
+already-spawned shots. There is no enemy index there to skip.
+
+The rule to carry forward is **"every pass that walks `enemies.count`
+directly"**, not an enumerated pair.
 
 ### The animation
 
 1.15s in two phases, drawn in `_draw` from the `_arriving` timer:
 
 **Charge, 0.9s.** A ground decal grows at the destination, three rings converge
-inward on it, and glyph columns rain down the isometric vertical. Orange for a
-mini-boss, violet for ICE. The player has nearly a second to see where it lands
-and stop being there.
+inward, glyph columns rain down the isometric vertical. Orange for a mini-boss,
+violet for ICE. The player has nearly a second to see where it lands — which is
+only true because of the `_step2_integrate` skip above.
 
-**Materialize, 0.25s.** White flash, shockwave ring expanding outward, and the
-entity scales from zero to full with a slight overshoot. The renderer already
-multiplies a per-entity scale, so this is one more term on an expression that
-exists.
+**Materialize, 0.25s.** White flash, shockwave ring expanding outward, entity
+scale eases 0 → full with a slight overshoot.
 
-Shake trauma fires on the flash, with a charge whine and an arrival crack from
-the audio bank.
+Shake trauma fires on the flash, with a charge whine and an arrival crack.
 
 ### ICE gets the full version
 
-The boss spawn already despawns every other enemy before ICE lands
-(`run.gd:588-596`), for mechanical reasons that predate this spec. The side
-effect is a perfect set-piece beat: the arena empties, holds for a second, and
-then the thing arrives into open ground.
+The boss spawn already despawns every other enemy first (`run.gd:588-596`), so
+the arena empties, holds, and then the thing arrives into open ground.
 
 ### Not interruptible, not skippable
 
-An arrival that can be shot through is not an entrance. The invulnerability is
-the feature, and 1.15s at 420–620px of separation is not long enough to be a
-tax.
+An arrival that can be shot through is not an entrance.
+
+**The aggregate cost, stated correctly.** 15 arrivals per campaign × 1.15s =
+17.25s of invulnerable, non-fighting time. Two earlier drafts got the
+consequence wrong in opposite directions; the truth is that it is **not a
+duration shift at all**. `spawn_director.gd:143` is
+`elapsed = minf(elapsed + dt, SUBNET_SECONDS)`, and arrivals do not stop the
+tick, so the arrival seconds are spent *inside* the subnet's 300s rather than
+added to it. Campaign wall-clock is unchanged.
+
+What actually moves is **fighting** time: 17.25s in which nothing can be killed.
+So the effect lands on XP and salvage at the moment ICE spawns, not on how long
+a run takes. `test_campaign`'s expectation is therefore about level-at-ICE, and
+must not assert a duration shift — an assertion that would fail for a reason
+that has nothing to do with this feature.
 
 ### Telegraph gaps
 
 Charger windup and ambusher surfacing telegraphs already exist
-(`run.gd:2398-2412`), and `_pulse` already rings. What is missing:
-
-- A link line from a support enemy to whatever it is buffing
-- A brief aim tell before `_fire_hostile`
+(`run.gd:2397-2413`), and `_pulse` already rings. What is missing: a link line
+from a support enemy to what it is buffing, and a brief aim tell before
+`_fire_hostile`.
 
 ## Testing
 
 New suites, added to `SUITES` in `tools/run_tests.sh`:
 
-- **`test_feel`** — trauma decays to zero, offset stays inside `MAX_OFFSET`,
-  squaring makes small trauma small, hitstop expires and restores time scale,
-  the number pool evicts oldest at the cap
-- **`test_synth`** — buffer length matches duration × rate, no sample exceeds
-  ±1, the same spec produces the same buffer twice, the envelope ends at silence
-- **`test_audio_events`** — every played event id exists in the bank, and the
+- **`test_feel`** — trauma decays to zero; **stacked** events (12 detonations,
+  ICE + player hit in one frame) stay inside `MAX_OFFSET`, since a single event
+  proves nothing about the clamp; squaring makes small trauma small; the
+  hitstop deadline is asserted in unscaled units; the number pool evicts oldest
+  at the cap and prunes on expiry. `noise()` is seeded or injectable, so the
+  suite can assert more than a magnitude bound — an unseeded source cannot catch
+  a sign flip or an axis-correlation bug
+- **`test_synth`** — buffer length is `int(round(duration * SAMPLE_RATE))`, no
+  sample exceeds ±1, the same spec produces the same buffer twice, the envelope
+  ends at silence including for specs whose ADSR needed normalizing
+- **`test_audio_events`** — every id the code can generate resolves in the bank,
+  enumerated by iterating `VectorKind` rather than comparing static sets; the
   rate limiter drops overflow rather than queueing it
-- **`test_prefs`** — hostile values clamp, a v2 file loads with default prefs,
-  a round trip preserves what was set
-- **`test_input`** — every action the code references exists in the map, pause
-  toggles `run.paused`, cancel routes to decline with an overlay up and to pause
-  without one
-- **`test_hud`** — the blocks exist and populate, the summary reports a finished
-  run
-- **`test_arrivals`** — an arriving boss is skipped by the grid, does not steer,
-  does not fire, cannot be damaged, becomes live when the timer ends, and
-  `_arriving` is zeroed on a recycled slot
+- **`test_prefs`** — out-of-range values clamp; a **non-dictionary** `prefs`
+  yields defaults instead of aborting `_sanitise`; a per-key Dictionary, Array,
+  **`null`, `NAN` and `INF`** each do the same; **`{"version": null}` does not
+  abort `_read`**; a v2 file loads with default prefs; `set_pref` rejects
+  non-finite input rather than clamping it; a round trip preserves what was set.
+  Every one of these drives `SaveGame.load_state()` against a written file, not
+  a constructed dictionary — the failure mode is a script error inside
+  `_sanitise`, which only the real path reaches
+- **`test_input`** — every action the code references exists in the map; the
+  overlay is drivable by **joypad** events as well as key events; `cancel`
+  routes correctly through all five arms; `user_paused` gates the tick and is
+  not cleared by a card or fusion decline
+- **`test_hud`** — the blocks exist and populate; the node names `ui.gd` indexes
+  without `.get` are pinned; the summary reports a finished run and one that
+  ended with fewer than three exploits
+- **`test_arrivals`** — an arriving boss is skipped by the grid; **does not move
+  after `_step2_integrate`**; does not spawn hostile shots; **leaves
+  `player_health` unchanged with a PULSE mini-boss arriving in line of sight**;
+  takes no damage and gains no corruption **while placed on a HAZARD and on a
+  CORRUPTION tile** (on clean terrain the case passes regardless); becomes live
+  when the timer ends; `_arriving` is zeroed on a spawn-recycled slot; **the
+  timer follows the boss when a lower-indexed enemy dies and `_step9_recycle`
+  compacts the tail**; **and it follows the boss through the second despawn site
+  too — an enemy removed by `_step2d_collapse` while a mini-boss is arriving**
 
-Existing suites that change: `test_meta_layout` and `test_cards_keyboard` for
-the HUD split, and `test_campaign` needs checking against the boss arrival —
-it autopilots to an ICE kill, and 1.15s of invulnerability per boss shifts its
-timing. That is a thing to verify, not to assume.
+Additional coverage in existing suites:
 
-`perf_milestone0` must stay green. The per-frame additions are the flash decay
-and the number pool, both O(n) over the enemy cap and both cheap, but the gate
-is the arbiter.
+- **`test_run`** — the death path sets `Engine.time_scale` to `0.05`
+  **and then** back to `1.0` once the wall-clock deadline passes. Both
+  assertions, in that order: the second alone passes whether the hitstop fired
+  or was cancelled at birth. Also that the composed camera position is finite
+  (cheap insurance against a NaN reaching `run.gd:551` and blanking the screen),
+  and that effects keep aging after death, which is what `_age_fx` moving above
+  the guard buys
+
+Non-suite consumer that changes with them: **`tools/shot_cards.gd`**, whose
+`_key()` helper drives `ui._input` with keycode-only events. It is not in
+`SUITES` and nothing will report its breakage.
+
+Existing suites that change: `test_cards_keyboard` (keycode → action matching),
+`test_meta_layout` (the §4 settings entry point on the shop screen, plus
+indirect breakage through `_refresh`), `test_minibosses` (mini-boss death now
+crosses arrival and hitstop, `tests/test_minibosses.gd:138-145`),
+`test_behaviour` (calls `_behave` and spawn state directly,
+`tests/test_behaviour.gd:50-82`, which the `_arriving` gate now guards), and
+`test_campaign` (the 17.25s arrival shift).
+
+`perf_milestone0` must stay green. The per-frame additions are the flash decay,
+the number pool and the skip-mask union, all O(n) over the enemy cap.
+
+### Documentation sweep
+
+The pass takes the suite count from 29 to 36. Four places hardcode "26 suites"
+and are already stale: `CLAUDE.md:12`, `codemaps/architecture.md:29`,
+`codemaps/architecture.md:117`, `codemaps/ui.md:116`.
+
+CLAUDE.md's invariants section also gains the swap-relocation half of the
+per-enemy-array rule. It currently documents reset-on-spawn only, which is
+exactly the half an earlier draft of this spec cited while missing the other.
 
 ## What this pass does not do
 
 - No music
 - No new mechanics, enemies, modules or balance changes
 - No graphical HUD — it stays text
-- No refactor of `run.gd` beyond moving feel state into `feel.gd`. The file is
-  2438 lines and that is a real problem, but solving it is not this pass.
+- **No change to the ON_HIT gate at `run.gd:1580`**, despite it appearing to
+  have the same cross-pass bug as the hit-flash window. It alters combat
+  behaviour and deserves its own decision.
+- **No fix for the save-quarantine name collision.** `save_game.gd:103` renames
+  both `PATH` and `BAK` to the same `save.json.v<N>`, so the second overwrites
+  the first. Pre-existing; reachable only by running an older build after this
+  one. Noted because this pass is what bumps `VERSION`.
+- No refactor of `run.gd` beyond the §0 presentation split and moving feel state
+  into `feel.gd`. The file is 2438 lines and that is a real problem, but solving
+  it is not this pass.
