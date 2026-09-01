@@ -62,7 +62,10 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	# turn lets the TRIGGER module's default enum value clobber the vector.
 	if ex.vector != null:
 		r.vector_kind = ex.vector.module.vector_kind
-	if ex.trigger != null:
+		# A FUSED vector supplies both kinds, because its row has no trigger.
+		if ex.vector.module.is_fused:
+			r.trigger_kind = ex.vector.module.trigger_kind
+	if not ex.head_is_fused() and ex.trigger != null:
 		r.trigger_kind = ex.trigger.module.trigger_kind
 
 	# VECTOR, then PAYLOADs sorted by module id, then TRIGGER. Sorting by id —

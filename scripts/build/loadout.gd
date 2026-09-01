@@ -90,6 +90,8 @@ func legal_targets(m: Module) -> Array:
 		for sl in Exploit.SLOT_COUNT:
 			if Exploit.slot_type(sl) != m.slot:
 				continue
+			if ex != null and ex.head_is_fused() and sl == 1:
+				continue          # absorbed by the head, not empty
 			if ex == null:
 				if home.is_empty():
 					out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
@@ -102,6 +104,8 @@ func legal_targets(m: Module) -> Array:
 				continue
 			if not home.is_empty():
 				continue          # one id, one slot: nowhere else is legal
+			if ex.head_is_fused() and sl == 0:
+				continue          # the fused head is not replaceable
 			if occupant == null:
 				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
 			elif not _is_last_interval(occupant):

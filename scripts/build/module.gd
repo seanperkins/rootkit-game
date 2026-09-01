@@ -29,6 +29,11 @@ const STAT_KEYS := [
 @export var vector_kind: VectorKind = VectorKind.BROADCAST
 @export var trigger_kind: TriggerKind = TriggerKind.INTERVAL
 
+## Fused modules are produced by RecipeTable, not drawn from ModuleTable, and
+## are excluded from ordinary card draws. A fused module is a VECTOR that also
+## carries a trigger_kind, so its row needs no TRIGGER module.
+@export var is_fused: bool = false
+
 static func make(p_id: StringName, p_name: String, p_slot: Slot, p_stats: Dictionary,
 		p_tags: Array = [], p_vk: int = 0, p_tk: int = 0, p_max_rank: int = 5) -> Module:
 	var m := Module.new()
