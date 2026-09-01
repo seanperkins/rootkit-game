@@ -111,10 +111,11 @@ inside a callback. Each entity is **adjudicated exactly once per tick**, from
 the totals of the pass it was first marked in, and flip beats death.
 
 ```
-scripts/core/    grid.gd  object_pool  event_bus
-scripts/build/   module  exploit  compiler  loadout  player_stats  (pure)
+scripts/core/    grid
+scripts/build/   module  equipped_module  exploit  resolved_exploit
+                 compiler  loadout  player_stats                    (pure)
 scripts/combat/  population  hit_queue
-scripts/run/     run  spawn_director  ui  backdrop
+scripts/run/     run  terrain  spawn_director  ui  backdrop  props
 scripts/meta/    save_game  meta_screen
 data/            module_table  enemy_table
 shaders/         glyph.gdshader

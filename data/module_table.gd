@@ -8,9 +8,11 @@ class_name ModuleTable extends RefCounted
 ## every player gets an empty card pool. A code table cannot go stale against
 ## itself and needs no build-time manifest step.
 ##
-## Split: 4 VECTOR / 4 TRIGGER / 10 PAYLOAD = 18.
-## Unlocked at start: 3 / 3 / 9 = 15. A 3-exploit board needs 3 distinct
-## VECTORs and 3 distinct TRIGGERs, so anything less is not fillable.
+## Split: 14 VECTOR / 7 TRIGGER / 14 PAYLOAD = 35.
+## Unlocked at start: 7 / 3 / 11 = 21; see LOCKED below for why the rest is
+## gated. A module id may occupy any number of slots (Loadout.legal_targets),
+## so three exploits do NOT need three distinct VECTORs or TRIGGERs — the only
+## hard floor is one unlocked module of each slot type.
 
 const S := Module.Slot
 const V := Module.VectorKind
