@@ -65,6 +65,19 @@ const WORM_MAX_SEGMENTS := 6
 const WORM_GROWTH_SECONDS := 70.0
 const SPAWN_RING := 720.0
 
+## Past this from the player, a straggler is brought back around instead of
+## trailing forever.
+##
+## Everything CHASEs, so the swarm converges into one clump behind the player
+## and the tail never re-engages — the arena stops feeling surrounded and starts
+## feeling like a conga line. Comfortably outside SPAWN_RING so nothing is ever
+## moved while it is on screen.
+const RECYCLE_RADIUS := 1150.0
+## How many may be brought round per tick. A cap, so a player who sprints across
+## the arena gets a trickle of re-approaching enemies rather than the whole tail
+## blinking to the ring at once.
+const RECYCLE_PER_TICK := 3
+
 const PLAYER_RADIUS := 11.0
 const IFRAMES := 0.5
 
@@ -108,9 +121,14 @@ const CH_RECOVER := 3
 
 const CHARGE_RANGE := 260.0
 const CHARGE_WINDUP := 0.7
-const CHARGE_DASH := 0.5
+## 0.85, not 0.5. At 0.5 a sentinel (speed 78) covered 78 * 3.0 * 0.5 = 117px
+## of a 260px commit range — it wound up, lunged a third of the way, and
+## stopped short every time. A charge that cannot reach you is a telegraph with
+## no threat behind it. 0.85 at 3.6x covers ~239px and carries PAST the player,
+## which is what makes sidestepping it feel like sidestepping something.
+const CHARGE_DASH := 0.85
 const CHARGE_RECOVER := 0.8
-const CHARGE_SPEED := 3.0
+const CHARGE_SPEED := 3.6
 
 ## How many times a fork_bomb may divide. Three generations, then the leaves die
 ## for good — the leaf check is what stops one death becoming an unbounded
@@ -643,6 +661,7 @@ func _physics_process(dt: float) -> void:
 	_step6b_hostiles(dt)
 	_steps78_drain()
 	_step9_recycle()
+	_step9c_reapproach()
 	_step9b_splits()
 
 	_update_renderers()
@@ -1991,6 +2010,48 @@ func _drop_shards(i: int) -> void:
 		shards.spawn(enemies.pos[i] + Vector2(_rng.randf_range(-8, 8),
 			_rng.randf_range(-8, 8)), Vector2.ZERO, 1.0, 4.0, 0)
 
+## Bring distant stragglers back around the player.
+##
+## MOVED, not despawned and respawned. The player-visible outcome is what was
+## asked for — an enemy that fell behind reappears on the spawn ring with the
+## damage you already did to it — but a despawn swap-removes the tail into the
+## freed slot and every parallel array has to follow it. Moving the entity keeps
+## its slot, so integrity, spawn HP, slow, knockback, AI phase and arrival timer
+## all come along for free and there is no relocation to get wrong.
+##
+## Runs after recycle so it never touches a slot that is about to be freed.
+func _step9c_reapproach() -> void:
+	# FIGHTING only. Nothing is spawning during the collapse, and teleporting
+	# the leftovers around a player walking to the gate would be nonsense.
+	if phase != Phase.FIGHTING:
+		return
+	var moved := 0
+	for i in enemies.count:
+		if moved >= RECYCLE_PER_TICK:
+			break
+		if enemies.state[i] != Population.ALIVE:
+			continue
+		# Set-pieces are never moved: a boss that blinks across the arena is a
+		# boss the player cannot fight deliberately. Worms are a chain sampled
+		# off a head trail, so moving one segment tears the body apart.
+		var ti3 := enemies.type_index[i]
+		if ti3 == EnemyTable.ICE or _is_miniboss(ti3):
+			continue
+		if _worm_id[i] != 0 or _arriving[i] > 0.0:
+			continue
+		if player_pos.distance_to(enemies.pos[i]) < RECYCLE_RADIUS:
+			continue
+		var a5 := _rng.randf() * TAU
+		enemies.pos[i] = _spawn_at(player_pos
+			+ Vector2(cos(a5), sin(a5)) * SPAWN_RING)
+		enemies.vel[i] = Vector2.ZERO
+		enemies.force[i] = Vector2.ZERO
+		_knock[i] = Vector2.ZERO
+		# A charger mid-commit would otherwise arrive already winding up at a
+		# player who never saw it approach.
+		_clear_ai(i)
+		moved += 1
+
 func _step9_recycle() -> void:
 	# A dead head takes its remaining segments with it: a headless chain has no
 	# path to follow and would drift as a line of stragglers.
@@ -2741,6 +2802,39 @@ func _draw() -> void:
 			ring.append(to_iso(enemies.pos[i]
 				+ Vector2(cos(ta), sin(ta)) * (14.0 + 26.0 * tell)))
 		draw_polyline(ring, Color(1.9, 0.9, 0.4, 0.85 * (1.0 - tell)), 2.0)
+
+	# Boss integrity, without a number and without a bar.
+	#
+	# Three channels at once, because any one of them alone is ambiguous at a
+	# glance: the ring THINS as it drops, its colour walks from the type's own
+	# toward a hot red, and it FRAGMENTS into fewer, shorter arcs. A healthy
+	# boss wears a solid bright band; a nearly-dead one is a few dim red
+	# scratches. Reading "it is coming apart" needs no calibration.
+	for i in enemies.count:
+		if _arriving[i] > 0.0 or _submerged[i] != 0:
+			continue
+		var ti2 := enemies.type_index[i]
+		if ti2 != EnemyTable.ICE and not _is_miniboss(ti2):
+			continue
+		var frac2: float = clampf(
+			enemies.integrity[i] / maxf(_spawn_hp[i], 0.001), 0.0, 1.0)
+		var centre := to_iso(enemies.pos[i])
+		var rad2: float = (58.0 if ti2 == EnemyTable.ICE else 34.0)
+		var width: float = 1.0 + 3.2 * frac2
+		var col2: Color = enemy_types[ti2].color.lerp(
+			Color(2.2, 0.30, 0.25), 1.0 - frac2)
+		col2.a = 0.45 + 0.5 * frac2
+		# Twelve arcs at full, three at death. Integer, so the fragmenting is a
+		# visible step rather than a fade nobody registers.
+		var arcs: int = maxi(3, int(round(12.0 * frac2)))
+		var span: float = TAU / float(arcs) * (0.35 + 0.55 * frac2)
+		for a4 in arcs:
+			var base := TAU * float(a4) / float(arcs)
+			var pts2 := PackedVector2Array()
+			for stp in 5:
+				var ang := base + span * float(stp) / 4.0
+				pts2.append(centre + Vector2(cos(ang), sin(ang) * 0.5) * rad2)
+			draw_polyline(pts2, col2, width)
 
 	# Support links, and the ranged aim tell. Both are the same argument the
 	# charger and ambusher telegraphs above already make: a thing that happens

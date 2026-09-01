@@ -117,9 +117,11 @@ func charger_commits_to_its_dash() -> void:
 		v.normalized().is_equal_approx(locked), true)
 	_check("faster than it walks", v.length() > t.speed, true)
 
-	# 20 ticks, not 60: the dash has ~0.18 s left, and recovery only lasts 0.8 s,
-	# so a full second would run the whole cycle back round to APPROACH.
-	for k in 20:
+	# DERIVED from the constants rather than hardcoded. This was 20 ticks, tuned
+	# by hand against CHARGE_DASH 0.5; raising the dash to 0.85 left the enemy
+	# still dashing and failed a case that was testing nothing about the change.
+	# Enough to finish the dash, not enough to run recovery out into APPROACH.
+	for k in int(r.CHARGE_DASH / (1.0 / 60.0)) + 4:
 		r._behave(i, t, 1.0 / 60.0)
 	_check("then it recovers", r._ai_phase[i], r.CH_RECOVER)
 	v = r._behave(i, t, 1.0 / 60.0)
