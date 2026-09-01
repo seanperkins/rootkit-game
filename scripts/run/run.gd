@@ -782,7 +782,7 @@ func _worm_sample(id: int, steps_back: int) -> Vector2:
 	return trail[(c - steps_back + WORM_TRAIL_LEN * 2) % WORM_TRAIL_LEN]
 
 func _step2_integrate(dt: float) -> void:
-	# Polled directly so no InputMap entries are needed. WASD and arrows both.
+	# Polled through the InputMap: WASD, arrows, D-pad and left stick.
 	#
 	# input_override is a WORLD direction — it is a simulation hook for headless
 	# drivers, which reason in world space. Keyboard input is SCREEN-relative and
@@ -793,14 +793,11 @@ func _step2_integrate(dt: float) -> void:
 	if input_override != null:
 		world_dir = (input_override as Vector2).normalized()
 	else:
-		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
-			input.x -= 1.0
-		if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
-			input.x += 1.0
-		if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
-			input.y -= 1.0
-		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
-			input.y += 1.0
+		# One call reads both axes, so an analog stick comes along for free —
+		# the InputMap carries the keyboard and the gamepad bindings together
+		# and neither can drift from the other.
+		input = Input.get_vector("move_left", "move_right",
+			"move_up", "move_down")
 	if input.length_squared() > 0.0:
 		# Uniform SCREEN speed, not uniform world speed.
 		#

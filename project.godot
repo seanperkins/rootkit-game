@@ -18,3 +18,79 @@ viewport/hdr_2d=true
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+
+[input]
+
+; Actions, not raw keycodes, so one rule serves both devices. Movement reads
+; both axes through Input.get_vector, which brings analog sticks along for free;
+; the overlay reads the same actions, without which a gamepad player could walk
+; and pause but never operate the build system the game is named for.
+;
+; `recipes` and `restart` share R because ui.gd already bound R to restart on
+; the end screen while R toggles the recipe panel elsewhere. They are two
+; actions because a gamepad has no shared button to disambiguate; the routing
+; decides between them by screen.
+
+move_left={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":65,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":4194319,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadMotion,"axis":0,"axis_value":-1.0,"script":null)
+, Object(InputEventJoypadButton,"button_index":13,"pressed":false,"script":null)
+]
+}
+move_right={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":68,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":4194321,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadMotion,"axis":0,"axis_value":1.0,"script":null)
+, Object(InputEventJoypadButton,"button_index":14,"pressed":false,"script":null)
+]
+}
+move_up={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":87,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":4194320,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadMotion,"axis":1,"axis_value":-1.0,"script":null)
+, Object(InputEventJoypadButton,"button_index":11,"pressed":false,"script":null)
+]
+}
+move_down={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":83,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":4194322,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadMotion,"axis":1,"axis_value":1.0,"script":null)
+, Object(InputEventJoypadButton,"button_index":12,"pressed":false,"script":null)
+]
+}
+confirm={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":4194309,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":4194310,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":32,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadButton,"button_index":0,"pressed":false,"script":null)
+]
+}
+cancel={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":4194305,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadButton,"button_index":1,"pressed":false,"script":null)
+]
+}
+pause={
+"deadzone": 0.5,
+"events": [Object(InputEventJoypadButton,"button_index":6,"pressed":false,"script":null)
+]
+}
+recipes={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":82,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadButton,"button_index":3,"pressed":false,"script":null)
+]
+}
+restart={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":82,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadButton,"button_index":2,"pressed":false,"script":null)
+]
+}

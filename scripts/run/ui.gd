@@ -153,6 +153,41 @@ func _build() -> void:
 	_recipes.add_child(scroll)
 	_overlay.add_child(_recipes)
 
+	# The pause panel. Its own screen, driven by run.user_paused rather than
+	# run.paused — the modal-offer flag has four unconditional clearers, and
+	# sharing it would let a card decline release a pause it never took.
+	_pause_panel = Control.new()
+	_pause_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pause_panel.visible = false
+	add_child(_pause_panel)
+	var pscrim := ColorRect.new()
+	pscrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pscrim.color = Color(0, 0, 0, 0.78)
+	_pause_panel.add_child(pscrim)
+	var pcol := VBoxContainer.new()
+	pcol.position = Vector2(60, 150)
+	pcol.add_theme_constant_override("separation", 12)
+	_pause_panel.add_child(pcol)
+	var ptitle := _mono(22)
+	ptitle.text = "  SUSPENDED"
+	pcol.add_child(ptitle)
+	var presume := Button.new()
+	presume.text = " resume   [esc]"
+	presume.custom_minimum_size = Vector2(260, 34)
+	presume.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	presume.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	presume.focus_mode = Control.FOCUS_NONE
+	pcol.add_child(presume)
+	presume.pressed.connect(_toggle_pause)
+	var pabandon := Button.new()
+	pabandon.text = " abandon run  ->  shell"
+	pabandon.custom_minimum_size = Vector2(260, 34)
+	pabandon.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	pabandon.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	pabandon.focus_mode = Control.FOCUS_NONE
+	pcol.add_child(pabandon)
+	pabandon.pressed.connect(_abandon)
+
 	_end = Control.new()
 	_end.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_end.visible = false
@@ -225,6 +260,7 @@ var _fusion_buttons: Array = []
 var _recipes: PanelContainer
 var _recipes_body: Label
 var _vignette: ColorRect
+var _pause_panel: Control
 
 func _on_cards(cards: Array) -> void:
 	_cards_data = cards
@@ -650,29 +686,78 @@ func _mark(b: Button, on: bool) -> void:
 	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
 		b.add_theme_color_override(state, col)
 
+## Actions, not keycodes. An InputEventJoypadButton has no keycode, so a
+## keycode match meant a gamepad player could walk and pause but never navigate,
+## confirm or decline a level-up — unable to operate the build system the game
+## is named for.
 func _input(e: InputEvent) -> void:
-	if not (e is InputEventKey) or not e.pressed or e.is_echo():
+	if e.is_echo():
 		return
-	if e.keycode == KEY_R and _end.visible:
+	var handled := true
+	if e.is_action_pressed("restart") and _end.visible:
 		_restart()
+	elif e.is_action_pressed("cancel"):
+		_route_cancel()
+	elif e.is_action_pressed("pause") and _can_pause():
+		_toggle_pause()
+	elif _overlay.visible:
+		if e.is_action_pressed("move_up"):        _move_row(-1)
+		elif e.is_action_pressed("move_down"):    _move_row(1)
+		elif e.is_action_pressed("move_left"):    _move_card(-1)
+		elif e.is_action_pressed("move_right"):   _move_card(1)
+		elif e.is_action_pressed("confirm"):      _activate()
+		elif e.is_action_pressed("recipes"):      _toggle_recipes()
+		else:                                     handled = false
+	else:
+		handled = false
+	if not handled:
 		return
-	if not _overlay.visible:
-		return
-	match e.keycode:
-		KEY_W, KEY_UP:                       _move_row(-1)
-		KEY_S, KEY_DOWN:                     _move_row(1)
-		KEY_A, KEY_LEFT:                     _move_card(-1)
-		KEY_D, KEY_RIGHT:                    _move_card(1)
-		KEY_R:
-			_recipes.visible = not _recipes.visible
-			if _recipes.visible:
-				_recipes_body.text = "\n".join(recipe_lines())
-		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:  _activate()
-		KEY_ESCAPE:                          _decline_current()
-		_:                                   return
 	var vp := get_viewport()
 	if vp != null:
 		vp.set_input_as_handled()
+
+## Leaving mid-run banks nothing beyond what a death would, so it goes through
+## the same _die path rather than inventing a second one.
+func _abandon() -> void:
+	if run == null:
+		return
+	run.user_paused = false
+	_pause_panel.visible = false
+	run._die()
+
+func _toggle_recipes() -> void:
+	_recipes.visible = not _recipes.visible
+	if _recipes.visible:
+		_recipes_body.text = "\n".join(recipe_lines())
+
+func _can_pause() -> bool:
+	return run != null and run.alive and not run.won and not run.paused
+
+## Five arms, not two. "Overlay visible -> decline, otherwise -> pause" does not
+## cover the screens that exist: the recipe panel is a CHILD of _overlay, so
+## cancel with it open would decline the card underneath it; _end is a SIBLING,
+## so cancel on a finished run would pause it; and the pause panel itself would
+## have no way to close.
+func _route_cancel() -> void:
+	if _recipes != null and _recipes.visible:
+		_recipes.visible = false
+	elif _pause_panel != null and _pause_panel.visible:
+		_toggle_pause()
+	# `run.paused`, not `_overlay.visible`: the overlay is hidden by _process,
+	# one frame AFTER the decline clears the flag, so keying off visibility made
+	# a second cancel in the same frame decline again instead of pausing.
+	elif _overlay.visible and run != null and run.paused:
+		_decline_current()
+	elif _end.visible:
+		_restart()
+	elif _can_pause():
+		_toggle_pause()
+
+func _toggle_pause() -> void:
+	if run == null:
+		return
+	run.user_paused = not run.user_paused
+	_pause_panel.visible = run.user_paused
 
 func _process(_d: float) -> void:
 	if run != null and _vignette != null:
@@ -680,4 +765,8 @@ func _process(_d: float) -> void:
 	if run != null and not run.paused:
 		if _overlay.visible:
 			_overlay.visible = false
+		_refresh()
+	elif run != null and run.user_paused:
+		# The modal-offer guard above stops refreshing while `paused` is set,
+		# which would leave the pause panel drawn over a frozen HUD.
 		_refresh()

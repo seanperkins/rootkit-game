@@ -14,9 +14,12 @@ func _initialize() -> void:
 	run = load("res://scenes/run.tscn").instantiate()
 	root.add_child(run)
 
-func _key(code: int) -> void:
-	var e := InputEventKey.new()
-	e.keycode = code
+## Drives the overlay through ACTIONS, matching ui.gd. This tool is not in
+## SUITES, so nothing else would have caught the keycode->action migration
+## breaking it — it would have kept writing PNGs showing the wrong selection.
+func _act(action: String) -> void:
+	var e := InputEventAction.new()
+	e.action = action
 	e.pressed = true
 	ui._input(e)
 
@@ -32,15 +35,15 @@ func _process(_d: float) -> bool:
 		run._offer_cards()
 	if frames == 40:
 		root.get_texture().get_image().save_png("/tmp/cards_1_start.png")
-		_key(KEY_RIGHT)
-		_key(KEY_DOWN)
+		_act("move_right")
+		_act("move_down")
 	if frames == 60:
 		root.get_texture().get_image().save_png("/tmp/cards_2_moved.png")
 		# Down until decline, rather than a guessed count: the cycle is as long
 		# as the card has legal rows, and guessing wrapped straight past it.
 		var guard := 0
 		while not ("decline" in ui.highlighted().text) and guard < 12:
-			_key(KEY_DOWN)
+			_act("move_down")
 			guard += 1
 	if frames == 80:
 		root.get_texture().get_image().save_png("/tmp/cards_3_decline.png")

@@ -74,9 +74,13 @@ func _offer(r: Node2D) -> CanvasLayer:
 	r._offer_cards()
 	return _ui(r)
 
+## physical_keycode, not keycode: ui.gd matches ACTIONS now, and the InputMap
+## binds physical keys. A keycode-only event resolves to no action at all, so
+## the highlight never moved and the assertions below indexed a list that had
+## not changed.
 func _key(ui: CanvasLayer, code: int) -> void:
 	var e := InputEventKey.new()
-	e.keycode = code
+	e.physical_keycode = code
 	e.pressed = true
 	ui._input(e)
 
