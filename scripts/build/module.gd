@@ -24,7 +24,7 @@ const STAT_KEYS := [
 	&"ward_armor", &"ward_defense", &"ward_clock_speed", &"ward_duration",
 	&"travel", &"cadence_mult",
 	&"knockback", &"slow_amount", &"slow_duration", &"shield", &"orbit_count",
-	&"burst", &"split_count",
+	&"burst", &"split_count", &"blast_radius",
 ]
 
 @export var id: StringName

@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 14
+const EXPECTED_CHECKS := 16
 
 var failures := 0
 var checks := 0
@@ -13,6 +13,7 @@ func _init() -> void:
 	a_fused_row_fires_with_no_trigger()
 	targeting_comes_from_the_head_only()
 	split_count_folds_like_pierce()
+	blast_radius_ranks_at_quarter_rate()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -112,3 +113,21 @@ func split_count_folds_like_pierce() -> void:
 	plain.place(T[&"packet"]); plain.place(T[&"interval"])
 	_check("and the default is zero, meaning one emission",
 		Compiler.build(plain).split_count, 0)
+
+
+## blast_radius shares `radius`'s rank carve-out: a rank-5 blast covering the
+## screen is a module whose whole cost was showing up five times.
+func blast_radius_ranks_at_quarter_rate() -> void:
+	var v := Module.make(&"br_v", "br", Module.Slot.VECTOR,
+		{&"damage": 6.0, &"cooldown": 0.5, &"blast_radius": 100.0}, [],
+		Module.VectorKind.PACKET)
+	var ex := Exploit.new()
+	ex.vector = EquippedModule.new(v, 5)
+	ex.place(T[&"interval"])
+	_check("rank 5 doubles it, not quintuples it",
+		Compiler.build(ex).blast_radius, 200.0)
+
+	var r1 := Exploit.new()
+	r1.vector = EquippedModule.new(v, 1)
+	r1.place(T[&"interval"])
+	_check("rank 1 is the base", Compiler.build(r1).blast_radius, 100.0)

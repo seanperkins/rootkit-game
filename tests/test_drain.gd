@@ -129,7 +129,7 @@ func a_step_two_detonation_reaches_the_drain() -> void:
 		run.enemies.despawn(run.enemies.count - 1)
 
 	# The mine's owner must be an exploit whose RESOLVE HAS A RADIUS.
-	# _detonate_mine blasts with `r.radius`, and exploit 0 in a fresh run is
+	# _detonate blasts with `r.radius`, and exploit 0 in a fresh run is
 	# packet + interval — packet carries no radius at all, so a zero-radius query
 	# would hit nothing and this test would fail identically before and after.
 	run.loadout.place_at(ModuleTable.by_id()[&"landmine"], 1, 0)

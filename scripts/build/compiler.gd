@@ -45,6 +45,10 @@ const MULT_KEYS := {
 	&"haste":  [&"cooldown"],
 	&"reach":  [&"radius", &"travel"],
 }
+## blast_radius is deliberately absent from `reach`. It takes radius's RANK
+## carve-out because both are footprint growth on a vector, but the meta reach
+## line is a TARGETING range upgrade — letting it inflate a detonation as well
+## would pay one purchase twice on a blast build.
 
 ## The projectile_speed clamp guards an unbounded additive stat. The cooldown
 ## floors guard something else now: cadence is a product of positives, so it can
@@ -156,7 +160,7 @@ static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 			# stats. travel especially: at em.rank a rank-3 packet would fly
 			# 1920px and outrun every bound the design has.
 			scale = 1.0
-		elif is_vector and key == &"radius":
+		elif is_vector and (key == &"radius" or key == &"blast_radius"):
 			# A vector's radius grows, but far slower than its rank. At em.rank a
 			# rank-5 broadcast reached 600px — most of a 1280x720 screen, from a
 			# module whose whole cost was showing up five times. Freezing it

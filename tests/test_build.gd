@@ -316,10 +316,10 @@ func cadence_mult_defaults_to_one() -> void:
 	_check("cadence_mult defaults to 1.0", r.cadence_mult, 1.0)
 	_check("cadence_mult is a legal stat key", &"cadence_mult" in Module.STAT_KEYS, true)
 	# 24: the module set added knockback, slow_amount, slow_duration, shield and
-	# orbit_count, the trigger rework added burst, and fusion adds split_count. Pinned because STAT_KEYS
+	# orbit_count, the trigger rework added burst, and fusion adds split_count and blast_radius. Pinned because STAT_KEYS
 	# is a CLOSED set whose every member must be a field on ResolvedExploit — a
 	# key added without its field makes _fold write into nothing at all.
-	_check("STAT_KEYS is 24", Module.STAT_KEYS.size(), 24)
+	_check("STAT_KEYS is 25", Module.STAT_KEYS.size(), 25)
 	var zero_defaults := 0
 	for k in Module.STAT_KEYS:
 		if float(r.get(k)) == 0.0:
@@ -327,7 +327,7 @@ func cadence_mult_defaults_to_one() -> void:
 	# cadence_mult is still the only one that does not, and burst was
 	# deliberately kept a zero-default (0 reads as one emission) so it stays
 	# that way.
-	_check("every OTHER stat key defaults to zero", zero_defaults, 23)
+	_check("every OTHER stat key defaults to zero", zero_defaults, 24)
 
 ## Rank scales the two directions differently, because each is the rule the other
 ## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;

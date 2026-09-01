@@ -737,7 +737,11 @@ func _step2_integrate(dt: float) -> void:
 				continue
 			if grid.query_radius_into(projectiles.pos[i], MINE_TRIGGER, _buf,
 					Grid.M_ENEMY) > 0:
-				_detonate_mine(i)
+				# Owner into a local and guarded FIRST: the subscript is
+				# evaluated before the call, and `resolved` shrinks whenever a
+				# card recompiles, so an in-flight mine can outlive its index.
+				var mo := _proj_owner[i]
+				_detonate(i, resolved[mo].radius if mo >= 0 and mo < resolved.size() else 0.0)
 			continue
 		projectiles.pos[i] += projectiles.vel[i] * dt
 		# Population stores no scalar speed, so the step is the velocity's
@@ -746,11 +750,11 @@ func _step2_integrate(dt: float) -> void:
 		# dead in step 2, which is why _step6_detect needs its state guard.
 		_proj_dist_left[i] -= projectiles.vel[i].length() * dt
 		if _proj_dist_left[i] <= 0.0:
-			projectiles.state[i] = Population.DEAD
+			_expire_projectile(i)
 		# Terrain stops shots. This is what makes a wall cover rather than
 		# decoration, and it is the same O(1) lookup the player's movement uses.
 		elif terrain.is_solid(projectiles.pos[i]):
-			projectiles.state[i] = Population.DEAD
+			_expire_projectile(i)
 	for i in botnet.count:
 		_botnet_life[i] -= dt
 	_age_fx(dt)
@@ -1040,17 +1044,30 @@ func _hit(ei: int, r: ResolvedExploit, target: int,
 ## facing for every enemy on every hit whether or not one of these is alive.
 ## A mine going off is a broadcast at its own position, which is why MINE needed
 ## no new hit path — only a fuse.
-func _detonate_mine(i: int) -> void:
+## A detonation is a broadcast at the projectile's own position. Mines have
+## always been this; blast_radius lets a flying packet do it too, which is why
+## `radius` is a PARAMETER rather than read from the exploit — a MINE detonates
+## in r.radius and a packet in r.blast_radius.
+func _detonate(i: int, radius: float) -> void:
 	var ei := _proj_owner[i]
-	if ei < resolved.size():
+	if ei >= 0 and ei < resolved.size() and radius > 0.0:
 		var r: ResolvedExploit = resolved[ei]
-		_fx_ring.append([projectiles.pos[i], r.radius, FX_LIFE * 1.5,
+		_fx_ring.append([projectiles.pos[i], radius, FX_LIFE * 1.5,
 			Color(2.2, 1.2, 0.5)])
-		var n := grid.query_radius_into(projectiles.pos[i], r.radius, _buf,
+		var n := grid.query_radius_into(projectiles.pos[i], radius, _buf,
 			Grid.M_ENEMY)
 		for k in mini(n, _buf.size()):
 			_hit(ei, r, Grid.index_of(_buf[k]), projectiles.pos[i])
 	_mine_left[i] = 0.0
+	projectiles.state[i] = Population.DEAD
+
+## A projectile that STOPS — out of travel, into a wall, or out of pierce —
+## detonates if it carries a blast, and simply dies otherwise.
+func _expire_projectile(i: int) -> void:
+	var ei := _proj_owner[i]
+	if ei >= 0 and ei < resolved.size() and resolved[ei].blast_radius > 0.0:
+		_detonate(i, resolved[ei].blast_radius)
+		return
 	projectiles.state[i] = Population.DEAD
 
 func apply_knockback(i: int, impulse: Vector2) -> void:
@@ -1120,7 +1137,12 @@ func _step6_detect(dt: float) -> void:
 			_proj_last[i] = j
 			_proj_pierce[i] -= 1
 			if _proj_pierce[i] < 0:
-				projectiles.state[i] = Population.DEAD
+				# The same exit as running out of travel: a blast goes off where
+				# the shot stopped, whatever stopped it. Note the enemy that
+				# consumed the last pierce takes BOTH the contact hit above and
+				# the blast — _proj_last gates the contact sweep, not the blast —
+				# so a blast build's single-target damage is doubled on impact.
+				_expire_projectile(i)
 			break
 
 	# Botnet auras.
