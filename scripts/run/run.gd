@@ -290,7 +290,25 @@ var kills := 0
 var flips := 0
 var pending_levels := 0
 var paused := false
+## The PLAYER's pause, kept separate from `paused` on purpose. `paused` means
+## "a modal offer is open" and four sites clear it unconditionally
+## (choose_fusion, decline_fusion, choose_card, decline_card); sharing one bool
+## would let a card decline release a pause it never took, and ui.gd's
+## `not run.paused` force-hide would then strand a pending fusion.
+var user_paused := false
 var pickup_radius := 0.0
+## Presentation state. Pure, and deliberately not part of any simulation step.
+var feel := Feel.new()
+## Player preference, applied to the composed shake offset. Zero is a supported
+## value: screen shake is one of the two effects here that can make a game
+## unplayable rather than merely annoying. Loaded from prefs in _ready.
+var _shake_pref := 1.0
+## Whether floating damage numbers are drawn. Also a preference.
+var _numbers_pref := true
+## Longest unscaled delta the presentation half will honour. Unclamped, a first
+## frame, a scene load or an OS suspend would expire every live effect in one
+## step.
+const MAX_PRESENT_DT := 0.1
 var _steer_phase := 0
 ## Diagnostic only: how many times each exploit's vector was emitted this tick.
 var _trigger_fires := {}
@@ -516,7 +534,17 @@ func _rebuild_execute_table() -> void:
 # ---------------------------------------------------------------- the tick ---
 
 func _physics_process(dt: float) -> void:
-	if paused or not alive or won:
+	# PRESENTATION, above the guard, every frame, unconditionally.
+	#
+	# Everything below the guard stops the moment the run ends or an overlay
+	# opens. That is right for simulation and wrong for presentation: the death
+	# shake would render zero frames, the effects would freeze mid-decay, and —
+	# worst — the hitstop would never be released, because all three of its
+	# triggers set one of these three flags on the frame they fire. Engine
+	# .time_scale is process-global, so that leak survives back to the shell.
+	_present(dt)
+
+	if paused or user_paused or not alive or won:
 		return
 
 	# ONCE per tick, and before any step. It used to open _step5_fire, which
@@ -548,8 +576,53 @@ func _physics_process(dt: float) -> void:
 	_step9b_splits()
 
 	_update_renderers()
-	_camera.global_position = to_iso(player_pos)
+
+## The presentation half of the tick, run above the guard on a clock
+## Engine.time_scale cannot shrink.
+##
+## Time.get_ticks_msec rather than the engine delta: at a hitstop's 0.05 the
+## physics RATE is unchanged (measured, Godot 4.7) but each delta is 1/1200s, so
+## a dt-fed 60ms deadline would take 1.2s of wall clock to expire.
+func _present(dt: float) -> void:
+	# Two different clocks, for two different jobs.
+	#
+	# AGING runs on unscaled FRAME time — the engine delta divided back out by
+	# the scale that shrank it. Frame-coherent, so a headless suite stepping
+	# _physics_process thousands of times a second ages effects at the same rate
+	# a player would; a wall-clock delta there would be ~0 per tick and let
+	# _fx_line grow without bound for the whole campaign.
+	#
+	# The HITSTOP DEADLINE runs on the wall clock, because a real-time pause is
+	# the entire point of it and frame time is what the pause distorts.
+	#
+	# Both are immune to Engine.time_scale, which was the requirement.
+	var udt := minf(dt / maxf(Engine.time_scale, 0.0001), MAX_PRESENT_DT)
+
+	if feel.release_hitstop(Time.get_ticks_msec()):
+		Engine.time_scale = 1.0
+
+	feel.step(udt)
+	_age_fx(udt)
+
+	# The shake preference multiplies the composed offset, outside Feel and
+	# after the square — folded into trauma it would scale quadratically and a
+	# legal shake of 2.0 would give 4x.
+	_camera.global_position = to_iso(player_pos) \
+		+ feel.shake_offset() * _shake_pref
 	queue_redraw()
+
+## Belt and braces, and UNCONDITIONAL. The release above lives in a tick that
+## goes away with the scene, so anything still live at teardown has nothing left
+## to clear it — quitting during the 60ms hitstop a death just started would
+## otherwise leave the whole process at 0.05.
+func _exit_tree() -> void:
+	Engine.time_scale = 1.0
+
+## Set a hitstop and drop the engine scale to match. Rare events only: at the
+## enemy cap a per-kill hitstop is a permanent stutter, not emphasis.
+func _hitstop() -> void:
+	feel.start_hitstop(Time.get_ticks_msec())
+	Engine.time_scale = feel.time_scale()
 
 ## Open ground inside the CURRENT arena.
 ##
@@ -829,7 +902,9 @@ func _step2_integrate(dt: float) -> void:
 			_expire_projectile(i)
 	for i in botnet.count:
 		_botnet_life[i] -= dt
-	_age_fx(dt)
+	# _age_fx is NOT called here. It ages presentation, so it belongs above the
+	# tick guard with the rest of it — called from _present() on the unscaled
+	# clock. Aging it here froze every effect the instant the run ended.
 	for i in shards.count:
 		var d := player_pos - shards.pos[i]
 		# Magnet reach. Was 6x the pickup radius (288 px), which meant shards
@@ -1288,6 +1363,10 @@ func _damage_player(amount: float) -> void:
 func _die() -> void:
 	player_health = 0.0
 	alive = false
+	# Both of these only animate because _present() runs above the tick guard.
+	feel.add_trauma(0.7)
+	feel.emit("death")
+	_hitstop()
 	# Salvage is lost, but kills and flips still count toward unlocks —
 	# otherwise a losing run gives nothing and the meta has no reason to exist
 	# after a death, which is exactly what it is for.
@@ -1622,6 +1701,12 @@ func _on_death(i: int) -> void:
 		_rewarded[i] = 1
 		salvage += MINIBOSS_SALVAGE
 		pending_levels += 1
+		# Before _offer_cards, which sets `paused` — the release lives above the
+		# guard now, so this survives either way, but the ordering keeps the
+		# emphasis on the kill rather than on the card screen opening.
+		feel.add_trauma(0.45)
+		feel.emit("miniboss_kill")
+		_hitstop()
 		if not paused:
 			_offer_cards()
 	if enemies.type_index[i] == EnemyTable.ICE and not won:
@@ -1629,6 +1714,9 @@ func _on_death(i: int) -> void:
 		# a winning run was never persisted, so entering the boss at 399 kills
 		# won, displayed 400, and saved 399 — silently missing the beam unlock.
 		# The `not won` guard keeps a second dispatch from re-banking the run.
+		feel.add_trauma(0.8)
+		feel.emit("ice_kill")
+		_hitstop()
 		salvage += 500
 		if subnet < SpawnDirector.CAMPAIGN_SUBNETS:
 			# CLEARED, not advanced. The advance is the player's move now: walk
