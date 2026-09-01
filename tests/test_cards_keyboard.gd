@@ -88,17 +88,34 @@ func _offered(ui: CanvasLayer) -> Array:
 		out.append(entry[0])
 	return out
 
-## Which exploits hold anything, as a set of ids per row. Placing a module is
-## observable here and nowhere else.
-func _rows(r: Node2D) -> Array:
+## Every exploit's contents WITH RANKS, so a rank-up is as visible as a fresh
+## placement. Ranks matter: the offered cards routinely include a module the
+## starting loadout already carries, and "does the loadout hold this id" is
+## then true before a key is ever pressed.
+func _snapshot(r: Node2D) -> Array:
 	var out := []
 	for ex in r.loadout.exploits:
 		var ids := []
 		for em in ex.equipped():
-			ids.append(String(em.module.id))
+			ids.append("%s:%d" % [em.module.id, em.rank])
 		ids.sort()
 		out.append("+".join(ids))
 	return out
+
+## Which exploit rows differ between two snapshots.
+func _changed_rows(before: Array, after: Array) -> Array:
+	var out := []
+	for i in maxi(before.size(), after.size()):
+		var b: String = before[i] if i < before.size() else ""
+		var a: String = after[i] if i < after.size() else ""
+		if a != b:
+			out.append(i)
+	return out
+
+## The exploit a row button names: " >^  exploit_02   rank 1 -> 2" is row 1.
+func _exploit_of(label: String) -> int:
+	var k := label.find("exploit_")
+	return int(label.substr(k + 8, 2)) - 1
 
 func the_overlay_opens_on_a_legal_target() -> void:
 	var r := await _fresh_run()
@@ -126,27 +143,41 @@ func up_and_down_walk_the_exploit_rows() -> void:
 
 ## The decisive one for the two axes being different: right must change WHICH
 ## MODULE is on offer, not which row of the same module.
+##
+## Asserted as an exact delta rather than "the loadout now holds this id". An
+## offered card is often a rank-up of something already equipped, so the weaker
+## form was true before Enter and passed whether or not RIGHT did anything.
 func left_and_right_walk_the_modules() -> void:
 	var r := await _fresh_run()
 	var ui := _offer(r)
 	var mods := _offered(ui)
 	_check("three cards are on offer", mods.size(), 3)
 
+	var before := _snapshot(r)
 	_key(ui, KEY_RIGHT)
+	var e1 := _exploit_of(_label(ui))
 	_key(ui, KEY_ENTER)
-	_check("right then enter places the SECOND card's module",
-		r.loadout.holds(mods[1].id) >= 0, true)
+	var after := _snapshot(r)
+	_check("right then enter changes exactly the row it pointed at",
+		_changed_rows(before, after), [e1])
+	_check("and what landed there is the SECOND card's module",
+		String(mods[1].id) in after[e1], true)
 	r.free()
 
 	# And it wraps, rather than stopping at the third card.
 	var r2 := await _fresh_run()
 	var ui2 := _offer(r2)
 	var mods2 := _offered(ui2)
+	var before2 := _snapshot(r2)
 	for k in 3:
 		_key(ui2, KEY_RIGHT)
+	var e2 := _exploit_of(_label(ui2))
 	_key(ui2, KEY_ENTER)
-	_check("three rights wrap back to the first card",
-		r2.loadout.holds(mods2[0].id) >= 0, true)
+	var after2 := _snapshot(r2)
+	_check("three rights wrap back and change one row",
+		_changed_rows(before2, after2), [e2])
+	_check("and it took the FIRST card's module",
+		String(mods2[0].id) in after2[e2], true)
 	r2.free()
 	finished["left_and_right_walk_the_modules"] = true
 
@@ -201,7 +232,7 @@ func down_past_the_last_row_reaches_decline() -> void:
 	var r := await _fresh_run()
 	var ui := _offer(r)
 	var salvage_before: int = r.salvage
-	var before := _rows(r)
+	var before := _snapshot(r)
 
 	var guard := 0
 	while not ("decline" in _label(ui)) and guard < 12:
@@ -212,7 +243,7 @@ func down_past_the_last_row_reaches_decline() -> void:
 	_key(ui, KEY_ENTER)
 	_check("and entering it pays the decline salvage",
 		r.salvage, salvage_before + 25)
-	_check("without placing anything", _rows(r), before)
+	_check("without placing or ranking anything", _snapshot(r), before)
 	r.free()
 	finished["down_past_the_last_row_reaches_decline"] = true
 
@@ -220,10 +251,10 @@ func escape_declines_outright() -> void:
 	var r := await _fresh_run()
 	var ui := _offer(r)
 	var salvage_before: int = r.salvage
-	var before := _rows(r)
+	var before := _snapshot(r)
 	_key(ui, KEY_ESCAPE)
 	_check("escape pays the decline salvage", r.salvage, salvage_before + 25)
-	_check("places nothing", _rows(r), before)
+	_check("places or ranks nothing", _snapshot(r), before)
 	_check("and lets the run resume", r.paused, false)
 	r.free()
 	finished["escape_declines_outright"] = true
