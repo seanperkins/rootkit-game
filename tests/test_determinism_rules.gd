@@ -14,7 +14,7 @@ var finished := {}
 const DT := 1.0 / 60.0
 
 const CASES := ["tick_ignores_dt_below_guard", "hitstop_costs_fixed_ticks",
-	"no_clock_in_tick_graph"]
+	"no_clock_in_tick_graph", "tick_rngs_derive_from_descriptor"]
 
 func _initialize() -> void:
 	print("ROOTKIT — determinism rules\n")
@@ -22,6 +22,7 @@ func _initialize() -> void:
 	await tick_ignores_dt_below_guard()
 	await hitstop_costs_fixed_ticks()
 	no_clock_in_tick_graph()
+	await tick_rngs_derive_from_descriptor()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -120,6 +121,57 @@ func no_clock_in_tick_graph() -> void:
 		_check("no Engine.time_scale in %s" % name,
 			body.contains("Engine.time_scale"), false)
 	finished["no_clock_in_tick_graph"] = true
+
+## A run configured with a chosen session seed, so the derivation of every
+## stream from that one seed can be inspected.
+func _run_with_seed(seed_value: int) -> Node2D:
+	var r: Node2D = load("res://scenes/run.tscn").instantiate()
+	var profile := {"slot": 0, "name": "",
+		"counters": SaveGame.session_counters()}
+	var desc := NetworkSession.validate_descriptor(
+		NetworkSession.solo_descriptor(profile, seed_value))
+	r.configure_session(NetworkSession.create(desc, 0,
+		NetworkSession.Role.SOLO))
+	root.add_child(r)
+	await process_frame
+	return r
+
+## Every RNG the tick can draw from is seeded as a pure function of the
+## descriptor seed and nothing else — no randomize(), no clock. Two peers on the
+## same seed seed every stream identically; a different seed reseeds all of them
+## and regenerates the terrain. Per-slot card streams are distinct.
+func tick_rngs_derive_from_descriptor() -> void:
+	var base := 111
+	var a: Node2D = await _run_with_seed(base)
+	var b: Node2D = await _run_with_seed(base)
+	var c: Node2D = await _run_with_seed(222)
+
+	_check("the sim rng seed derives from the descriptor", a._rng.seed,
+		base + a._SEED_SIM)
+	_check("the block rng seed derives", a._block_rng.seed,
+		base + a._SEED_BLOCK)
+	_check("the director rng seed derives", a.director.rng.seed,
+		base + a._SEED_DIRECTOR)
+	for s in SessionRules.MAX_PLAYERS:
+		_check("card stream %d derives from the descriptor" % s,
+			a._card_rng[s].seed, base + s * a._SEED_CARD_STEP)
+	_check_true("per-slot card streams are distinct",
+		a._card_rng[0].seed != a._card_rng[1].seed)
+
+	_check("two peers on one seed seed the sim rng identically",
+		a._rng.seed, b._rng.seed)
+	_check_true("and generate identical terrain",
+		a.terrain.solid == b.terrain.solid)
+	_check_true("a different seed reseeds the sim rng",
+		a._rng.seed != c._rng.seed)
+	_check_true("and regenerates the terrain",
+		a.terrain.solid != c.terrain.solid)
+
+	a.free()
+	b.free()
+	c.free()
+	await process_frame
+	finished["tick_rngs_derive_from_descriptor"] = true
 
 ## The source text of a top-level GDScript function, from its `func NAME(` line
 ## up to the next line that begins a new top-level `func ` at column zero.

@@ -5,6 +5,15 @@ class_name SessionRules extends RefCounted
 ## Every peer compiles the same values, so a number here is part of the wire
 ## contract as much as it is a tuning knob — change one and every peer must.
 
+## Wire-protocol version. Two peers with different values cannot share a
+## simulation, so the handshake refuses a mismatch and the descriptor carries it.
+const PROTOCOL := 1
+
+## Longest a player display name may be, in characters. A roster row past this is
+## rejected by descriptor validation rather than truncated — a hostile peer does
+## not get to smuggle length past the check by padding.
+const NAME_MAX := 24
+
 ## The single simulation step. The tick is 60 Hz and nothing below the world
 ## guard reads a wall clock, so every simulation step ages by exactly this,
 ## regardless of the frame delta the engine hands `_physics_process`.

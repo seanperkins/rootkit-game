@@ -15,6 +15,7 @@ func _initialize() -> void:
 	buying()
 	buffs_split_into_sheet_and_mults()
 	unlocks()
+	derivation_routes_through_counters()
 	clamping()
 	bak_recovery()
 	print("")
@@ -97,6 +98,32 @@ func unlocks() -> void:
 	SaveGame.load_state()["kills"] = 212
 	_check("212 kills unlocks the 150-kill module without banking",
 		SaveGame.is_unlocked(&"on_damage_taken"), true)
+
+## The no-argument readers are just the local case of the counter functions, and
+## deriving from a FOREIGN player's counters — what a co-op peer does — must not
+## touch this process's own cache.
+func derivation_routes_through_counters() -> void:
+	SaveGame.use_fresh_state()
+	SaveGame.load_state()["buffs"]["cpu_cycles"] = 3
+	SaveGame.load_state()["buffs"]["memory"] = 2
+	SaveGame.load_state()["kills"] = 300
+	var mine := SaveGame.session_counters()
+	_check("player_sheet equals its counter form",
+		SaveGame.player_sheet() == SaveGame.player_sheet_from(mine), true)
+	_check("multipliers equal their counter form",
+		SaveGame.multipliers() == SaveGame.multipliers_from(mine), true)
+	_check("unlocks equal their counter form",
+		_ids(SaveGame.unlocked_modules())
+			== _ids(SaveGame.unlocked_modules_from(mine)), true)
+
+	# Deriving another player's build leaves our own counters untouched.
+	var before := SaveGame.session_counters()
+	var foreign := {"buffs": {"firewall": 9}, "kills": 999, "flips": 999}
+	SaveGame.player_sheet_from(foreign)
+	SaveGame.multipliers_from(foreign)
+	SaveGame.unlocked_modules_from(foreign)
+	_check("deriving a foreign build does not mutate our counters",
+		SaveGame.session_counters() == before, true)
 
 func _ids(mods: Array) -> Array:
 	var out := []

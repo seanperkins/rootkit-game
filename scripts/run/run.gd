@@ -482,7 +482,34 @@ var input_override = null
 const LOCAL_SLOT := 0
 var inputs := PackedVector2Array([Vector2.ZERO])
 var _rng := RandomNumberGenerator.new()
-var _card_rng := RandomNumberGenerator.new()
+## One card/offer stream per POSSIBLE player slot, seeded independently from the
+## descriptor. A player's card shuffles and block-payout rolls draw from their
+## own slot's stream, so one player opening a card screen cannot shift the
+## sequence another player sees. The shared simulation randomness — fork-bomb
+## child offsets, miniboss spawn angles, shard scatter — lives on `_rng`.
+var _card_rng: Array = []
+
+## The immutable session this run derives itself from, and this peer's slot in
+## it. Set by configure_session before _ready, or defaulted to a one-slot solo
+## session when absent. Every RNG seed and every player's starting build is a
+## function of descriptor.seed and the roster counters, nothing else.
+var _session: NetworkSession = null
+var local_slot := 0
+
+## Stable per-stream salts added to descriptor.seed. Chosen so the shared and
+## slot-zero streams reproduce the historical fixed seeds exactly — the solo
+## campaign is bit-for-bit what it was — while each further card slot gets a
+## well-separated stream. No stream calls randomize().
+const _SEED_SIM := 0
+const _SEED_BLOCK := 1
+const _SEED_DIRECTOR := -1
+const _SEED_TERRAIN := 0
+const _SEED_CARD_STEP := 97
+
+## The base seed a solo run derives every stream from. Chosen so the per-stream
+## salts above reproduce the historical fixed seeds, keeping the offline campaign
+## bit-for-bit unchanged. A network run gets its seed from the host instead.
+const DEFAULT_SEED := 20260830
 
 var _mm_enemy: MultiMeshInstance2D
 var _mm_proj: MultiMeshInstance2D
@@ -490,10 +517,36 @@ var _mm_shard: MultiMeshInstance2D
 var _mm_botnet: MultiMeshInstance2D
 var _camera: Camera2D
 
+## Bind the session this run derives itself from. Must be called before the node
+## enters the tree, i.e. before _ready. Tests and the lobby use it; absent it,
+## _ready builds a one-slot solo session so offline play needs no setup.
+func configure_session(session: NetworkSession) -> void:
+	_session = session
+
+## A one-slot solo session carrying this profile's own counters, the default
+## seed, delay zero, and no choice timeout.
+func _default_solo_session() -> NetworkSession:
+	var profile := {
+		"slot": 0,
+		"name": "",
+		"counters": SaveGame.session_counters(),
+	}
+	var desc := NetworkSession.validate_descriptor(
+		NetworkSession.solo_descriptor(profile, DEFAULT_SEED))
+	return NetworkSession.create(desc, 0, NetworkSession.Role.SOLO)
+
 func _ready() -> void:
-	_rng.seed = 20260830
-	_card_rng.seed = 20260830
-	_block_rng.seed = 20260831
+	if _session == null:
+		configure_session(_default_solo_session())
+	local_slot = _session.local_slot
+	var base: int = int(_session.descriptor.get("seed", 0))
+	_rng.seed = base + _SEED_SIM
+	_block_rng.seed = base + _SEED_BLOCK
+	_card_rng.resize(SessionRules.MAX_PLAYERS)
+	for s in SessionRules.MAX_PLAYERS:
+		var cr := RandomNumberGenerator.new()
+		cr.seed = base + s * _SEED_CARD_STEP
+		_card_rng[s] = cr
 	enemy_types = EnemyTable.all()
 	thresholds = PackedFloat32Array()
 	thresholds.resize(enemy_types.size())
@@ -513,12 +566,13 @@ func _ready() -> void:
 	hostiles = Population.new(MAX_HOSTILES)
 	_hostile_life = PackedFloat32Array(); _hostile_life.resize(MAX_HOSTILES)
 	queue = HitQueue.new(EVENT_BUDGET, MAX_ENEMIES)
-	director = SpawnDirector.new()
+	director = SpawnDirector.new(base + _SEED_DIRECTOR)
 	# The WHOLE campaign, plotted before the first frame: three arenas and the
 	# corridors between them on one grid. Generated from the player's start,
 	# because the spawn-safe margin is measured from wherever they actually are.
-	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, _rng.seed)
-	terrain.generate(_rng.seed, player_pos)
+	var tseed: int = base + _SEED_TERRAIN
+	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, tseed)
+	terrain.generate(tseed, player_pos)
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_counts = PackedInt32Array(); _counts.resize(4)
@@ -968,9 +1022,11 @@ func _step9b_splits() -> void:
 		return
 	for entry in _pending_splits:
 		for k in 2:
+			# Shared simulation randomness, so it draws from _rng, not any one
+			# player's card stream — a split is the world's event, not a choice.
 			var at: Vector2 = entry[0] + Vector2(
-				_card_rng.randf_range(-34.0, 34.0),
-				_card_rng.randf_range(-34.0, 34.0))
+				_rng.randf_range(-34.0, 34.0),
+				_rng.randf_range(-34.0, 34.0))
 			var hp: float = entry[2]
 			var idx := enemies.spawn(_spawn_at(at), Vector2.ZERO, hp,
 				20.0, _fork_bomb_index)
@@ -990,7 +1046,8 @@ func _leave_afterimage(at: Vector2) -> void:
 
 func _spawn_miniboss(type_index: int) -> void:
 	var t = enemy_types[type_index]
-	var a := _card_rng.randf() * TAU
+	# Shared simulation randomness: the spawn angle is the world's, not a player's.
+	var a := _rng.randf() * TAU
 	var at := _spawn_at(player_pos + Vector2(cos(a), sin(a)) * 620.0)
 	var hp: float = t.integrity * _hp_mult()
 	var idx := enemies.spawn(at, Vector2.ZERO, hp, 26.0, type_index)
@@ -2353,12 +2410,12 @@ func _block_payout() -> void:
 		return
 
 	var seed_m := _targeted_module()
-	if seed_m != null and _card_rng.randf() < TARGETED_ODDS:
+	if seed_m != null and _card_rng[local_slot].randf() < TARGETED_ODDS:
 		pending_levels += 1
 		_offer_cards(CardMode.SEEDED, seed_m)
 		return
 
-	var roll := _card_rng.randf()
+	var roll: float = _card_rng[local_slot].randf()
 	if roll < 0.40:
 		salvage += 150 * subnet          # subnet starts at 1
 		emit_signal("stats_changed")
@@ -2555,9 +2612,10 @@ func _offer_cards(mode: int = CardMode.NORMAL, seed_module: Module = null) -> vo
 				ranked.append([entry[0], only])
 		if not ranked.is_empty():
 			pool = ranked
-	# Seeded so a run reproduces exactly from a bug report.
+	# Seeded so a run reproduces exactly from a bug report, and from the OWNING
+	# slot's stream so one player's card screen cannot perturb another's draws.
 	for i in range(pool.size() - 1, 0, -1):
-		var j := _card_rng.randi_range(0, i)
+		var j: int = _card_rng[local_slot].randi_range(0, i)
 		var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp
 	if mode == CardMode.SEEDED and seed_module != null:
 		# Front of the deck, not an extra card: the screen still shows three.

@@ -267,28 +267,86 @@ static func milestone_text(id: StringName, d: Dictionary) -> String:
 	return "%d %s  (%d/%d)" % [int(row[1]), row[0], int(d[row[0]]), int(row[1])]
 
 static func unlocked_modules() -> Array:
+	return unlocked_modules_from(session_counters())
+
+static func player_sheet() -> Dictionary:
+	return player_sheet_from(session_counters())
+
+static func multipliers() -> Dictionary:
+	return multipliers_from(session_counters())
+
+# ----------------------------------------------- explicit session counters ---
+#
+# Every derived starting fact — the additive player sheet, the multiplicative
+# exploit scalars, and the unlocked module set — is a pure function of three
+# counters: the eight buff ranks, lifetime kills, and lifetime flips. A co-op
+# peer needs those functions to run on ANOTHER player's counters, arriving in a
+# packet, without touching its own SaveGame._cache and without trusting the
+# stored `unlocked` list. So the derivation is factored into `*_from` functions
+# over an explicit counter dictionary, and the no-argument readers above are
+# just the local case: `_from(session_counters())`.
+
+## This process's own counters, copied out of the live cache. The buffs dict is
+## duplicated so a caller cannot mutate the cache through the returned value.
+static func session_counters() -> Dictionary:
+	var d := load_state()
+	return {
+		"buffs": (d["buffs"] as Dictionary).duplicate(),
+		"kills": int(d["kills"]),
+		"flips": int(d["flips"]),
+	}
+
+## A received counter dictionary is HOSTILE. Keep only the eight known buff
+## names, each clamped like a stored buff; coerce kills/flips through the same
+## total numeric read as the save file; drop every unknown field. The result is
+## byte-stable given equal inputs, which is what lets two peers derive an
+## identical descriptor.
+static func sanitise_session_counters(raw) -> Dictionary:
+	var out := {"buffs": {}, "kills": 0, "flips": 0}
+	for k in _default()["buffs"]:
+		out["buffs"][k] = 0
+	if typeof(raw) == TYPE_DICTIONARY:
+		var b = raw.get("buffs", {})
+		if typeof(b) == TYPE_DICTIONARY:
+			for k in out["buffs"]:
+				out["buffs"][k] = clampi(int(_num(b.get(k, 0), 0.0)), 0, BUFF_MAX)
+		out["kills"] = maxi(0, int(_num(raw.get("kills", 0), 0.0)))
+		out["flips"] = maxi(0, int(_num(raw.get("flips", 0), 0.0)))
+	return out
+
+static func player_sheet_from(counters: Dictionary) -> Dictionary:
+	return _fold_buffs(SHEET_EFFECT, counters.get("buffs", {}))
+
+static func multipliers_from(counters: Dictionary) -> Dictionary:
+	return _fold_buffs(MULT_EFFECT, counters.get("buffs", {}))
+
+## Unlocks are DERIVED from the milestone counters, never read from a stored
+## list — the same rule the local path keeps, now over supplied counters so a
+## remote player's unlock set is computed identically on every peer.
+static func unlocked_modules_from(counters: Dictionary) -> Array:
 	var out := ModuleTable.starting_unlocked()
 	var table := ModuleTable.by_id()
 	for id in ModuleTable.LOCKED:
-		if is_unlocked(id) and table.has(id) and not (table[id] in out):
+		if _milestone_met_counters(id, counters) and table.has(id) \
+				and not (table[id] in out):
 			out.append(table[id])
 	return out
 
-static func player_sheet() -> Dictionary:
-	return _fold(SHEET_EFFECT)
+static func _milestone_met_counters(id: StringName, counters: Dictionary) -> bool:
+	if not MILESTONES.has(id):
+		return false
+	var row: Array = MILESTONES[id]
+	return int(counters.get(row[0], 0)) >= int(row[1])
 
-static func multipliers() -> Dictionary:
-	return _fold(MULT_EFFECT)
-
-## .get, never a direct index. d["buffs"] holds all eight names while each table
-## holds only its own subset, so a direct index throws on the first name the
-## table does not know and aborts the whole fold — returning {} and discarding
-## everything accumulated before it. That is the shipped bug this file carried.
-static func _fold(table: Dictionary) -> Dictionary:
-	var d := load_state()
+## .get, never a direct index. The supplied buffs dict holds only its own names
+## while each effect table holds only its subset, so a direct index throws on the
+## first name the table does not know and aborts the whole fold — returning {}
+## and discarding everything accumulated before it. That is the shipped bug this
+## file carried.
+static func _fold_buffs(table: Dictionary, buffs: Dictionary) -> Dictionary:
 	var out := {}
-	for name in d["buffs"]:
-		var n: int = d["buffs"][name]
+	for name in buffs:
+		var n: int = int(buffs[name])
 		if n <= 0:
 			continue
 		var eff: Dictionary = table.get(StringName(name), {})
