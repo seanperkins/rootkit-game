@@ -97,19 +97,34 @@ var _cap_ticks := 0.0
 ##   new fixture, post-pass tree: timeout at tick 24000 (400 s), mean live
 ##     enemies 286.0, mean hits/tick 2.70, kills/tick 0.240, at cap 11%.
 ## The outcome moved UP (died -> the cap) and the enemy mean up, so those
-## are pinned at the post-pass figures. The hit and kill means are pinned
+## were pinned at the post-pass figures. The hit and kill means were pinned
 ## BELOW the pre-pass figures, with the reason the rule demands: the
 ## pre-pass means cover a run truncated at tick 10908, a different span, and
 ## the pass moved packet, beam and spike onto facing, so the three pinned
 ## slots' forward rows fire blind by design (a rotating record sweeps them)
-## and land fewer hits per tick than the old auto-aimed packets did. That
-## is the coverage this fixture now has; it is pinned so it cannot fall
+## and land fewer hits per tick than the old auto-aimed packets did.
+##
+## Re-pinned 2026-09-02 with the corruption-zone flip budget (6 flips, 40 s
+## recharge). With the budget the old kite died at tick 15552 in subnet 1:
+## it had been farming zone flips for botnet allies. The kite gained
+## threat-aware fleeing (_threats: telegraphed dashes, surfacing ambushers,
+## near shots) and a gap finder when surrounded (_gap), and the CLEARED walk
+## now goes to the gate mouth first with the party riding on slot 0 through
+## the corridor (it used to idle 5400 ticks against the arena edge). The
+## tuned fixture on the tree BEFORE the budget: died at tick 17218, mean
+## live enemies 404.7, mean hits/tick 1.82, kills/tick 0.306 — a run
+## truncated in its densest phase. On this tree: timeout at 24000, mean live
+## enemies 333.1, mean hits/tick 1.24, kills/tick 0.276, at cap 11%. The
+## load floors sit BELOW that baseline with this reason: the baseline's
+## means cover only its first 17218 ticks, and the budget removed the botnet
+## allies that landed a large share of the hits and kills — a balance change
+## the game wanted, not a lighter tick. Pinned here so it cannot fall
 ## further unnoticed.
 const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout"
 const BASELINE_END_TICK := 24000
-const BASELINE_MEAN_ENEMIES := 286.0
-const BASELINE_MEAN_HITS := 2.70
-const BASELINE_KILLS_PER_TICK := 0.240
+const BASELINE_MEAN_ENEMIES := 333.1
+const BASELINE_MEAN_HITS := 1.24
+const BASELINE_KILLS_PER_TICK := 0.276
 
 ## The autopilot's hysteresis band and nudge cadence — see _kite. Measured
 ## on the pre-pass tree: a 120/190 band died at tick 10182 and 150/190 at
@@ -333,8 +348,12 @@ func _real_run() -> PackedFloat64Array:
 		# slots alive: a teammate that dies shrinks the window and lightens the
 		# tick, and a gate that gets easier as the fixture takes damage is not
 		# measuring the worst case it claims to.
+		# Through a gate the party RIDES on slot 0: the advance needs every
+		# LIVE slot past the corridor's end plane, and a slot pinned 2000
+		# units off never gets there. The offsets return with the next fight.
+		var walking: bool = g.phase == g.Phase.CLEARED and g.terrain.gate() != null and g.terrain.gate().open
 		for s in range(1, SessionRules.MAX_PLAYERS):
-			g.player_pos[s] = g.player_pos[0] + PARTY_OFFSETS[s]
+			g.player_pos[s] = g.player_pos[0] + (Vector2.ZERO if walking else PARTY_OFFSETS[s])
 			g.player_health[s] = g._eff_integrity(s)
 			g.slot_state[s] = g.SlotState.LIVE
 			# Lockstep waits on every LIVE slot's record; the pinned slots send
@@ -414,7 +433,14 @@ func _kite(g: Node2D) -> Vector2:
 	if g.phase == g.Phase.CLEARED:
 		var gate = g.terrain.gate()
 		if gate != null and gate.open:
-			return _around_walls(g, (gate.end - g.player_pos[g.local_slot]).normalized())
+			# The mouth first, then the far end: a straight line to the end
+			# from anywhere but the mouth's row runs into the arena's edge and
+			# oscillates there (measured: 5400 idle ticks in subnet 1).
+			var here: Vector2 = g.player_pos[g.local_slot]
+			var target: Vector2 = gate.end
+			if (here - gate.pos).dot(gate.dir) < 0.0 and here.distance_to(gate.pos) > Terrain.GATE_RADIUS * 0.5:
+				target = gate.pos
+			return _around_walls(g, (target - here).normalized())
 	var me: Vector2 = g.player_pos[g.local_slot]
 	var nearest := -1
 	var nd := INF
@@ -448,8 +474,16 @@ func _kite(g: Node2D) -> Vector2:
 			if me.distance_to(g.enemies.pos[i]) < KITE_DASH_RANGE:
 				_kite_fleeing = true
 				break
+	# Telegraphed danger a distance test misses opens the flee state too, and
+	# steers it; surrounded (the flee sum cancels), the kite takes the widest
+	# gap instead of standing in a cancelled sum.
+	var threat := _threats(g, me)
+	if not _kite_fleeing and threat.length_squared() > 0.0:
+		_kite_fleeing = true
 	if _kite_fleeing:
-		var dir := flee.normalized() if k > 0 else Vector2.ZERO
+		var dir := (flee + threat).normalized() if (k > 0 or threat.length_squared() > 0.0) else Vector2.ZERO
+		if k >= 10 and flee.length() < 0.3 * float(k) * KITE_FLEE_OUT * 0.5:
+			dir = _gap(g, me)
 		# The CURRENT arena's centre, not the world origin: the campaign is
 		# three arenas laid out end to end, and only the first is centred on
 		# zero.
@@ -570,3 +604,48 @@ func _report(samples: PackedFloat64Array, budget: float, scale: float) -> void:
 		print("  measure a tail. Re-run on a quiet machine.")
 	else:
 		print("    (informational; the gate is the real run below)")
+
+## Extra flee pressure from telegraphed danger a distance test misses: a
+## charger winding up or dashing, an ambusher surfacing, an enemy shot near.
+## Measured: without this the kite died at tick 15552 in subnet 1 to rootkits
+## surfacing on it and sentinel dashes; with it the run reaches the cap.
+func _threats(g: Node2D, me: Vector2) -> Vector2:
+	var v := Vector2.ZERO
+	for i in g.enemies.count:
+		var bh: int = g.enemy_types[g.enemies.type_index[i]].behaviour
+		var d: Vector2 = me - g.enemies.pos[i]
+		var dl := d.length()
+		if dl < 0.01:
+			continue
+		if bh == EnemyTable.Behaviour.CHARGER and (g._ai_phase[i] == g.CH_WINDUP or g._ai_phase[i] == g.CH_DASH) and dl < 320.0:
+			v += d / dl * 400.0
+		elif bh == EnemyTable.Behaviour.AMBUSHER and g._ai_phase[i] == g.AM_SURFACING and dl < 220.0:
+			v += d / dl * 400.0
+	for i in g.hostiles.count:
+		var d: Vector2 = me - g.hostiles.pos[i]
+		var dl := d.length()
+		if dl < 140.0 and dl > 0.01:
+			v += d / dl * 150.0
+	return v
+
+## The least crowded of sixteen headings, weighted by how close each enemy
+## within 300 sits along it; rock two cells out rules a heading out.
+func _gap(g: Node2D, me: Vector2) -> Vector2:
+	var best := Vector2.ZERO
+	var best_score := INF
+	for h in 16:
+		var a := TAU * float(h) / 16.0
+		var dir := Vector2(cos(a), sin(a))
+		var score := 0.0
+		for i in g.enemies.count:
+			var d: Vector2 = g.enemies.pos[i] - me
+			var dl := d.length()
+			if dl > 300.0 or dl < 0.01:
+				continue
+			score += maxf(0.0, d.dot(dir) / dl) * (300.0 - dl)
+		if g.terrain.is_solid(me + dir * Terrain.CELL * 2.0):
+			score += 10000.0
+		if score < best_score:
+			best_score = score
+			best = dir
+	return best
