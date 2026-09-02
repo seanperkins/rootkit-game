@@ -5089,26 +5089,30 @@ func _draw() -> void:
 				HORIZONTAL_ALIGNMENT_CENTER, -1, 13,
 				Color(nc.r, nc.g, nc.b, nf_a))
 
-	# The players, drawn screen-aligned at their projected positions: a glyph
-	# that tilts with the ground plane reads as debris, not as the thing you
-	# steer.
-	#
-	# A disc at PLAYER_RADIUS, so what you see is exactly what collides. The
-	# facing tick on the rim shows where forward weapons fire — facing follows
-	# the last non-zero movement.
-	# Every LIVE slot is drawn, a teammate in its own hue under a name tag; an
-	# ABSENT slot sits dimmed where it parked; a DEAD one is gone.
+	# The players, drawn as ARROWS along their facing, projected point by point
+	# so the arrow leans with the ground it stands on; the facing is where the
+	# forward weapons fire, so the glyph says so. Every LIVE slot is drawn, a
+	# teammate in its own hue under a name tag; an ABSENT slot sits dimmed
+	# where it parked at the facing it parked with; a DEAD one is gone.
 	var pf := ThemeDB.fallback_font
 	for e in player_draw_list():
 		var ps: int = e[0]
 		var o := to_iso(player_render_pos[ps])
 		var c: Color = e[1]
 		var a: float = e[2]
-		draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22, a))
-		draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, Color(c.r, c.g, c.b, a), 2.0)
-		var tip := to_iso(player_render_pos[ps] + player_facing[ps] * (PLAYER_RADIUS + 9.0))
-		var rim := to_iso(player_render_pos[ps] + player_facing[ps] * PLAYER_RADIUS)
-		draw_line(rim, tip, Color(c.r, c.g, c.b, a), 2.0)
+		var f: Vector2 = player_facing[ps]
+		var n := Vector2(-f.y, f.x)
+		var base: Vector2 = player_render_pos[ps] - f * PLAYER_RADIUS * 0.9
+		# A notched arrow: tip, wing, notch behind the centre, wing.
+		var pts := PackedVector2Array([
+			to_iso(player_render_pos[ps] + f * PLAYER_RADIUS * 1.3),
+			to_iso(base + n * PLAYER_RADIUS * 0.9),
+			to_iso(player_render_pos[ps] - f * PLAYER_RADIUS * 0.4),
+			to_iso(base - n * PLAYER_RADIUS * 0.9)])
+		draw_colored_polygon(pts, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22, a))
+		var outline := pts.duplicate()
+		outline.append(pts[0])
+		draw_polyline(outline, Color(c.r, c.g, c.b, a), 2.0)
 		var tag: String = e[3]
 		if tag != "":
 			draw_string(pf, o + Vector2(0.0, -PLAYER_RADIUS - 6.0), tag,
