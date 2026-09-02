@@ -306,6 +306,9 @@ func _refresh() -> void:
 	# state, and simulation state never carries it.
 	if run._session != null and run._session.recovering():
 		tally += "\nresynchronising…"
+	if run._session != null and run._session.reconnecting:
+		tally += "\nreconnecting… (attempt %d of %d)" % [run._reconnect_attempts,
+			run.RECONNECT_ATTEMPTS]
 	_hud.get_node("Tally").text = tally
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())

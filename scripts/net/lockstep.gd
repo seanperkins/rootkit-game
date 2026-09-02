@@ -201,6 +201,34 @@ func prime(first: int, last: int) -> void:
 			_targets[idx] = -1
 			_offers[idx] = -1
 
+## Whether slot's record for tick T is in the ring. Parking reads this: the
+## host parks a dropped slot at its first tick with no record.
+func has_record(slot: int, tick: int) -> bool:
+	var cell := tick & _MASK
+	if _tick_tag[cell] != tick:
+		return false
+	return (_have[cell] & (1 << slot)) != 0
+
+## Prime ONE slot's cells for [first, last] with neutral records, touching no
+## other slot's. A returning slot is required from tick + 1 and cannot have
+## sent anything yet: without this, ready(tick + 1) would stall forever.
+func prime_slot(slot: int, first: int, last: int) -> void:
+	if not _valid_slot(slot):
+		return
+	for t in range(first, last + 1):
+		if t < executed or t >= executed + RING:
+			continue
+		var cell := t & _MASK
+		if _tick_tag[cell] != t:
+			_tick_tag[cell] = t
+			_have[cell] = 0
+		var idx := cell * SessionRules.MAX_PLAYERS + slot
+		_moves[idx] = Vector2.ZERO
+		_cards[idx] = -1
+		_targets[idx] = -1
+		_offers[idx] = -1
+		_have[cell] |= 1 << slot
+
 # ------------------------------------------------------------- checksums ---
 
 ## Record a peer's state hash for a tick. Immutable per slot: a second report for

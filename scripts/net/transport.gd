@@ -56,6 +56,13 @@ var relays_received := 0
 var boundary := -1
 var _held: Array = []
 
+## Where a client joined, so a dropped link can be re-made to the same host.
+var _address := ""
+var _port := 0
+## Peers this transport cut itself: an unbound peer that sent input, or a
+## parked one. Diagnostic; tests read it.
+var dropped_peers: Array = []
+
 func host(port: int, p_session: NetworkSession) -> Error:
 	session = p_session
 	is_host = true
@@ -72,6 +79,8 @@ func join(address: String, port: int, p_session: NetworkSession) -> Error:
 		return ERR_INVALID_PARAMETER
 	session = p_session
 	is_host = false
+	_address = address
+	_port = port
 	peer = ENetMultiplayerPeer.new()
 	var err := peer.create_client(address, port, CHANNELS)
 	if err != OK:
@@ -95,10 +104,30 @@ func _on_peer_connected(id: int) -> void:
 	peer_joined.emit(id)
 
 func _on_peer_disconnected(id: int) -> void:
+	# Listeners first, while the binding still says which slot this was.
+	peer_left.emit(id)
 	if slot_of_peer.has(id):
 		peer_of_slot.erase(int(slot_of_peer[id]))
 		slot_of_peer.erase(id)
-	peer_left.emit(id)
+
+## A client's link is gone: make it again to the same host. The run then
+## re-introduces itself with HELLO(session_id, slot) once the peer connects.
+func rejoin() -> Error:
+	if is_host or _address == "":
+		return ERR_UNCONFIGURED
+	close()
+	return join(_address, _port, session)
+
+## Cut one peer. Parking does this so a link that merely hiccupped cannot keep
+## driving a slot nobody applies; so does input from a peer that never said
+## HELLO.
+func drop_peer(id: int) -> void:
+	dropped_peers.append(id)
+	if peer != null:
+		peer.disconnect_peer(id)
+	if slot_of_peer.has(id):
+		peer_of_slot.erase(int(slot_of_peer[id]))
+		slot_of_peer.erase(id)
 
 func connected() -> bool:
 	return peer != null and peer.get_connection_status() \
@@ -219,7 +248,12 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 	var body: PackedByteArray = env["body"]
 	match kind:
 		Protocol.Message.INPUT:
-			if channel != CH_INPUT or not slot_of_peer.has(from):
+			if not slot_of_peer.has(from):
+				# Raw traffic from a peer that holds no slot — a parked link
+				# still sending, or a stranger. Not a malformed packet: a cut.
+				drop_peer(from)
+				return
+			if channel != CH_INPUT:
 				_refuse(from)
 				return
 			var rec := Protocol.decode_input(body)
@@ -273,7 +307,11 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 			if kind == Protocol.Message.HELLO and not session.accepts_hello(ctl):
 				_refuse(from)
 				return
+			# A reconnecting client's executed cursor is stale by however long
+			# it was away; the boundary the host names is measured against the
+			# host's cursor, not this one, so the window does not apply.
 			if (kind == Protocol.Message.RESYNC or kind == Protocol.Message.END_CHECK) \
+					and not session.reconnecting \
 					and not Protocol.valid_tick(kind, tick, ctx):
 				_refuse(from)
 				return

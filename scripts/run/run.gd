@@ -632,6 +632,251 @@ var _transport: Transport = null
 func attach_transport(transport: Transport) -> void:
 	_transport = transport
 	transport.snapshot_received.connect(_on_snapshot)
+	transport.peer_left.connect(_on_peer_left)
+	transport.peer_joined.connect(_on_peer_joined)
+
+# ------------------------------------------------------- parking, reconnect ---
+#
+# Roster changes are keyed by the TICK they apply at, never by arrival: the
+# host names the tick, every peer applies the change at that tick, so a
+# parked or returning slot is the same slot on every machine.
+
+## The health a slot parked with, or -1 while it is not parked. ABSENT
+## overwrites the sole slot_state, so this is what a return reads to decide
+## LIVE or DEAD. Simulation state: hashed and snapshotted.
+var _parked_health: PackedFloat32Array
+## Host: slots whose controller is gone, to park at the first missing tick.
+var _pending_park: Dictionary = {}
+## slot -> T: apply ABSENT before consuming T.
+var _pending_absent: Dictionary = {}
+## slot -> T: apply PRESENT after consuming T. On a returnee this is the
+## buffered PRESENT that arrived ahead of the snapshot: it cannot apply while
+## the world is held for the restore, and it survives the restore because
+## the manifest does not carry it.
+var _pending_present: Dictionary = {}
+## Host: reconnect HELLOs waiting for a free boundary, as [body, peer].
+var _pending_hello: Array = []
+var _reconnect_attempts := 0
+var _reconnect_frames := 0
+## Host: the last snapshot it serialised and the boundary it was for. The
+## wire carries it; the suites, which pump the wire by hand, read it here.
+var last_snapshot := PackedByteArray()
+var last_snapshot_tick := -1
+const RECONNECT_ATTEMPTS := 10
+const RECONNECT_RETRY_FRAMES := 180
+
+func _on_peer_left(id: int) -> void:
+	if _session.ended:
+		return
+	if _session.role == NetworkSession.Role.HOST:
+		if _transport != null and _transport.slot_of_peer.has(id):
+			request_park(int(_transport.slot_of_peer[id]))
+		if not _session.reconnect.is_empty() and int(_session.reconnect["peer"]) == id:
+			abort_reconnect()
+	elif _session.role == NetworkSession.Role.CLIENT:
+		_begin_reconnect()
+
+func _on_peer_joined(_id: int) -> void:
+	if _session.role != NetworkSession.Role.CLIENT or not _session.reconnecting \
+			or _transport == null:
+		return
+	_transport.bind_peer(Transport.HOST_PEER, 0)
+	var p := _session.profile(local_slot)
+	_transport.send_control(Protocol.Message.HELLO, 0, {
+		"protocol": SessionRules.PROTOCOL, "name": p.get("name", ""),
+		"counters": p.get("counters", {}),
+		"session_id": int(_session.descriptor.get("session_id", 0)),
+		"slot": local_slot})
+
+## Client: the host is gone, or silent past the timeout. Stop, and HELLO for
+## this original slot until it works or the attempts run out. There is no
+## host migration.
+func _begin_reconnect() -> void:
+	if _session.role != NetworkSession.Role.CLIENT or _session.ended:
+		return
+	_session.reconnecting = true
+	_reconnect_frames = 0
+	_reconnect_attempts += 1
+	if _reconnect_attempts > RECONNECT_ATTEMPTS:
+		_session.ended = true
+		emit_signal("run_ended", false, 0)
+		return
+	if _transport != null:
+		_transport.rejoin()
+
+## A rejoin that never connects raises no signal; retry on a frame count.
+## Above the guard and off the tick: reconnecting is transport, not simulation.
+func _reconnect_step() -> void:
+	if not _session.reconnecting or _transport == null:
+		return
+	if _transport.connected():
+		_reconnect_frames = 0
+		return
+	_reconnect_frames += 1
+	if _reconnect_frames >= RECONNECT_RETRY_FRAMES:
+		_begin_reconnect()
+
+## Host: this slot's controller is gone. It parks at the first tick the host
+## holds no record for — every record it did send is relayed and applied.
+func request_park(slot: int) -> void:
+	if slot_state[slot] != SlotState.ABSENT:
+		_pending_park[slot] = true
+
+func _host_park_step() -> void:
+	for slot in _pending_park.keys():
+		if _pending_present.has(slot):
+			continue                        # its return is announced: judge it after
+		if slot_state[slot] == SlotState.ABSENT:
+			_pending_park.erase(slot)
+			continue
+		if lockstep.has_record(slot, lockstep.executed):
+			continue
+		var t := lockstep.executed
+		_pending_park.erase(slot)
+		_pending_absent[slot] = t
+		if _transport != null:
+			_transport.send_control(Protocol.Message.ABSENT, t, {"slot": slot})
+			if _transport.peer_of_slot.has(slot):
+				_transport.drop_peer(int(_transport.peer_of_slot[slot]))
+
+## Every peer, before consuming T: the slot leaves. Its health is remembered,
+## its offers resolve, its progress banks once — the watermark on every peer,
+## the save only where the slot is local — and if it was the last LIVE slot
+## the run has a loss candidate.
+func _park(slot: int) -> void:
+	if slot_state[slot] == SlotState.ABSENT:
+		return
+	_parked_health[slot] = player_health[slot]
+	slot_state[slot] = SlotState.ABSENT
+	player_vel[slot] = Vector2.ZERO
+	inputs[slot] = Vector2.ZERO
+	_session.absent_ticks[slot] = lockstep.executed
+	_resolve_offer_on_slot_exit(slot)
+	_bank_slot(slot, false)
+	var was := alive
+	alive = _any_live()
+	if was and not alive:
+		_terminal(NetworkSession.Outcome.LOSS)
+
+## Every peer, after consuming T: the slot is back. Positive parked health
+## places it on open ground beside the LIVE slot nearest the arena centre, or
+## at the centre when nobody is LIVE, marks it LIVE and requires it from T + 1
+## — with neutral records primed through T + delay, because its own sampling
+## begins only after the restore. Zero parked health returns it DEAD: a
+## spectator, never required, and any ending check stays open.
+func _return(slot: int, t: int) -> void:
+	if slot_state[slot] != SlotState.ABSENT:
+		return
+	var h := _parked_health[slot]
+	_parked_health[slot] = -1.0
+	if h > 0.0:
+		var centre: Vector2 = terrain.arena().get_center()
+		var anchor := centre
+		var best := INF
+		for s in SessionRules.MAX_PLAYERS:
+			if slot_state[s] == SlotState.LIVE:
+				var d := player_pos[s].distance_squared_to(centre)
+				if d < best:
+					best = d
+					anchor = player_pos[s]
+		player_pos[slot] = terrain.nearest_open(anchor)
+		player_prev_pos[slot] = player_pos[slot]
+		player_render_pos[slot] = player_pos[slot]
+		player_vel[slot] = Vector2.ZERO
+		player_iframe[slot] = 0.0
+		player_health[slot] = h
+		slot_state[slot] = SlotState.LIVE
+		lockstep.mark_live(slot)
+		lockstep.prime_slot(slot, t + 1, t + lockstep.delay)
+		# Somebody is LIVE again: whatever no-LIVE verdict this peer held is
+		# void. A win stands.
+		if _session.end_outcome == NetworkSession.Outcome.LOSS:
+			_session.end_outcome = NetworkSession.Outcome.NONE
+	else:
+		player_health[slot] = 0.0
+		slot_state[slot] = SlotState.DEAD
+		lockstep.mark_present(slot)
+		lockstep.mark_dead(slot)
+	alive = _any_live()
+	if _session.role == NetworkSession.Role.HOST:
+		_session.clear_latch()
+		_session.last_present_tick = t
+		# A DEAD returnee is in the PRESENT roster from here, but it cannot
+		# report for a check tick it never reached: the open check is reissued
+		# at a fresh tick so its report counts.
+		if _session.end_check_tick >= 0 and slot_state[slot] == SlotState.DEAD:
+			_session.clear_end_check()
+			_session.end_candidate_pending = _session.end_outcome != NetworkSession.Outcome.NONE
+
+## Host: a HELLO after START. Accepted only for this session, an ABSENT slot
+## the roster holds, and before END; then the return is announced at a fresh
+## boundary R: RESYNC(R) — flagged when it clears a no-LIVE barrier — and
+## PRESENT(slot, R) to everyone, WELCOME with the immutable descriptor to the
+## returnee. Returns the slot, or -1 when refused.
+func accept_reconnect(body: Dictionary, peer: int) -> int:
+	var es := _session
+	if es.ended or es.recovering() or not es.reconnect.is_empty():
+		return -1
+	var slot := es.admit(body, peer)
+	if slot < 0 or slot_state[slot] != SlotState.ABSENT or _parked_health[slot] < 0.0:
+		if _transport != null:
+			_transport.drop_peer(peer)
+		return -1
+	var r := lockstep.executed + lockstep.delay + Protocol.BOUNDARY_MARGIN
+	es.reconnect = {"slot": slot, "peer": peer, "tick": r}
+	if _parked_health[slot] > 0.0 and not _any_live():
+		es.pending_live_return = [slot, r]
+	# Only a LIVE return voids a no-LIVE barrier. A DEAD one leaves it standing
+	# and joins its roster.
+	var clears := _parked_health[slot] > 0.0 and es.end_check_tick >= 0 \
+		and es.end_outcome != NetworkSession.Outcome.WIN
+	if clears:
+		es.cancel_no_live_check()
+	es.announce_resync(r, PackedInt32Array([slot]))
+	_pending_present[slot] = r
+	if _transport != null:
+		_transport.send_control(Protocol.Message.WELCOME, 0,
+			{"descriptor": es.descriptor, "slot": slot}, peer)
+		_transport.send_control(Protocol.Message.RESYNC, r, {"clears_end": clears})
+		_transport.send_control(Protocol.Message.PRESENT, r, {"slot": slot})
+	return slot
+
+## Host: the returnee vanished before its boundary. The latch clears and
+## no-LIVE is judged again at once; PRESENT was already announced, so the
+## slot returns unmanned at R + 1 and parks again at its first missing tick.
+func abort_reconnect() -> void:
+	var es := _session
+	if es.reconnect.is_empty():
+		return
+	var slot := int(es.reconnect["slot"])
+	es.reconnect = {}
+	es.clear_latch()
+	_pending_park[slot] = true
+	if not _any_live() and es.end_outcome == NetworkSession.Outcome.LOSS:
+		es.end_candidate_pending = true
+
+func _host_hello_step() -> void:
+	while not _pending_hello.is_empty():
+		if _session.recovering() or not _session.reconnect.is_empty():
+			return
+		var e: Array = _pending_hello.pop_front()
+		accept_reconnect(e[0], int(e[1]))
+
+## The roster changes due this tick, above the guard: parks before the tick
+## they name is consumed, returns after.
+func _roster_step() -> void:
+	if _session.role == NetworkSession.Role.HOST:
+		_host_park_step()
+		_host_hello_step()
+	for slot in _pending_absent.keys():
+		if lockstep.executed >= int(_pending_absent[slot]):
+			_pending_absent.erase(slot)
+			_park(slot)
+	for slot in _pending_present.keys():
+		var t := int(_pending_present[slot])
+		if lockstep.executed >= t + 1:
+			_pending_present.erase(slot)
+			_return(slot, t)
 
 # ---------------------------------------------------------------- recovery ---
 #
@@ -693,6 +938,15 @@ func host_try_snapshot() -> PackedByteArray:
 		return PackedByteArray()
 	var bytes := serialize_state(r)
 	_session.resync_sent = true
+	last_snapshot = bytes
+	last_snapshot_tick = r
+	# A returning peer joins the relay set in the SAME frame the state is
+	# serialised, so no relayed record falls between the snapshot and the
+	# first relay it receives.
+	if not _session.reconnect.is_empty() and int(_session.reconnect["tick"]) == r:
+		if _transport != null:
+			_transport.bind_peer(int(_session.reconnect["peer"]), int(_session.reconnect["slot"]))
+		_session.reconnect = {}
 	if _transport != null:
 		for s in _session.resync_targets:
 			if _transport.peer_of_slot.has(s):
@@ -709,6 +963,9 @@ func apply_snapshot(bytes: PackedByteArray, r: int) -> bool:
 	if _transport != null:
 		_transport.release_boundary()
 	_session.clear_resync()
+	# A returnee is back in the session the moment its restore commits.
+	_session.reconnecting = false
+	_reconnect_attempts = 0
 	return true
 
 func _on_snapshot(tick_label: int, bytes: PackedByteArray) -> void:
@@ -766,6 +1023,10 @@ func _terminal(outcome: int) -> void:
 		return
 	es.end_outcome = outcome
 	if es.role == NetworkSession.Role.HOST:
+		# A no-LIVE verdict is suppressed while a LIVE return is latched: the
+		# returning slot will make somebody LIVE at its boundary.
+		if outcome == NetworkSession.Outcome.LOSS and es.latched():
+			return
 		es.end_candidate_pending = true
 	elif _transport != null:
 		_transport.send_control(Protocol.Message.END_CANDIDATE, tick,
@@ -785,6 +1046,12 @@ func receive_end_candidate(slot: int, at_tick: int, outcome: int, hash_value: in
 	var es := _session
 	if es.end_check_tick >= 0 and at_tick == es.end_check_tick:
 		es.end_reports[slot] = [hash_value, outcome]
+		return
+	# A no-LIVE candidate is refused while a LIVE return is latched, and stale
+	# when it names a tick at or before the last PRESENT — equality included,
+	# because PRESENT(T) applies only after T is consumed. A win is neither.
+	if outcome == NetworkSession.Outcome.LOSS \
+			and (es.latched() or at_tick <= es.last_present_tick):
 		return
 	es.end_candidate_pending = true
 
@@ -878,7 +1145,8 @@ func _ending_step() -> void:
 	if es.role != NetworkSession.Role.HOST:
 		return
 	if es.end_check_tick < 0:
-		if es.end_candidate_pending and not es.recovering():
+		if es.end_candidate_pending and not es.recovering() \
+				and not (es.latched() and es.end_outcome != NetworkSession.Outcome.WIN):
 			if _present_remote_count() == 0:
 				# Nobody to confirm with: the host's own candidate is the verdict.
 				if es.end_outcome != NetworkSession.Outcome.NONE:
@@ -1034,6 +1302,9 @@ func _ready() -> void:
 	_botnet_life = PackedFloat32Array(); _botnet_life.resize(MAX_BOTNET)
 
 	_derive_roster()
+	# A run exists only after START: from here the roster is frozen and a
+	# HELLO can only be a return to a slot it already holds.
+	_session.started = true
 	_recompile()
 	# One ring for the session, built AFTER the roster is LIVE: its masks follow
 	# slot_state, and the opening delay ticks are primed with every present
@@ -1093,6 +1364,7 @@ func _allocate_slots() -> void:
 	player_health = PackedFloat32Array(); player_health.resize(n)
 	player_iframe = PackedFloat32Array(); player_iframe.resize(n)
 	player_shield = PackedFloat32Array(); player_shield.resize(n)
+	_parked_health = PackedFloat32Array(); _parked_health.resize(n); _parked_health.fill(-1.0)
 	pickup_radius = PackedFloat32Array(); pickup_radius.resize(n)
 	kills = PackedInt32Array(); kills.resize(n)
 	flips = PackedInt32Array(); flips.resize(n)
@@ -1350,10 +1622,17 @@ func _physics_process(_dt: float) -> void:
 	if _transport != null:
 		_transport.poll()
 		_drain_inbox()
+		_reconnect_step()
 		if _transport.is_host:
 			_transport.flush_relay(lockstep.executed + lockstep.delay)
 
 	_present(_dt)
+
+	# A returnee holds everything until the host's snapshot lands: its state
+	# is whatever it was when the link broke, and nothing may build on it.
+	if _session.reconnecting:
+		return
+	_roster_step()
 
 	# INPUT APPLICATION, above the world guard. The ring decides whether this
 	# tick can execute at all: until every LIVE slot's record for it has
@@ -1412,12 +1691,31 @@ func _drain_inbox() -> void:
 	while not _session.inbox.is_empty():
 		var msg: Dictionary = _session.inbox.pop_front()
 		var body: Dictionary = msg["body"]
+		var peer := int(msg["peer"])
 		match int(msg["kind"]):
 			Protocol.Message.RESYNC:
+				if body.get("clears_end", false):
+					_session.cancel_no_live_check()
 				announce_resync(int(body["tick"]))
+			Protocol.Message.HELLO:
+				if _session.role == NetworkSession.Role.HOST:
+					_pending_hello.append([body, peer])
+			Protocol.Message.WELCOME:
+				pass    # the descriptor is immutable; a returnee already holds it
+			Protocol.Message.LEAVE:
+				if _session.role == NetworkSession.Role.HOST and _transport != null \
+						and _transport.slot_of_peer.has(peer):
+					request_park(int(_transport.slot_of_peer[peer]))
+					_transport.drop_peer(peer)
+			Protocol.Message.ABSENT:
+				if _session.role != NetworkSession.Role.HOST:
+					_pending_absent[int(body["slot"])] = int(body["tick"])
+			Protocol.Message.PRESENT:
+				if _session.role != NetworkSession.Role.HOST:
+					_pending_present[int(body["slot"])] = int(body["tick"])
 			Protocol.Message.END_CANDIDATE:
-				if _transport != null and _transport.slot_of_peer.has(int(msg["peer"])):
-					receive_end_candidate(int(_transport.slot_of_peer[int(msg["peer"])]),
+				if _transport != null and _transport.slot_of_peer.has(peer):
+					receive_end_candidate(int(_transport.slot_of_peer[peer]),
 						int(body["tick"]), int(body["outcome"]), int(body["hash"]))
 			Protocol.Message.END_CHECK:
 				receive_end_check(int(body["tick"]))
@@ -1545,6 +1843,8 @@ func _process(_dt: float) -> void:
 ## points diagonally). The unprojection is a VIEW concern; it belongs on this
 ## side of the seam, not in the tick.
 func _poll_local_input() -> void:
+	if _session.reconnecting:
+		return
 	var move := Vector2.ZERO
 	if input_override != null:
 		move = (input_override as Vector2).normalized()
@@ -4571,8 +4871,8 @@ func _build_manifest() -> void:
 	f.append(["run", "@worms", SH | VARLEN, "", ["_worm_trail", "_worm_cursor"]])
 	f.append(["run", "_next_worm_id", SH, "", []])
 	for prop in ["slot_state", "player_pos", "player_prev_pos", "player_vel",
-			"player_health", "player_iframe", "player_shield", "_low_armed",
-			"_zone_slow_player", "kills", "flips", "inputs", "_offer_seq"]:
+			"player_health", "player_iframe", "player_shield", "_parked_health",
+			"_low_armed", "_zone_slow_player", "kills", "flips", "inputs", "_offer_seq"]:
 		f.append(["run", prop, SH, "", []])
 	f.append(["run", "@loadouts", SH, "", ["loadouts"]])
 	f.append(["run", "@offers", SH | VARLEN, "", ["_offer_open", "_offer_queue"]])
@@ -4656,6 +4956,14 @@ func _build_manifest() -> void:
 			"_mm_shard": "presentation", "_mm_botnet": "presentation",
 			"_camera": "presentation", "_session": "immutable descriptor",
 			"_transport": "the network, polled above the guard; never simulation",
+			"_pending_park": "host bookkeeping above the guard; the ABSENT tick it names is the state",
+			"_pending_absent": "roster change keyed by tick, applied above the guard",
+			"_pending_present": "roster change keyed by tick, applied above the guard; a returnee's buffered PRESENT",
+			"_pending_hello": "host: reconnects awaiting a boundary; transport, never simulation",
+			"_reconnect_attempts": "client link retry count; transport, never simulation",
+			"_reconnect_frames": "client link retry frame count; transport, never simulation",
+			"last_snapshot": "host: the bytes it last serialised; the wire, never simulation",
+			"last_snapshot_tick": "host: the boundary of last_snapshot; the wire, never simulation",
 			"local_slot": "this process's identity", "_players": "immutable roster size",
 			"pickup_radius": "derived from the descriptor counters",
 			"user_paused": "local overlay",

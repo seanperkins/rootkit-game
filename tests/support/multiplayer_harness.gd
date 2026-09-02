@@ -15,6 +15,11 @@ const DT := 1.0 / 60.0
 var runs: Array = []
 var players := 1
 var delay := 0
+## slot -> [from, until]: that slot's records for ticks in the range are
+## withheld from every peer — the wire after its controller dropped. Its own
+## run is not stepped while its next record falls in the range. `until` is
+## the last primed tick of a return; before one it is unbounded.
+var withheld: Dictionary = {}
 
 ## Stand up `count` peers on one session. Each is driven only by explicit
 ## ticks: the engine's own physics callback is disabled after ready, or the
@@ -65,6 +70,30 @@ func _records_for(t: int, moves_fn: Callable) -> Array:
 			m[r.local_slot] = Vector2.ZERO
 	return m
 
+## Whether slot `s` is off the wire for tick `t`.
+func _withheld(s: int, t: int) -> bool:
+	if not withheld.has(s):
+		return false
+	var w: Array = withheld[s]
+	return t >= int(w[0]) and t <= int(w[1])
+
+## Submit every remote slot's record for every tick this peer could still
+## need, [executed, t], in a per-peer rotated order. A record already held
+## is refused, so resubmission is free; a tick skipped while a peer was away
+## is filled in, as the host's relay would.
+func _submit_remotes(r: Node2D, k: int, t: int, moves_fn: Callable) -> void:
+	for t2 in range(r.lockstep.executed, t + 1):
+		var m := _records_for(t2, moves_fn)
+		for j in players:
+			var s := (j + k) % players
+			if s == r.local_slot or _withheld(s, t2):
+				continue
+			var c := _choice_for(r, s)
+			r.lockstep.submit(s, t2, (m[s] as Vector2).normalized(), c.x, c.y, c.z)
+
+func _dropped(r: Node2D) -> bool:
+	return _withheld(r.local_slot, r.lockstep.executed + r.lockstep.delay)
+
 ## One pump-and-step. Records are keyed by TICK, not by step: each peer's
 ## record for the tick it is running ahead of (executed + delay) is injected —
 ## remote slots directly, in a per-peer rotated arrival order; its own slot
@@ -74,6 +103,8 @@ func _records_for(t: int, moves_fn: Callable) -> Array:
 func step(moves_fn: Callable) -> void:
 	for k in runs.size():
 		var r: Node2D = runs[k]
+		if _dropped(r) or r._session.reconnecting:
+			continue
 		var t: int = r.lockstep.executed + r.lockstep.delay
 		var m := _records_for(t, moves_fn)
 		# The RAW vector to the poll, which normalises it exactly once; the same
@@ -81,38 +112,31 @@ func step(moves_fn: Callable) -> void:
 		# already-normalised vector can move its last bit, and one bit is a
 		# desync.
 		r.input_override = m[r.local_slot]
-		for j in players:
-			var s := (j + k) % players          # a different arrival order per peer
-			if s == r.local_slot:
-				continue
-			var c := _choice_for(r, s)
-			r.lockstep.submit(s, t, (m[s] as Vector2).normalized(), c.x, c.y, c.z)
+		_submit_remotes(r, k, t, moves_fn)
 		var lc := _choice_for(r, r.local_slot)
 		if lc.x != -1:
 			r._local_choice = lc
-		if r.lockstep.ready(r.lockstep.executed):
-			r._physics_process(DT)
+		# The callback runs whether or not the tick is ready, as the engine's
+		# does: a stalled peer still drains its wire and applies roster
+		# changes above the guard; only the take is gated, by the ring.
+		r._physics_process(DT)
 
 ## Step one peer alone, if its ring is ready — the movement function supplies
 ## its record for the tick it runs ahead, exactly as step() would.
 func step_one(k: int, moves_fn: Callable) -> bool:
 	var r: Node2D = runs[k]
+	if _dropped(r) or r._session.reconnecting:
+		return false
 	var t: int = r.lockstep.executed + r.lockstep.delay
 	var m := _records_for(t, moves_fn)
 	r.input_override = m[r.local_slot]
-	for j in players:
-		var s := (j + k) % players
-		if s == r.local_slot:
-			continue
-		var c := _choice_for(r, s)
-		r.lockstep.submit(s, t, (m[s] as Vector2).normalized(), c.x, c.y, c.z)
+	_submit_remotes(r, k, t, moves_fn)
 	var lc := _choice_for(r, r.local_slot)
 	if lc.x != -1:
 		r._local_choice = lc
-	if not r.lockstep.ready(r.lockstep.executed):
-		return false
+	var was_ready: bool = r.lockstep.ready(r.lockstep.executed)
 	r._physics_process(DT)
-	return true
+	return was_ready
 
 ## Bring every peer up to the furthest peer's tick, one tick at a time. A peer
 ## that restored to an earlier tick catches up on records it already holds.

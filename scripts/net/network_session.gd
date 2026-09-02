@@ -163,6 +163,36 @@ func cancel_no_live_check() -> bool:
 	end_outcome = Outcome.NONE
 	return true
 
+# ---------------------------------------------------------- parking, return ---
+#
+# A peer the transport reports gone is PARKED: the host names the first tick
+# it holds no record from that slot, every peer applies ABSENT there, and the
+# slot is inert until its controller comes back. A return is a recovery with
+# a roster change: the host names a boundary R, everyone applies PRESENT after
+# consuming R, and the returnee restores to the state after R. Whether the
+# slot comes back LIVE or DEAD is decided by the health it parked with.
+
+## Client: this peer lost the host and is re-introducing itself. The world
+## holds and nothing is sampled until the host's snapshot lands.
+var reconnecting := false
+## Host: the one return in flight, {slot, peer, tick}, or empty.
+var reconnect: Dictionary = {}
+## Host-only latch: a positive-health return was accepted while no slot was
+## LIVE — [slot, tick]. While it holds, no-LIVE candidates are refused and a
+## no-LIVE ending is never opened; a campaign win still is.
+var pending_live_return: Array = []
+## Host: the tick the last PRESENT applied at. A no-LIVE candidate for a tick
+## at or before it is stale — PRESENT(T) applies after T is consumed.
+var last_present_tick := -1
+## slot -> the tick it last parked at, on every peer.
+var absent_ticks: Dictionary = {}
+
+func latched() -> bool:
+	return not pending_live_return.is_empty()
+
+func clear_latch() -> void:
+	pending_live_return = []
+
 # ------------------------------------------------------------------- lobby ---
 #
 # Before START the roster is MUTABLE and lives here as `lobby_rows`, ordered by
