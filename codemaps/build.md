@@ -49,7 +49,7 @@ trigger_kind`. Built via `Module.make(id, name, slot, stats, tags, vk, tk, max_r
 | `vector`, `trigger` | `EquippedModule` or `null` |
 | `payloads: Array` | `PAYLOAD_SLOTS = 1` — one slot, so a level-up card never asks *which* payload slot |
 | `SLOT_COUNT = 3` | column indices: 0 VECTOR, 1 TRIGGER, 2 PAYLOAD |
-| `is_inert()` | true if vector or trigger is null → does not fire |
+| `is_incomplete()` | true if vector or trigger is null; only a missing VECTOR makes the resolve inert — a bare row fires as INTERVAL at `Compiler.BARE_CADENCE` 1.30 |
 
 `slot_type(i)` / `slot_index_of(slot)` are a bijection: one column per slot type
 is what lets a card offer a single button per exploit row.

@@ -4015,7 +4015,7 @@ func _targeted_module(slot: int) -> Module:
 			return cand
 	# Nothing is one short: fall back to anything that un-inerts a row.
 	for ex in lo.exploits:
-		if not ex.is_inert():
+		if not ex.is_incomplete():
 			continue
 		var need := Module.Slot.VECTOR if ex.vector == null else Module.Slot.TRIGGER
 		for m in _unlocked[slot]:

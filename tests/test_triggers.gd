@@ -10,7 +10,8 @@ func _initialize() -> void:
 	print("ROOTKIT — trigger firing\n")
 	await process_frame
 	for spec in [[&"interval", "INTERVAL"], [&"on_hit", "ON_HIT"],
-			[&"on_kill", "ON_KILL"], [&"on_damage_taken", "ON_DAMAGE_TAKEN"]]:
+			[&"on_kill", "ON_KILL"], [&"on_damage_taken", "ON_DAMAGE_TAKEN"],
+			[&"", "BARE (no trigger)"]]:
 		await fires(spec[0], spec[1])
 	await rate_limited()
 	print("")
@@ -82,7 +83,8 @@ func fires(trigger_id: StringName, label: String) -> void:
 	var t := ModuleTable.by_id()
 	var ex := Exploit.new()
 	ex.place(t[&"broadcast"])
-	ex.place(t[trigger_id])
+	if trigger_id != &"":
+		ex.place(t[trigger_id])          # a bare row: fires on the built-in interval
 	ex.place(t[&"buffer_overflow"])
 	run.loadouts[run.local_slot].exploits.append(ex)
 	run._recompile()

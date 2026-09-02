@@ -378,6 +378,8 @@ func _build_lines() -> Array:
 		for em in ex.equipped():
 			mods.append("%s%s" % [em.module.display_name,
 				"" if em.rank == 1 else "·%d" % em.rank])
+		if ex.vector != null and ex.trigger == null and not ex.head_is_fused():
+			mods.insert(1, "(bare)")        # fires on the built-in interval
 		lines.append("exploit_%02d  %s%s" % [i + 1, " + ".join(mods),
 			"   [INERT]" if r.inert else "   dmg %.0f  cd %.2f  corr %.0f" % [
 				r.damage, r.cooldown, r.corruption]])

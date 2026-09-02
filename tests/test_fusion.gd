@@ -75,7 +75,7 @@ func _fused_probe() -> Module:
 func a_fused_row_fires_with_no_trigger() -> void:
 	var ex := Exploit.new()
 	ex.vector = EquippedModule.new(_fused_probe())
-	_check("a fused row is not inert", ex.is_inert(), false)
+	_check("a fused row is not incomplete", ex.is_incomplete(), false)
 	_check("slot 0 is the fused module", ex.at(0).module.id, &"probe_fuse")
 	_check("the head reads as fused", ex.head_is_fused(), true)
 	_check("the trigger column is empty", ex.at(1), null)

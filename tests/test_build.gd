@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 87
+const EXPECTED_CHECKS := 92
 
 var failures := 0
 var checks := 0
@@ -215,12 +215,23 @@ func rule_zero_no_legal_placement() -> void:
 	var p := l.resolve(T[&"packet"])
 	_check("rule 0: max-rank module has no placement", p.rule, Loadout.Rule.NONE)
 
+## A row founded from a VECTOR is incomplete until a trigger lands, but it is
+## not inert: it fires as INTERVAL at BARE_CADENCE, so a weapon works the
+## moment you place it and a trigger card is an upgrade, not a prerequisite.
 func inert_only_transient() -> void:
 	var ex := Exploit.new()
 	ex.place(T[&"broadcast"])
-	_check("founded from VECTOR: inert until a trigger lands", ex.is_inert(), true)
+	_check("founded from VECTOR: incomplete until a trigger lands", ex.is_incomplete(), true)
+	var bare := Compiler.build(ex)
+	_check("a bare row is not inert", bare.inert, false)
+	_check("it fires as INTERVAL", bare.trigger_kind, Module.TriggerKind.INTERVAL)
+	_check("at the bare cadence", is_equal_approx(bare.cooldown, 0.85 * Compiler.BARE_CADENCE), true)
 	ex.place(T[&"interval"])
-	_check("no longer inert", ex.is_inert(), false)
+	_check("no longer incomplete", ex.is_incomplete(), false)
+	_check("and a real interval lifts the penalty", is_equal_approx(Compiler.build(ex).cooldown, 0.85), true)
+	var empty := Exploit.new()
+	empty.place(T[&"interval"])
+	_check("a row with no vector is inert", Compiler.build(empty).inert, true)
 
 ## Ward magnitudes are MAX, never sum — including within a single exploit.
 ## Compiler._fold accumulates with +, and one exploit still folds ward_* from

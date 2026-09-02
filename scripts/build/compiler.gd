@@ -68,9 +68,19 @@ const MULT_KEYS := {
 ## missed hits nobody could reproduce. 960 = 60 * (PROJECTILE_RADIUS 4 +
 ## ENEMY_RADIUS 12): the bound is the smallest combined radius, not the cell size.
 
+## A row with a vector and no trigger fires on a BUILT-IN interval at this
+## cadence penalty: the weapon works the moment it is placed, and a trigger
+## card is an upgrade rather than a prerequisite. Above 1.0 so that placing
+## `interval` (1.00) is still a real improvement. Playtest: three rows each
+## needing one of three distinct starting triggers before firing at all made
+## every new vector dead weight until the right card showed up.
+const BARE_CADENCE := 1.30
+
 static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	var r := ResolvedExploit.new()
-	r.inert = ex.is_inert()
+	# Only a row with no VECTOR is inert; a row with no trigger is bare and
+	# fires on the built-in interval below.
+	r.inert = ex.vector == null
 
 	# Kinds are read ONLY from their own slot. Folding them from every module in
 	# turn lets the TRIGGER module's default enum value clobber the vector.
@@ -99,6 +109,10 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 
 	if ex.trigger != null:
 		_fold(r, ex.trigger)
+	elif ex.vector != null and not ex.head_is_fused():
+		# Bare row: the built-in interval, paid in cadence.
+		r.trigger_kind = Module.TriggerKind.INTERVAL
+		r.cadence_mult *= BARE_CADENCE
 
 	# cooldown is contributed ONLY by vectors now — validate() enforces it — so at
 	# this point r.cooldown IS the vector's raw base, which is exactly what the
