@@ -43,8 +43,15 @@ var _max_cols: int
 var _max_rows: int
 var _max_cells: int
 
-var _cell_start: PackedInt32Array   # size _ncells + 1
-var _cursor: PackedInt32Array       # size _ncells, doubles as the pass-1 count
+var _cell_start: PackedInt32Array   # per cell: first item index (valid where _cell_count > 0)
+var _cell_count: PackedInt32Array   # per cell: items in the cell; 0 for every untouched cell
+var _cursor: PackedInt32Array       # per cell: pass-2 write head
+## The cells pass 1 found non-empty, so the prefix sum walks O(entities) cells
+## rather than every live cell. At the 50,625-cell party window that is the
+## difference between a rebuild that costs what the entities cost and one that
+## costs what the map costs.
+var _touched: PackedInt32Array
+var _touched_n := 0
 var _items: PackedInt32Array        # tagged indices, bucketed
 var _item_pos: PackedVector2Array   # positions parallel to _items
 var _item_mask: PackedInt32Array    # 1 << population, parallel to _items
@@ -72,7 +79,9 @@ func _init(origin: Vector2, max_size: Vector2, p_cell_size: float,
 	_max_rows = int(ceil(max_size.y / cell_size))
 	_max_cells = _max_cols * _max_rows
 	_cell_start.resize(_max_cells + 1)
+	_cell_count.resize(_max_cells + 1)
 	_cursor.resize(_max_cells)
+	_touched.resize(capacity)
 	_items.resize(capacity)
 	_item_pos.resize(capacity)
 	_item_mask.resize(capacity)
@@ -132,12 +141,26 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array,
 	var npops := counts.size()
 
 	# Native fill over the whole backing store, not a GDScript loop over the live
-	# cells: at the 50,625-cell party window the interpreted loop alone cost
-	# about a millisecond a tick, and fill() clears the same memory in a few
-	# microseconds. The prefix sum below still walks only the live cells.
-	_cursor.fill(0)
+	# cells: at the 50,625-cell party window an interpreted loop cost about a
+	# millisecond a tick per pass, and fill() clears the same memory in a few
+	# microseconds. Nothing below walks the cells at all — only the entities and
+	# the cells they land in.
+	_cell_count.fill(0)
+	_touched_n = 0
 
-	# Pass 1 — count per cell.
+	# The window test and the cell index are INLINED in both passes: at the
+	# entity cap that is 8,400 calls a tick otherwise, and a call is most of the
+	# cost of the arithmetic it wraps.
+	var ox := _origin.x
+	var oy := _origin.y
+	var inv := 1.0 / cell_size
+	var span_x := float(_cols) * cell_size
+	var span_y := float(_rows) * cell_size
+	var cols := _cols
+	var last_col := _cols - 1
+	var last_row := _rows - 1
+
+	# Pass 1 — count per cell, noting each cell the first time it is hit.
 	for p in npops:
 		var pa: PackedVector2Array = pos_arrays[p]
 		var sk = skips[p] if p < skips.size() else null
@@ -145,18 +168,26 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array,
 		for i in n:
 			if sk != null and sk[i] != 0:
 				continue
-			if not in_window(pa[i]):
+			var q := pa[i]
+			var rx := q.x - ox
+			var ry := q.y - oy
+			if rx < 0.0 or ry < 0.0 or rx >= span_x or ry >= span_y:
 				continue
-			_cursor[_cell_index(pa[i])] += 1
+			var c := mini(int(ry * inv), last_row) * cols + mini(int(rx * inv), last_col)
+			if _cell_count[c] == 0:
+				_touched[_touched_n] = c
+				_touched_n += 1
+			_cell_count[c] += 1
 
-	# Prefix sum. _cursor is rewritten in place to each bucket's write head.
+	# Prefix sum over the TOUCHED cells only. Ranges need only be disjoint, not
+	# ordered by cell index, so any consistent order over the non-empty cells
+	# works; an untouched cell has count 0 and its start is never read.
 	var acc := 0
-	for c in _ncells:
-		var k := _cursor[c]
+	for k in _touched_n:
+		var c := _touched[k]
 		_cell_start[c] = acc
 		_cursor[c] = acc
-		acc += k
-	_cell_start[_ncells] = acc
+		acc += _cell_count[c]
 
 	# Pass 2 — scatter.
 	for p in npops:
@@ -169,9 +200,11 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array,
 			if sk2 != null and sk2[i] != 0:
 				continue
 			var q := pa[i]
-			if not in_window(q):
+			var rx := q.x - ox
+			var ry := q.y - oy
+			if rx < 0.0 or ry < 0.0 or rx >= span_x or ry >= span_y:
 				continue
-			var c := _cell_index(q)
+			var c := mini(int(ry * inv), last_row) * cols + mini(int(rx * inv), last_col)
 			var w := _cursor[c]
 			_items[w] = tag | i
 			_item_pos[w] = q
@@ -195,8 +228,11 @@ func query_radius_into(point: Vector2, r: float, buf: PackedInt32Array, mask: in
 		var row := cy * _cols
 		for cx in range(cx0, cx1 + 1):
 			var c := row + cx
-			var e := _cell_start[c + 1]
-			for k in range(_cell_start[c], e):
+			var cnt := _cell_count[c]
+			if cnt == 0:
+				continue
+			var st := _cell_start[c]
+			for k in range(st, st + cnt):
 				if _item_mask[k] & mask == 0:
 					continue
 				if _item_pos[k].distance_squared_to(point) <= r2:

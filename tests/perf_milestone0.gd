@@ -186,6 +186,28 @@ func _party_run() -> Node2D:
 ## the correction is to measure the real one, not to invent a heavier one.
 func _real_run() -> PackedFloat64Array:
 	var g: Node2D = await _party_run()
+	# Every slot carries the worst-case loadout the stress block uses — packet,
+	# broadcast aura and a homing fused vector, all maxed — so four builds' worth
+	# of the heaviest fire paths run every tick.
+	var tbl := ModuleTable.by_id()
+	for s in SessionRules.MAX_PLAYERS:
+		var lo: Loadout = g.loadouts[s]
+		lo.exploits[0].vector.rank = 5
+		var ex2 := Exploit.new()
+		ex2.place(tbl[&"broadcast"])
+		ex2.place(tbl[&"on_hit"])
+		ex2.vector.rank = 5
+		lo.exploits.append(ex2)
+		var homer := Module.make(&"perf_homer", "perf_homer()", Module.Slot.VECTOR,
+			{&"damage": 20.0, &"projectile_speed": 700.0, &"cooldown": 0.45,
+			 &"travel": 1200.0, &"pierce": 4.0, &"homing": 2.6}, [],
+			Module.VectorKind.PACKET, Module.TriggerKind.INTERVAL)
+		homer.is_fused = true
+		homer.targeting = Module.Targeting.STRONGEST
+		var ex3 := Exploit.new()
+		ex3.vector = EquippedModule.new(homer, 5)
+		lo.exploits.append(ex3)
+	g._recompile()
 	g.level_up_offered.connect(func(c): g.choose_card(c[0][0], Loadout.best_target(c[0][1])))
 	# Without a handler _block_payout refuses to offer a fusion at all (it
 	# would pause with nobody to unpause it); with one, an autopiloted run
@@ -204,10 +226,20 @@ func _real_run() -> PackedFloat64Array:
 			g.player_health[s] = g._eff_integrity(s)
 			g.slot_state[s] = g.SlotState.LIVE
 			# Lockstep waits on every LIVE slot's record; the pinned slots send
-			# neutral ones, as a parked-but-present controller would.
-			g.lockstep.submit(s, g.lockstep.executed, Vector2.ZERO, -1, -1, -1)
+			# neutral movement — and answer any offer they hold with its first
+			# option, or a level-up round would wait on them forever and the
+			# gate would time a world that never steps.
+			var c := Vector3i(-1, -1, -1)
+			var open: Dictionary = g._offer_open[s]
+			if not open.is_empty():
+				c = Vector3i(0, 0, int(open["seq"]))
+			g.lockstep.submit(s, g.lockstep.executed, Vector2.ZERO, c.x, c.y, c.z)
 		var t0 := Time.get_ticks_usec()
 		g._physics_process(DT)
+		# The periodic checksum is part of the tick's cost in a session, so it
+		# is timed here on the same cadence a peer reports it.
+		if t % SessionRules.CHECKSUM_INTERVAL == 0:
+			g._state_hash()
 		g._update_renderers()      # see the stress loop — moved, not removed
 		out.append(float(Time.get_ticks_usec() - t0) / 1000.0)
 		t += 1

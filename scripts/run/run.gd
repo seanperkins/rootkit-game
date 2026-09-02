@@ -570,6 +570,12 @@ var _skips: Array
 var _unlocked: Array = []
 ## Headless tests drive the local player through this instead of the keyboard.
 var input_override = null
+## Set by a headless driver BEFORE the node enters the tree: the engine's own
+## physics callback is disabled at ready, so every tick is the driver's explicit
+## call. Godot re-enables _physics_process at ready, which is why a driver
+## cannot simply clear it beforehand — and a stray engine tick would submit a
+## record the driver then cannot replace.
+var external_drive := false
 ## One WORLD direction per player slot. The local one is written once per tick
 ## by _poll_local_input, above the guard; read by the simulation from nowhere
 ## else. This is the seam a networked peer drives: a remote player is a slot
@@ -678,13 +684,6 @@ func _ready() -> void:
 	_flow = []
 	for _s in SessionRules.MAX_PLAYERS:
 		_flow.append(FlowField.new())
-	# One ring for the session. Roster masks follow slot_state each tick; the
-	# opening delay ticks are primed so nobody waits on input that cannot exist.
-	lockstep = Lockstep.new(SessionRules.MAX_PLAYERS,
-		int(_session.descriptor.get("delay", 0)))
-	_sync_ring_roster()
-	if lockstep.delay > 0:
-		lockstep.prime(0, lockstep.delay - 1)
 	_modules = ModuleTable.all()
 	for mi in _modules.size():
 		_module_index[_modules[mi].id] = mi
@@ -761,6 +760,14 @@ func _ready() -> void:
 
 	_derive_roster()
 	_recompile()
+	# One ring for the session, built AFTER the roster is LIVE: its masks follow
+	# slot_state, and the opening delay ticks are primed with every present
+	# slot's neutral record so nobody waits on input that cannot exist yet.
+	lockstep = Lockstep.new(SessionRules.MAX_PLAYERS,
+		int(_session.descriptor.get("delay", 0)))
+	_sync_ring_roster()
+	if lockstep.delay > 0:
+		lockstep.prime(0, lockstep.delay - 1)
 
 	_build_renderers()
 	_camera = Camera2D.new()
@@ -793,6 +800,9 @@ func _ready() -> void:
 	ui.set_script(load("res://scripts/run/ui.gd"))
 	add_child(ui)
 	ui.bind(self)
+
+	if external_drive:
+		set_physics_process(false)
 
 ## Size every per-slot array for MAX_PLAYERS. Everything starts ABSENT and
 ## empty; _derive_roster fills the slots the descriptor names.
@@ -1657,26 +1667,36 @@ func _step2_integrate(dt: float) -> void:
 	# _age_fx is NOT called here. It ages presentation, so it belongs above the
 	# tick guard with the rest of it — called from _present() on the unscaled
 	# clock. Aging it here froze every effect the instant the run ended.
+	# The magnet, by GRID QUERY from each LIVE slot rather than a pass over every
+	# shard: at the shard cap a per-shard scan was a measurable slice of the
+	# tick, and only the shards inside a player's reach can move. The grid is
+	# last tick's — rebuilt in step 3 — which is exact for shards (only this
+	# magnet moves them) and one tick late for a shard dropped this tick, which
+	# nobody can see. A shard inside two players' reach still goes to the
+	# NEAREST, as it always did.
 	var nlive := _live_pos.size()
-	if nlive > 0:
-		for i in shards.count:
-			# A shard is drawn toward the NEAREST LIVE player — an inline scan of
-			# the packed LIVE cache, because this runs once per shard per tick.
-			var sp := shards.pos[i]
-			var mk := 0
-			var md := sp.distance_squared_to(_live_pos[0])
-			for k in range(1, nlive):
-				var dk := sp.distance_squared_to(_live_pos[k])
-				if dk < md:
-					md = dk
-					mk = k
-			var ms: int = _live_of[mk]
-			var d := player_pos[ms] - sp
-			# Magnet reach. Was 6x the pickup radius (288 px), which meant shards
-			# came to you from most of the screen and collection was never a
-			# positioning decision.
-			if d.length() < pickup_radius[ms] * 2.2:
-				shards.pos[i] += d.normalized() * 300.0 * dt
+	if nlive > 0 and shards.count > 0:
+		for k in nlive:
+			var ms: int = _live_of[k]
+			var sp := _live_pos[k]
+			var reach := pickup_radius[ms] * 2.2
+			var n := grid.query_radius_into(sp, reach, _buf, Grid.M_SHARD)
+			for j in mini(n, _buf.size()):
+				var si := Grid.index_of(_buf[j])
+				if si >= shards.count:
+					continue
+				var spos := shards.pos[si]
+				var mine := true
+				var md := spos.distance_squared_to(sp)
+				for k2 in nlive:
+					if k2 != k and spos.distance_squared_to(_live_pos[k2]) < md:
+						mine = false
+						break
+				if not mine:
+					continue
+				var d := sp - spos
+				if d.length() < reach:
+					shards.pos[si] += d.normalized() * 300.0 * dt
 
 ## Pack the LIVE slots' positions and ids for this tick's per-entity scans.
 func _refresh_live_cache() -> void:
@@ -2245,11 +2265,14 @@ func _die(slot: int) -> void:
 		# Both of these only animate because _present() runs above the tick guard.
 		feel.add_trauma(0.7)
 		feel.emit("death")
-		_hitstop()
-		# Salvage is lost, but kills and flips still count toward unlocks —
-		# otherwise a losing run gives nothing and the meta has no reason to
-		# exist after a death, which is exactly what it is for.
-		_bank_progress(false)
+	# The freeze is SIMULATION, not presentation: every peer's world holds for
+	# the same ticks on the same death, or the hashes part company right here.
+	_hitstop()
+	# Salvage is lost, but kills and flips still count toward unlocks —
+	# otherwise a losing run gives nothing and the meta has no reason to exist
+	# after a death, which is exactly what it is for. The watermark moves on
+	# every peer; only the owning process writes its save.
+	_bank_slot(slot, false)
 	alive = _any_live()
 	if not alive:
 		emit_signal("run_ended", false, 0)
@@ -2602,6 +2625,11 @@ func _step2b_zones(dt: float) -> void:
 				_die(s)
 		elif pz == Terrain.Kind.SLOW:
 			_zone_slow_player[s] = 1
+	var zo: Vector2 = terrain.origin
+	var zw: int = terrain.w
+	var zh: int = terrain.h
+	var zone: PackedByteArray = terrain.zone
+	var zinv := 1.0 / Terrain.CELL
 	for i in enemies.count:
 		if _slow_left[i] > 0.0:
 			_slow_left[i] -= dt
@@ -2612,7 +2640,15 @@ func _step2b_zones(dt: float) -> void:
 		# the win condition all key off EnemyTable.ICE.
 		if _arriving[i] > 0.0:
 			continue
-		match terrain.zone_at(enemies.pos[i]):
+		# The baked zone grid, indexed INLINE: six hundred calls into
+		# terrain.zone_at a tick were most of this step's cost, and the lookup
+		# is a floor, a bounds check and one byte read.
+		var ep := enemies.pos[i]
+		var zx := int(floor((ep.x - zo.x) * zinv))
+		var zy := int(floor((ep.y - zo.y) * zinv))
+		if zx < 0 or zy < 0 or zx >= zw or zy >= zh:
+			continue
+		match int(zone[zy * zw + zx]) - 1:
 			Terrain.Kind.HAZARD:
 				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i],
 					Terrain.HAZARD_DPS * dt)
@@ -2926,24 +2962,33 @@ func _refresh_thresholds() -> void:
 	for i in enemy_types.size():
 		thresholds[i] = enemy_types[i].corruption_threshold * f
 
-## A bank event is SIMULATION state: every participant's `_banked` records the
-## same delta so the manifests agree on every peer. Only the LOCAL slot's delta
-## is then persisted — a remote slot's progress is never written into this
-## process's save. Salvage is shared, so every slot banks the same pool; kills
-## and flips are each slot's own.
+## Banking is SIMULATION state: a bank event advances the banked watermark on
+## EVERY peer, so the manifests agree, and only the LOCAL slot's delta is then
+## persisted — a remote slot's progress is never written into this process's
+## save. Two events exist. A subnet clear (or the win) banks EVERY participant:
+## each watermark advances everywhere and each process persists its own slot.
+## Salvage is shared, so every slot banks the same pool; kills and flips are
+## each slot's own.
 func _bank_progress(with_salvage: bool) -> void:
-	var lb: Dictionary = _banked[local_slot]
-	var s := (salvage - int(lb[&"salvage"])) if with_salvage else 0
-	SaveGame.bank(s, kills[local_slot] - int(lb[&"kills"]),
-		flips[local_slot] - int(lb[&"flips"]))
 	for slot in SessionRules.MAX_PLAYERS:
-		if slot_state[slot] == SlotState.ABSENT and loadouts[slot] == null:
+		if loadouts[slot] == null:
 			continue
-		var b: Dictionary = _banked[slot]
-		if with_salvage:
-			b[&"salvage"] = salvage
-		b[&"kills"] = kills[slot]
-		b[&"flips"] = flips[slot]
+		_bank_slot(slot, with_salvage)
+
+## One slot's bank event — its death — seen identically by every peer: the
+## slot's watermark advances on all of them, and the process that owns the slot
+## persists the delta. Nothing here branches on which peer this is except the
+## write to disk.
+func _bank_slot(slot: int, with_salvage: bool) -> void:
+	var b: Dictionary = _banked[slot]
+	if slot == local_slot:
+		var s := (salvage - int(b[&"salvage"])) if with_salvage else 0
+		SaveGame.bank(s, kills[slot] - int(b[&"kills"]),
+			flips[slot] - int(b[&"flips"]))
+	if with_salvage:
+		b[&"salvage"] = salvage
+	b[&"kills"] = kills[slot]
+	b[&"flips"] = flips[slot]
 
 ## Carried forward: the loadout, the level, the XP, and whatever integrity the
 ## last subnet left. Reset: the clock, the wave table, and every live entity.
@@ -4273,7 +4318,7 @@ func _build_manifest() -> void:
 			"enemy_types": "constant", "resolved": "derived: _recompile on restore",
 			"_buf": "scratch", "_counts": "scratch", "_pos_arrays": "scratch",
 			"_skips": "scratch", "_unlocked": "derived from the descriptor counters",
-			"input_override": "test seam", "inputs": "",
+			"input_override": "test seam", "external_drive": "test seam", "inputs": "",
 			"_mm_enemy": "presentation", "_mm_proj": "presentation",
 			"_mm_shard": "presentation", "_mm_botnet": "presentation",
 			"_camera": "presentation", "_session": "immutable descriptor",
@@ -4302,7 +4347,8 @@ func _build_manifest() -> void:
 			"cell_size": "rebuilt before first read", "_cols": "rebuilt",
 			"_rows": "rebuilt", "_ncells": "rebuilt", "_origin": "rebuilt",
 			"_max_cols": "constant", "_max_rows": "constant", "_max_cells": "constant",
-			"_cell_start": "rebuilt", "_cursor": "rebuilt", "_items": "rebuilt",
+			"_cell_start": "rebuilt", "_cell_count": "rebuilt", "_cursor": "rebuilt",
+			"_touched": "rebuilt", "_touched_n": "rebuilt", "_items": "rebuilt",
 			"_item_pos": "rebuilt", "_item_mask": "rebuilt",
 		},
 		"hit_queue": {

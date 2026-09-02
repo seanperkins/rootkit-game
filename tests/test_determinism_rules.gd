@@ -15,7 +15,7 @@ const DT := 1.0 / 60.0
 
 const CASES := ["tick_ignores_dt_below_guard", "hitstop_costs_fixed_ticks",
 	"no_clock_in_tick_graph", "tick_rngs_derive_from_descriptor",
-	"negative_owner_never_decodes_to_slot_zero"]
+	"negative_owner_never_decodes_to_slot_zero", "structural_determinism_rules"]
 
 func _initialize() -> void:
 	print("ROOTKIT — determinism rules\n")
@@ -25,6 +25,7 @@ func _initialize() -> void:
 	no_clock_in_tick_graph()
 	await tick_rngs_derive_from_descriptor()
 	await negative_owner_never_decodes_to_slot_zero()
+	structural_determinism_rules()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -194,6 +195,88 @@ func negative_owner_never_decodes_to_slot_zero() -> void:
 	r.free()
 	await process_frame
 	finished["negative_owner_never_decodes_to_slot_zero"] = true
+
+## Every function in run.gd whose name starts with `prefix`.
+func _funcs_named(src: String, prefix: String) -> Array:
+	var out := []
+	for line in src.split("\n"):
+		if line.begins_with("func " + prefix):
+			var name := line.substr(5, line.find("(") - 5)
+			out.append(name)
+	return out
+
+## The structural rules a deterministic tick depends on, checked against the
+## source so a regression cannot pass by accident:
+##   - simulation steps never receive the frame delta;
+##   - no clock, device, signal-connection or peer-state read in any step, in
+##     input application, or in the hashed collection;
+##   - the device is read in exactly one function;
+##   - no stream is seeded from randomize();
+##   - a dictionary iterated for the hash is sorted first.
+func structural_determinism_rules() -> void:
+	var src := FileAccess.get_file_as_string("res://scripts/run/run.gd")
+	var tick := _func_body(src, "_physics_process")
+	# Every _stepN call in the tick takes `sdt`, never the frame delta.
+	var bad_dt := false
+	for line in tick.split("\n"):
+		var s := line.strip_edges()
+		if s.begins_with("_step") and s.contains("(_dt"):
+			bad_dt = true
+	_check("no simulation step receives the frame delta", bad_dt, false)
+
+	var sim_funcs := _funcs_named(src, "_step")
+	sim_funcs.append_array(["_apply_records", "_apply_choice", "_resolve_deadlines",
+		"_settle_offers", "_open_round", "_on_death", "_on_flip", "_behave",
+		"_emit_vector", "_state_hash", "_derived_get", "_manifest_get",
+		"_die", "_damage_player", "_steps78_drain"])
+	var bad := []
+	for name in sim_funcs:
+		var body := _func_body(src, name)
+		if body == "":
+			bad.append("%s missing" % name)
+			continue
+		for needle in ["Time.get_", "Engine.time_scale", "Input.", "get_connections(",
+				"_session.role", "transport", "randomize("]:
+			if body.contains(needle):
+				bad.append("%s contains %s" % [name, needle])
+	_check("no step, application or hash path reads a clock, device, connection or peer state",
+		bad, [])
+
+	# The device is read in exactly one function.
+	var readers := []
+	var current := ""
+	for line in src.split("\n"):
+		if line.begins_with("func "):
+			current = line.substr(5, line.find("(") - 5)
+		elif line.contains("Input.") and not line.strip_edges().begins_with("#"):
+			if not readers.has(current):
+				readers.append(current)
+	_check("the device is read in one function only", readers, ["_poll_local_input"])
+
+	# No stream calls randomize(), in run.gd or the classes it seeds.
+	var seeded := true
+	for path in ["res://scripts/run/run.gd", "res://scripts/run/spawn_director.gd",
+			"res://scripts/run/terrain.gd", "res://scripts/run/blocks.gd"]:
+		for line in FileAccess.get_file_as_string(path).split("\n"):
+			var s := line.strip_edges()
+			if s.contains("randomize(") and not s.begins_with("#"):
+				seeded = false
+	_check("no simulation stream calls randomize()", seeded, true)
+
+	# Dictionaries that feed the hash are iterated in SORTED key order.
+	var derived := _func_body(src, "_derived_get")
+	var lines := derived.split("\n")
+	var unsorted := false
+	for i in lines.size():
+		if lines[i].contains(".keys()"):
+			var sorted_soon := false
+			for j in range(i, mini(i + 4, lines.size())):
+				if lines[j].contains(".sort()"):
+					sorted_soon = true
+			if not sorted_soon:
+				unsorted = true
+	_check("every dictionary the hash walks is sorted first", unsorted, false)
+	finished["structural_determinism_rules"] = true
 
 ## The source text of a top-level GDScript function, from its `func NAME(` line
 ## up to the next line that begins a new top-level `func ` at column zero.
