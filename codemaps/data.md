@@ -38,35 +38,33 @@ kill-to-win condition. `EnemyTable.ICE` is an index, so ICE must stay last.
 
 ## `data/module_table.gd` — `ModuleTable`
 
-35 modules; 14 ship locked. `all()`, `by_id()`, `starting_unlocked()`.
+30 modules (8 VECTOR / 7 TRIGGER / 15 PAYLOAD); 11 ship locked, 19 unlocked at
+start (5 / 3 / 11). `all()`, `by_id()`, `starting_unlocked()`.
 
 ```gdscript
-LOCKED = [beam, on_damage_taken, worm, snipe, landmine, cascade, mirror,
-          airgap, checksum, on_low_integrity, on_flip, on_level_up,
-          heap_spray, tarpit]
+LOCKED = [beam, on_damage_taken, worm, landmine, mirror, checksum,
+          on_low_integrity, on_flip, on_level_up, heap_spray, tarpit]
 ```
 
 Roughly half the breadth ships locked because a level-up still shows three cards:
-going 18 → 35 modules halves the odds of drawing what a build wants.
+going 18 → 30 modules halves the odds of drawing what a build wants.
 
-### VECTOR (14)
+### VECTOR (8) — one module per `VectorKind`
 
-| id | kind | stats |
-|---|---|---|
-| broadcast | BROADCAST | dmg 3.5, radius 90, cd 0.85 |
-| packet | PACKET | dmg 6, speed 420, cd 0.5, travel 640 |
-| chain | CHAIN | dmg 5, chain 2, radius 170, cd 0.9 |
-| beam 🔒 | BEAM | dmg 3.5, pierce 3, radius 240, cd 0.6 |
-| spike | CONE | dmg 9, radius 150, cd 0.75 |
-| flood | BROADCAST | dmg 2, radius 300, cd 1.6 |
-| snipe 🔒 | PACKET | dmg 14, speed 900, cd 1.5, travel 1200, pierce 2 |
-| landmine 🔒 | MINE | dmg 16, radius 130, cd 1.9 · `aoe` |
-| cascade 🔒 | CHAIN | dmg 3, chain 4, radius 150, cd 0.8 |
-| bounce | PULSE | dmg 2, radius 190, cd 1.1, knockback 320 |
-| mirror 🔒 | ORBIT | dmg 4, radius 90, cd 2.2, orbit 3 |
-| throttle | BROADCAST | dmg 0.5, radius 260, cd 1.4, slow 0.55/2.0s · `slow` |
-| airgap 🔒 | PULSE | radius 210, cd 1.6, knockback 520, ward_armor 1.4/2.0s |
-| checksum 🔒 | BROADCAST | dmg 1, radius 70, cd 2.6, shield 26 |
+| id | kind | stats | pattern |
+|---|---|---|---|
+| broadcast | BROADCAST | dmg 3.5, radius 90, cd 0.85 | ring around the owner |
+| packet | PACKET | dmg 6, speed 420, cd 0.5, travel 640 | straight shot along `player_facing`; no target pick unless `homing` |
+| chain | CHAIN | dmg 5, chain 2, radius 170, cd 0.9 | `_pick_target` then hops |
+| beam 🔒 | BEAM | dmg 3.5, pierce 3, radius 240, cd 0.6 | capsule along facing, half-width 22, nearest `pierce + 1` |
+| spike | CONE | dmg 9, radius 150, cd 0.75 | 90° wedge along facing |
+| landmine 🔒 | MINE | dmg 16, radius 130, cd 1.9 · `aoe` | drops `MINE_DROP 86` behind the owner |
+| bounce | PULSE | dmg 2, radius 190, cd 1.1, knockback 320 | ring with knockback |
+| mirror 🔒 | ORBIT | dmg 4, radius 90, cd 2.2, orbit 3 | orbiters, one cadence |
+
+BEAM and CONE fire (and draw) whether or not anything is in reach. The weapons
+pass removed `flood`, `snipe`, `cascade`, `throttle` and `airgap` (their riders
+survive as `tarpit` and `harden`) and made `checksum` a payload.
 
 Base damage sits ~30% below its first pass (payloads ~20%) because a rank buys
 damage linearly; `SpawnDirector.hp_mult` is the load-bearing half of that fix.
@@ -87,7 +85,7 @@ Frequent triggers are paid in cadence, rare ones in burst; `on_flip` is paid in
 corruption, the resource its own build runs on. `interval` was 0.85 — both faster
 *and* unconditional, so an event trigger could never win in any build.
 
-### PAYLOAD (14)
+### PAYLOAD (15)
 
 | id | stats |
 |---|---|
@@ -105,6 +103,7 @@ corruption, the resource its own build runs on. `interval` was 0.85 — both fas
 | race_condition | cadence_mult 0.88 |
 | heap_spray 🔒 | chain 1, radius 30 |
 | tarpit 🔒 | slow 0.35 / 1.5s · `slow` |
+| checksum 🔒 | shield 26, shield_rearm 2.6s (unranked) |
 
 Defensive payloads contribute no damage, so equipping one is a real cost against
 the single payload slot. Magnitudes come from worked worst cases — `nice` matches
@@ -117,7 +116,7 @@ Every constant two peers must agree on — tick, players, delay, timeouts,
 windows, the leash, packet and snapshot bounds, the port. Tabled in
 `codemaps/net.md`.
 
-## `scripts/meta/save_game.gd` (426) — `SaveGame`
+## `scripts/meta/save_game.gd` (423) — `SaveGame`
 
 `VERSION = 3`. Static, cached in `_cache`. `use_fresh_state()` / `use_test_paths()`
 exist for the suites.
@@ -191,13 +190,10 @@ Both hold **deltas**; `PlayerStats.mults()` converts. The split is what makes th
 |---|---|---|---|
 | on_damage_taken | 150 kills | on_flip | 15 flips |
 | heap_spray | 200 kills | mirror | 25 flips |
-| snipe | 250 kills | tarpit | 40 flips |
-| on_low_integrity | 300 kills | worm | 50 flips |
-| beam | 400 kills | checksum | 80 flips |
-| on_level_up | 450 kills | | |
+| on_low_integrity | 300 kills | tarpit | 40 flips |
+| beam | 400 kills | worm | 50 flips |
+| on_level_up | 450 kills | checksum | 80 flips |
 | landmine | 550 kills | | |
-| cascade | 700 kills | | |
-| airgap | 900 kills | | |
 
 Spread across kills and flips deliberately, so a corruption build and a damage
 build walk different ladders. `is_unlocked(id)`, `_milestone_met`,

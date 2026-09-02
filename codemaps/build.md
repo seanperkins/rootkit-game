@@ -25,8 +25,10 @@ enum TriggerKind { INTERVAL, ON_KILL, ON_HIT, ON_DAMAGE_TAKEN,
 
 `VectorKind` is **append-only, never reordered** — values are stored on modules,
 so an insert silently repoints everything defined above it.
+`enum Targeting { NEAREST, STRONGEST, FARTHEST }` is consulted only by CHAIN
+and the homing re-acquire; BEAM, CONE and PACKET fire along the owner's facing.
 
-`STAT_KEYS` (23) is the *only* legal set of stat keys — asserting against
+`STAT_KEYS` (28) is the *only* legal set of stat keys — asserting against
 "fields of ResolvedExploit" would admit `stats["tags"] = 1.0`:
 
 ```
@@ -34,6 +36,7 @@ damage corruption lifesteal cooldown radius pierce chain_count projectile_speed
 botnet_cap botnet_lifetime botnet_damage_ratio
 ward_armor ward_defense ward_clock_speed ward_duration
 travel cadence_mult knockback slow_amount slow_duration shield orbit_count burst
+split_count blast_radius execute_below homing shield_rearm
 ```
 
 Fields: `id, display_name, slot, tags[], max_rank=5, stats{}, vector_kind,
@@ -85,13 +88,15 @@ Fold order: **flat module fold → cadence product → global multipliers → cl
 | `MAX_PROJECTILE_SPEED` | 960.0 | `60 × (PROJECTILE_RADIUS 4 + ENEMY_RADIUS 12)`; the smallest combined radius, not the cell size |
 | `VECTOR_RADIUS_RANK` | 0.25 | fraction of a rank a VECTOR's radius collects |
 | `MUL_FOLD_KEYS` | `[cadence_mult]` | accumulate by product |
-| `MAX_FOLD_KEYS` | `ward_armor ward_defense ward_clock_speed ward_duration lifesteal slow_amount slow_duration shield` | magnitudes bought once; summing across slots buys uptime free |
+| `MAX_FOLD_KEYS` | `ward_armor ward_defense ward_clock_speed ward_duration lifesteal slow_amount slow_duration shield shield_rearm execute_below` | magnitudes bought once; summing across slots buys uptime free |
 | `MULT_KEYS` | `attack→[damage, corruption]`, `haste→[cooldown]`, `reach→[radius, travel]` | total and non-overlapping; `lifesteal` and `projectile_speed` deliberately excluded |
 
-Everything else sums. `_rank_factor(f, rank)` scales a stat by rank.
+Everything else sums. `_rank_factor(f, rank)` scales a stat by rank;
+`ward_duration` and `shield_rearm` are UNRANKED (rank buys magnitude, never
+uptime) and a VECTOR's radius collects `VECTOR_RADIUS_RANK` of a rank.
 `validate(m) -> Array[String]` checks a module against `STAT_KEYS`.
 
-## `resolved_exploit.gd` (122) — the flat struct combat reads
+## `resolved_exploit.gd` (126) — the flat struct combat reads
 
 `cadence_mult` is the **only** field defaulting to `1.0`; anything that resets
 fields generically breaks quietly on it.
@@ -101,7 +106,8 @@ purpose** — they accumulate as float so two 0.5 contributions make 1, and
 `burst = 0` means one emission. `travel` is separate from `radius` so a payload
 contributing `radius` cannot silently change a packet's flight distance.
 `tags: Dictionary` is a set (`StringName -> true`), not weights.
-`equals(o)` compares every scalar plus `tags.keys()` and `inert`.
+`equals(o)` enumerates the scalars BY HAND (including `shield` and
+`shield_rearm`, pinned by `test_build`) plus `tags.keys()` and `inert`.
 
 ## `player_stats.gd` (67) — the player's own sheet, deliberately two groups
 

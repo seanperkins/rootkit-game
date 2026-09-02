@@ -68,7 +68,7 @@ generation state`, plus `capacity`, `count`, `_next_generation`.
   entity.
 - `integrate(dt)` — `vel += force*dt; pos += vel*dt`.
 
-## `scripts/combat/hit_queue.gd` (203) — `HitQueue`
+## `scripts/combat/hit_queue.gd` (210) — `HitQueue`
 
 ```gdscript
 enum Kind { DAMAGE, CORRUPTION }        enum Outcome { NONE, DEAD, FLIPPED }
@@ -79,6 +79,9 @@ Event arrays: `kind source_exploit target target_generation amount`, `count`.
 Adjudication arrays: `adjudication outcome killer_exploit flipper_exploit`.
 `dropped` counts appends refused at capacity — the queue is sized
 `EVENT_BUDGET * MAX_PLAYERS` and the perf gate requires zero.
+`drained_events` counts events drained this TICK across every pass (reset in
+`begin_tick`); `count` and `hit_count` are zeroed by the drain, so it is the
+only per-tick hit figure the perf gate's load pin can read.
 Hit log for ON_HIT: `hit_exploit hit_target hit_count`.
 
 | API | Note |
@@ -152,7 +155,7 @@ Also: `step(dt, origin, radius) -> Array`, `due_minibosses(dt)`,
 `should_spawn_boss()`, `reset()` (zeroes `spawned`, hence run.gd's
 `_spawned_before`), `_place(formation, origin, radius)`.
 
-## `scripts/run/run.gd` (5585) — the run
+## `scripts/run/run.gd` (5723) — the run
 
 Signals: `level_up_offered(cards)`, `fusion_offered(matches)`,
 `offer_waiting(unresolved)`, `run_ended(won, salvage)`, `stats_changed()`.
@@ -163,9 +166,9 @@ tick order and the session half (ring, recovery, endings, parking) are in
 ### Slots — every player field is a `MAX_PLAYERS` array
 
 `enum SlotState { LIVE, DEAD, ABSENT }`, `slot_state`, `local_slot`.
-`player_pos player_prev_pos player_render_pos player_vel player_health
-player_iframe player_shield _parked_health pickup_radius kills flips inputs
-_low_armed _banked _sheet _unlocked loadouts`, allocated in `_allocate_slots`,
+`player_pos player_prev_pos player_render_pos player_vel player_facing
+player_health player_iframe player_shield _parked_health pickup_radius kills
+flips inputs _low_armed _banked _sheet _unlocked loadouts`, allocated in `_allocate_slots`,
 brought LIVE from the descriptor in `_derive_roster`. `resolved` is
 slot-strided (`GID_STRIDE`): `_gid(slot, ei)`, `_owner_slot(gid)`,
 `_resolved(gid)`, `_slot_exploits(slot)`, `_decode_exploit`. A reader that
@@ -186,8 +189,13 @@ OWNING slot; the gate waits for every LIVE slot; `_botnet_cap()` is shared.
 `to_iso(p)` / `from_iso(s)` with `ISO_K = 0.82`; `_depth_sort` over
 `DEPTH_BANDS = 192`; four `MultiMeshInstance2D` (enemy, proj, shard, botnet)
 built by `_build_renderers` / `_make_mm`, refreshed by `_update_renderers`.
-`_draw` adds ground quads, `_void_runs`, `_route_points`, fx lines and rings
-(`_fx_line`, `_fx_ring`, `FX_LIFE = 0.13`).
+`_draw` adds ground quads, `_void_runs`, `_route_points`, orbiter trails, the
+transient fx list and a facing tick on every drawn player's rim. Fx is ONE
+list, `_fx` of `[kind, at, dir, radius, life, colour]` with
+`enum FxKind { RIPPLE, DASH, BOLT, BEAM, WEDGE, PULSE, BLAST }` and
+`FX_LIFE = 0.13`; `test_facing` pins the emit sites per kind. Projectiles get
+glyph and colour per frame in `_update_renderers` (14 packet dot, 4 mine
+plus, 15 orbiter ring); shards and botnet nodes are primed once.
 
 ### Player state per slot
 `IFRAMES 0.5`; run-wide `alive won subnet level xp salvage pending_levels paused
@@ -199,10 +207,23 @@ each taking `_ward_max(key)` — wards fold as **MAX across exploits, never a su
 `_low_armed` latches ON_LOW_INTEGRITY to the **crossing** (`LOW_INTEGRITY_FRACTION
 0.4`), not the state.
 
-### Firing
-`_step5_fire` → `_emit_vector(ei, r)` dispatches on `VectorKind`
-(BROADCAST, PACKET, CHAIN, BEAM, CONE `CONE_HALF_ANGLE 0.785`, PULSE, MINE
-`MINE_TRIGGER 46 / MINE_LIFE 12`, ORBIT `ORBIT_RATE 2.4`).
+### Facing and firing
+`player_facing[slot]` (world space, unit, default RIGHT) is set in
+`_step2_integrate` from the APPLIED record when it is non-zero, held while the
+slot stands still, reset to RIGHT by `_return`; simulation state (`SH`), so
+the local slot's facing lags the stick by the lockstep delay on purpose.
+`_step5_fire` → `_emit_vector(ei, r)` dispatches on `VectorKind`:
+BROADCAST ring; PACKET along facing (a `homing` fused module binds a target
+via `_pick_target(VIEW_RANGE)` and launches toward it); CHAIN `_pick_target`
+then hops; BEAM a capsule along facing (`BEAM_HALF_WIDTH 22`, nearest
+`pierce + 1` by (projection, index) selected into the `_beam_hits/_beam_keys`
+scratch); CONE a wedge along facing (`CONE_HALF_ANGLE 0.785`); PULSE; MINE
+centred `MINE_DROP 86` behind the owner, ring rotated by the facing vector,
+every mine through `terrain.nearest_open` (`MINE_SPREAD 46`, `MINE_TRIGGER
+46`, `MINE_LIFE 12`); ORBIT `ORBIT_RATE 2.4`. BEAM and CONE never return
+early. Wards arm and the shield pool is granted at the TOP of `_emit_vector`;
+a pool with `shield_rearm` grants only when `_shield_left[ei] <= 0`, then
+re-arms it (per exploit, `SH`, aged with `_ward_left`).
 `_fire_trigger(kind)`, `_try_event_fire`, `_hit`, `_detonate_mine`,
 `apply_knockback` (`KNOCK_DECAY 6.0`), `apply_slow`, `_facing_scale`
 (`FILTER_FRONT_SCALE 0.10`), `_nearest_enemy`.
