@@ -279,24 +279,29 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 				return
 			session.receive(kind, ctl, from)
 
-## Submit a record to the ring — or, while a restore boundary is announced,
-## hold it by tick until the snapshot ring exists. Boundary-valid traffic is
-## never counted against a peer.
+## Submit a record to the ring — and, while a restore boundary is announced,
+## ALSO retain it by absolute tick. A correct peer keeps executing on the
+## submitted copy; a peer that then restores has its executed cursor moved by
+## the snapshot, and the retained copies are re-submitted against the new
+## cursor so nothing delivered during the transfer is lost. Boundary-valid
+## traffic is never counted against a peer.
+const HELD_MAX := Lockstep.RING * SessionRules.MAX_PLAYERS
+
 func _accept_record(slot: int, tick: int, move: Vector2, card: int, target: int,
 		offer: int) -> void:
-	if boundary >= 0:
-		_held.append([slot, tick, move, card, target, offer])
-		return
 	if session.lockstep != null:
 		session.lockstep.submit(slot, tick, move, card, target, offer)
+	if boundary >= 0 and tick > boundary and _held.size() < HELD_MAX:
+		_held.append([slot, tick, move, card, target, offer])
 
-## Announce a restore boundary: records from here on are held, not submitted.
+## Announce a restore boundary: records past it are retained as they arrive.
 func arm_boundary(tick: int) -> void:
 	boundary = tick
 	_held.clear()
 
-## The restore has established the snapshot ring: merge every held record
-## without overwriting what the ring already has, and resume direct submission.
+## The boundary is done — a restore committed, or the window passed with no
+## snapshot for this peer. Re-offer every retained record to the ring (a record
+## already there is refused, never overwritten) and stop retaining.
 func release_boundary() -> void:
 	boundary = -1
 	if session.lockstep != null:

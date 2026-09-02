@@ -57,6 +57,64 @@ func accepts_hello(body: Dictionary) -> bool:
 		return false
 	return not profile(int(body.get("slot", -1))).is_empty()
 
+# ---------------------------------------------------------------- recovery ---
+#
+# One shape: the host names a reachable FUTURE tick; peers that receive a
+# snapshot restore to the state after it and resume at the next tick; correct
+# peers keep going. Only one RESYNC boundary executes at a time — a later
+# repair queues behind it rather than overwriting it. Three desyncs in a
+# session end it, with every offending tick recorded for the diagnostic.
+
+const MAX_DESYNCS := 3
+
+## The announced boundary tick, or -1 when none is active.
+var resync_tick := -1
+## Slots the host will send the snapshot to (those whose report disagreed).
+var resync_targets: PackedInt32Array = PackedInt32Array()
+## True once the host has serialised for the active boundary.
+var resync_sent := false
+## A boundary requested while another was active: applied when it clears.
+var queued_resync := -1
+var queued_targets: PackedInt32Array = PackedInt32Array()
+## Every checksum tick at which the session diverged, and the verdict.
+var desync_ticks: PackedInt32Array = PackedInt32Array()
+var terminated := false
+
+## Record a divergence at `tick`. Returns true when this was the third and the
+## session is over.
+func record_desync(tick: int) -> bool:
+	desync_ticks.append(tick)
+	if desync_ticks.size() >= MAX_DESYNCS:
+		terminated = true
+	return terminated
+
+## Announce (or queue) a boundary. Returns true when it became the active one.
+func announce_resync(tick: int, targets: PackedInt32Array = PackedInt32Array()) -> bool:
+	if resync_tick >= 0:
+		if tick > resync_tick and queued_resync < 0:
+			queued_resync = tick
+			queued_targets = targets
+		return false
+	resync_tick = tick
+	resync_targets = targets
+	resync_sent = false
+	return true
+
+## The active boundary is done; a queued repair becomes active.
+func clear_resync() -> void:
+	resync_tick = -1
+	resync_targets = PackedInt32Array()
+	resync_sent = false
+	if queued_resync >= 0:
+		var t := queued_resync
+		var tg := queued_targets
+		queued_resync = -1
+		queued_targets = PackedInt32Array()
+		announce_resync(t, tg)
+
+func recovering() -> bool:
+	return resync_tick >= 0
+
 # ------------------------------------------------------------------- lobby ---
 #
 # Before START the roster is MUTABLE and lives here as `lobby_rows`, ordered by

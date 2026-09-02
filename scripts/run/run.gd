@@ -631,6 +631,114 @@ var _transport: Transport = null
 
 func attach_transport(transport: Transport) -> void:
 	_transport = transport
+	transport.snapshot_received.connect(_on_snapshot)
+
+# ---------------------------------------------------------------- recovery ---
+#
+# Desync recovery, host-authoritative. Every CHECKSUM_INTERVAL ticks each peer
+# reports a hash; the host's ring compares them. On the first disagreement the
+# host names a FUTURE boundary R = executed + delay + 3, tells everyone, keeps
+# simulating, and when it has executed exactly through R — with every LIVE
+# slot's records for (R, R + delay] in hand — it serialises once and sends the
+# snapshot only to the peers that disagreed. Those restore to the state after
+# R and resume at R + 1; everyone else never rewinds. The host is the
+# authority: if it is the one that diverged, the others are brought to it.
+# Three divergences end the session with every offending tick in the report.
+#
+# These methods are driven by the tick above the guard when a transport is
+# attached, and directly by the recovery suite, which pumps messages by hand.
+
+## Host: look for a divergence and announce a boundary. Returns the boundary
+## tick announced this call, or -1.
+func host_detect_desync() -> int:
+	if _session.role != NetworkSession.Role.HOST or _session.terminated:
+		return -1
+	var d := lockstep.desync_at()
+	if d < 0:
+		return -1
+	# Which slots disagreed with the host at that tick.
+	var rec: Dictionary = lockstep._checksums[d]
+	var hashes: PackedInt64Array = rec["hashes"]
+	var mask := int(rec["mask"])
+	var mine := hashes[local_slot] if (mask & (1 << local_slot)) != 0 else 0
+	var targets := PackedInt32Array()
+	for s in SessionRules.MAX_PLAYERS:
+		if (mask & (1 << s)) != 0 and s != local_slot and hashes[s] != mine:
+			targets.append(s)
+	lockstep.prune_checksums(d)
+	if _session.record_desync(d):
+		_terminate()
+		return -1
+	var r := lockstep.executed + lockstep.delay + Protocol.BOUNDARY_MARGIN
+	_session.announce_resync(r, targets)
+	if _transport != null:
+		_transport.send_control(Protocol.Message.RESYNC, r, {"clears_end": false})
+	return r
+
+## Any peer: a boundary was announced. Records past it are retained by the
+## transport until the boundary resolves.
+func announce_resync(r: int) -> void:
+	if _session.announce_resync(r) and _transport != null:
+		_transport.arm_boundary(r)
+
+## Host: serialise for the active boundary once it has executed exactly through
+## R and holds the window. Returns the snapshot bytes when produced this call,
+## an empty array otherwise. Sends the snapshot to each target peer when a
+## transport is attached.
+func host_try_snapshot() -> PackedByteArray:
+	var r := _session.resync_tick
+	if r < 0 or _session.resync_sent or lockstep.executed != r + 1:
+		return PackedByteArray()
+	if not lockstep.has_window(r):
+		return PackedByteArray()
+	var bytes := serialize_state(r)
+	_session.resync_sent = true
+	if _transport != null:
+		for s in _session.resync_targets:
+			if _transport.peer_of_slot.has(s):
+				_transport.send_snapshot(int(_transport.peer_of_slot[s]), r, bytes)
+	# The host's part is done; a queued repair becomes active.
+	_session.clear_resync()
+	return bytes
+
+## Any peer: a snapshot for boundary R. A successful restore resumes at R + 1
+## with every retained record merged; a refused one leaves the run untouched.
+func apply_snapshot(bytes: PackedByteArray, r: int) -> bool:
+	if not restore_state(bytes, r):
+		return false
+	if _transport != null:
+		_transport.release_boundary()
+	_session.clear_resync()
+	return true
+
+func _on_snapshot(tick_label: int, bytes: PackedByteArray) -> void:
+	apply_snapshot(bytes, tick_label)
+
+## The per-tick recovery bookkeeping, above the guard. The host holds at R + 1
+## until it can serialise; a correct client drops its boundary once the window
+## is behind it and no snapshot came.
+func _recovery_step() -> void:
+	if _session.role == NetworkSession.Role.HOST:
+		host_detect_desync()
+		host_try_snapshot()
+	elif _session.resync_tick >= 0 \
+			and lockstep.executed > _session.resync_tick + lockstep.delay + Lockstep.RING / 2:
+		if _transport != null:
+			_transport.release_boundary()
+		_session.clear_resync()
+
+## Whether the host must hold this tick: it has executed through R and is
+## waiting for the window to fill before it can serialise state-after-R.
+func _holding_for_snapshot() -> bool:
+	return _session.role == NetworkSession.Role.HOST and _session.resync_tick >= 0 \
+		and not _session.resync_sent and lockstep.executed == _session.resync_tick + 1
+
+## Three divergences: the session is over. The host says so; the world stops.
+func _terminate() -> void:
+	_session.terminated = true
+	if _transport != null and _transport.is_host:
+		_transport.send_control(Protocol.Message.END, tick, {"outcome": 2, "hash": 0})
+	emit_signal("run_ended", false, 0)
 
 ## The LIVE slots whose record for the next tick has not arrived, for the HUD's
 ## stall notice once _stalled_ticks passes STALL_NOTICE.
@@ -1102,7 +1210,10 @@ func _physics_process(_dt: float) -> void:
 	# holds the world, not the input stream, so a paused party still consumes
 	# ticks and applies the choices that will unpause it.
 	_sync_ring_roster()
-	if not lockstep.ready(lockstep.executed):
+	_recovery_step()
+	if _session.terminated:
+		return
+	if not lockstep.ready(lockstep.executed) or _holding_for_snapshot():
 		_stalled_ticks += 1
 		return
 	_stalled_ticks = 0
@@ -1140,13 +1251,21 @@ func _report_checksum() -> void:
 	lockstep.submit_checksum(local_slot, tick, h)
 	_transport.send_checksum(tick, h)
 
-## Control messages the transport validated, drained above the guard. Later
-## tasks dispatch ABSENT/PRESENT/RESYNC/END here; for now nothing in a running
-## session needs them, and an inbox that is never drained would grow forever.
+## Control messages the transport validated, drained above the guard and
+## dispatched here. Later tasks add ABSENT/PRESENT and the ending barrier.
 func _drain_inbox() -> void:
-	if _session.inbox.is_empty():
-		return
-	_session.inbox.clear()
+	while not _session.inbox.is_empty():
+		var msg: Dictionary = _session.inbox.pop_front()
+		var body: Dictionary = msg["body"]
+		match int(msg["kind"]):
+			Protocol.Message.RESYNC:
+				announce_resync(int(body["tick"]))
+			Protocol.Message.END:
+				if int(body.get("outcome", -1)) == 2 and not _session.terminated:
+					_session.terminated = true
+					emit_signal("run_ended", false, 0)
+			_:
+				pass
 
 ## One fixed world step: the ordered tick, and only that. Everything about
 ## whether to run it was decided above.

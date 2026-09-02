@@ -302,6 +302,10 @@ func _refresh() -> void:
 		for s in run.missing_slots():
 			names.append(str(s))
 		tally += "\nwaiting for input: %s" % ", ".join(names)
+	# Recovery is presentation here and nowhere else: the notice reads session
+	# state, and simulation state never carries it.
+	if run._session != null and run._session.recovering():
+		tally += "\nresynchronising…"
 	_hud.get_node("Tally").text = tally
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())

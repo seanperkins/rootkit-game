@@ -91,6 +91,50 @@ func step(moves_fn: Callable) -> void:
 		if r.lockstep.ready(r.lockstep.executed):
 			r._physics_process(DT)
 
+## Step one peer alone, if its ring is ready — the movement function supplies
+## its record for the tick it runs ahead, exactly as step() would.
+func step_one(k: int, moves_fn: Callable) -> bool:
+	var r: Node2D = runs[k]
+	var t: int = r.lockstep.executed + r.lockstep.delay
+	var m := _records_for(t, moves_fn)
+	r.input_override = m[r.local_slot]
+	for j in players:
+		var s := (j + k) % players
+		if s == r.local_slot:
+			continue
+		var c := _choice_for(r, s)
+		r.lockstep.submit(s, t, (m[s] as Vector2).normalized(), c.x, c.y, c.z)
+	var lc := _choice_for(r, r.local_slot)
+	if lc.x != -1:
+		r._local_choice = lc
+	if not r.lockstep.ready(r.lockstep.executed):
+		return false
+	r._physics_process(DT)
+	return true
+
+## Bring every peer up to the furthest peer's tick, one tick at a time. A peer
+## that restored to an earlier tick catches up on records it already holds.
+func catch_up(moves_fn: Callable, limit: int = 64) -> void:
+	for _i in limit:
+		var top := 0
+		for r in runs:
+			top = maxi(top, r.lockstep.executed)
+		var behind := false
+		for k in runs.size():
+			if runs[k].lockstep.executed < top:
+				behind = true
+				step_one(k, moves_fn)
+		if not behind:
+			return
+
+## Every peer reports its checksum for its current tick to every peer, as the
+## wire would: CHECKSUM from clients, and the host's own in its relay.
+func distribute_checksums() -> void:
+	for r in runs:
+		var h: int = r._state_hash()
+		for other in runs:
+			other.lockstep.submit_checksum(r.local_slot, r.tick, h)
+
 func hashes() -> PackedInt64Array:
 	var out := PackedInt64Array()
 	for r in runs:

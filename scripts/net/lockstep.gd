@@ -131,6 +131,18 @@ func ready(tick: int) -> bool:
 		return _required == 0
 	return (_have[cell] & _required) == _required
 
+## True when every required slot's record is present for every tick in
+## (after_tick, after_tick + delay] — the window a recovery snapshot must carry
+## so the restoring peer can resume at after_tick + 1 without waiting.
+func has_window(after_tick: int) -> bool:
+	for t in range(after_tick + 1, after_tick + delay + 1):
+		var cell := t & _MASK
+		if _tick_tag[cell] != t:
+			return _required == 0
+		if (_have[cell] & _required) != _required:
+			return false
+	return true
+
 ## The LIVE slots whose record for tick T has not arrived — what a stall notice
 ## names. Empty when the tick is ready.
 func missing(tick: int) -> PackedInt32Array:
