@@ -691,6 +691,29 @@ func _clear_collapse_state() -> void:
 	_collapse_idx = 0
 	corridor_collapse_len = 0
 
+## Re-derive a collapse in progress from ONE number: rebuild the field and the
+## order for the current gate, then void exactly the first `idx` cells of that
+## order. `voided` is written here and in collapse_to and nowhere else, so a
+## restored peer's frontier is bit-identical to the one that serialised it.
+func restore_collapse(idx: int) -> void:
+	build_distance_field()
+	_collapse_idx = clampi(idx, 0, _collapse_order.size())
+	for k in _collapse_idx:
+		voided[_collapse_order[k]] = 1
+
+## The open flag of every gate, in gate order — the only mutable gate state.
+func gate_open_flags() -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(gates.size())
+	for i in gates.size():
+		out[i] = 1 if gates[i].open else 0
+	return out
+
+func set_gate_open_flags(flags: PackedByteArray) -> void:
+	for i in mini(flags.size(), gates.size()):
+		gates[i].open = flags[i] != 0
+	_rebuild_blocks()
+
 func build_distance_field() -> void:
 	dist_from_gate = PackedInt32Array()
 	dist_from_gate.resize(w * h)

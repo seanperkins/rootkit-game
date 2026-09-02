@@ -9,7 +9,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 
 ```bash
 godot                          # play, from the project root
-tools/run_tests.sh             # 43 suites + the perf gate
+tools/run_tests.sh             # 45 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 godot --headless -s res://tests/test_build.gd     # one suite
 godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)

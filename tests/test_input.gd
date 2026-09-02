@@ -136,7 +136,10 @@ func a_card_decline_does_not_release_a_player_pause() -> void:
 	r._offer_cards(r.local_slot)
 	_check("the offer set the modal flag", r.paused, true)
 	r.decline_card()
-	r._physics_process(1.0 / 60.0)
+	for k in 4:
+		if r._local_choice.x == -1:
+			break
+		r._physics_process(1.0 / 60.0)
 	_check("the decline cleared the modal flag", r.paused, false)
 	_check("but the player pause survived it", r.user_paused, true)
 	r.free()
@@ -158,7 +161,10 @@ func cancel_routes_by_screen() -> void:
 	_check("and leaves the card offer standing", ui._overlay.visible, true)
 
 	ui._route_cancel()
-	r._physics_process(1.0 / 60.0)
+	for k in 4:
+		if r._local_choice.x == -1:
+			break
+		r._physics_process(1.0 / 60.0)
 	_check("a second cancel declines the card", r.paused, false)
 
 	ui._route_cancel()

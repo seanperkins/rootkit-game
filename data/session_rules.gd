@@ -63,3 +63,7 @@ const LEASH := MAX_WINDOW - 3200
 ## snapshot must fit under this; a packet claiming more is rejected before any
 ## allocation.
 const SNAPSHOT_MAX := 1 << 20
+
+## Snapshot payload version. A peer refuses any other value rather than guessing
+## at a layout.
+const SNAPSHOT_VERSION := 1

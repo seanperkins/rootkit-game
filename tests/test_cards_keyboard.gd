@@ -82,9 +82,14 @@ func _key(ui: CanvasLayer, code: int) -> void:
 	e.physical_keycode = code
 	e.pressed = true
 	ui._input(e)
-	# A key STAGES a choice; the tick applies it as an input record. One tick
-	# lands it, exactly as it does for the player.
-	ui.run._physics_process(1.0 / 60.0)
+	# A key STAGES a choice; the tick applies it as an input record. Tick until
+	# the staged record has been submitted — the engine's own physics callback
+	# may already hold this tick's neutral record, in which case the choice
+	# rides the next one — exactly as it does for the player.
+	for k in 4:
+		if ui.run._local_choice.x == -1:
+			break
+		ui.run._physics_process(1.0 / 60.0)
 
 ## What the player can see: the text of the highlighted button.
 func _label(ui: CanvasLayer) -> String:
@@ -361,7 +366,11 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 	_check("the first is highlighted", ui.highlighted(), buttons[0])
 
 	buttons[0].emit_signal("pressed")
-	await process_frame
+	# The press STAGED a choice record; tick until it is submitted and applied.
+	for k in 4:
+		if r._local_choice.x == -1:
+			break
+		r._physics_process(1.0 / 60.0)
 	_check("pressing it fuses", r.loadouts[r.local_slot].exploits[0].head_is_fused(), true)
 	_check("and unpauses", r.paused, false)
 	r.free()

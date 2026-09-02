@@ -691,6 +691,7 @@ func _ready() -> void:
 	var recipes := RecipeTable.all()
 	for ri in recipes.size():
 		_recipe_index[recipes[ri].fused.id] = ri
+	_build_manifest()
 	var tseed: int = base + _SEED_TERRAIN
 	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, tseed)
 	# Every slot starts at the same origin, so the spawn-safe margin is measured
@@ -4120,3 +4121,670 @@ func _draw() -> void:
 		else Color(1.9, 0.8, 0.8)
 	draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22))
 	draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, c, 2.0)
+
+# ========================================================== state manifest ===
+#
+# ONE declaration of what the simulation IS, with explicit consumers. Every
+# entry is [object_key, property, flags, slice_key, covers]:
+#   object_key  which object holds it — see _manifest_object()
+#   property    a var name, or "@name" for a DERIVED primitive built by
+#               _derived_get / applied by _derived_set
+#   flags       SNAPSHOT (serialize/restore visit it), HASH (_state_hash visits
+#               it), VARLEN (a packed array whose length is not fixed)
+#   slice_key   "" for the whole value, or a population key: the array is
+#               sliced to that population's count for BOTH snapshot and hash,
+#               never the full capacity — a restored peer's tails hold its own
+#               pre-restore garbage
+#   covers      the source vars a derived entry stands in for, so the
+#               structural suite can prove every var is classified exactly once
+#
+# NOT_IN_MANIFEST names every var in the nine simulation files that is NOT
+# carried, each with the rule that reconstructs it. test_manifest parses those
+# files and fails on a var that is in neither list, or in both.
+#
+# Snapshots are PRIMITIVES ONLY and decode with bytes_to_var, never
+# bytes_to_var_with_objects. restore_state is TRANSACTIONAL: it validates every
+# field — type, fixed size, slice length, count range, enum value — before it
+# writes a single one, and a payload past SNAPSHOT_MAX is refused before any
+# allocation.
+
+const SNAPSHOT := 1
+const HASH := 2
+const VARLEN := 4
+const SH := SNAPSHOT | HASH
+
+var STATE_FIELDS: Array = []
+var NOT_IN_MANIFEST: Dictionary = {}
+
+## Which source file each object key's vars live in, for the structural suite.
+const MANIFEST_FILES := {
+	"run": "run", "rng_sim": "run", "rng_block": "run",
+	"rng_card0": "run", "rng_card1": "run", "rng_card2": "run", "rng_card3": "run",
+	"enemies": "population", "projectiles": "population", "shards": "population",
+	"botnet": "population", "hostiles": "population",
+	"terrain": "terrain", "blocks": "blocks",
+	"director": "director", "director_rng": "director",
+	"flow0": "flow_field", "flow1": "flow_field", "flow2": "flow_field",
+	"flow3": "flow_field", "lockstep": "lockstep",
+}
+
+func _build_manifest() -> void:
+	var f: Array = []
+	# --- populations: sliced to count -----------------------------------------
+	for pk in ["enemies", "projectiles", "shards", "botnet", "hostiles"]:
+		f.append([pk, "count", SH, "", []])
+		f.append([pk, "_next_generation", SH, "", []])
+		for prop in ["pos", "prev_pos", "vel", "force", "integrity", "corruption",
+				"type_index", "radius", "generation", "state"]:
+			f.append([pk, prop, SH, pk, []])
+	# --- per-entity parallel arrays on the run --------------------------------
+	for prop in ["_worm_id", "_worm_seg", "_spawn_hp", "_slow_left", "_slow_factor",
+			"_knock", "_split_gen", "_rewarded", "_hit_flash", "_arriving",
+			"_submerged", "_ai_phase", "_ai_timer", "_ai_aim"]:
+		f.append(["run", prop, SH, "enemies", []])
+	for prop in ["_proj_owner", "_proj_pierce", "_proj_last", "_proj_dist_left",
+			"_proj_target", "_proj_target_gen", "_proj_reacquire", "_mine_left",
+			"_orbit_left", "_orbit_phase"]:
+		f.append(["run", prop, SH, "projectiles", []])
+	for prop in ["_botnet_ratio", "_botnet_life"]:
+		f.append(["run", prop, SH, "botnet", []])
+	f.append(["run", "_hostile_life", SH, "hostiles", []])
+	# --- worms, players, builds, offers --------------------------------------
+	f.append(["run", "@worms", SH | VARLEN, "", ["_worm_trail", "_worm_cursor"]])
+	f.append(["run", "_next_worm_id", SH, "", []])
+	for prop in ["slot_state", "player_pos", "player_prev_pos", "player_vel",
+			"player_health", "player_iframe", "player_shield", "_low_armed",
+			"_zone_slow_player", "kills", "flips", "inputs", "_offer_seq"]:
+		f.append(["run", prop, SH, "", []])
+	f.append(["run", "@loadouts", SH, "", ["loadouts"]])
+	f.append(["run", "@offers", SH | VARLEN, "", ["_offer_open", "_offer_queue"]])
+	f.append(["run", "@banked", SH, "", ["_banked"]])
+	f.append(["run", "@trigger_fires", SH | VARLEN, "", ["_trigger_fires"]])
+	for prop in ["_fire_acc", "_fire_cd", "_ward_left"]:
+		f.append(["run", prop, SH, "", []])
+	# --- run scalars -----------------------------------------------------------
+	for prop in ["tick", "level", "xp", "xp_needed", "pending_levels", "paused",
+			"_round_open", "hitstop_ticks", "phase", "won", "subnet", "salvage",
+			"_spawned_before", "collapse_left", "_corridor_collapse_ticks",
+			"_steer_phase", "_cycle_cursor"]:
+		f.append(["run", prop, SH, "", []])
+	# --- terrain, blocks, director, flow fields, streams ----------------------
+	f.append(["terrain", "current", SH, "", []])
+	f.append(["terrain", "_collapse_idx", SH, "", []])
+	f.append(["terrain", "@gate_open", SH, "", []])
+	for prop in ["_tz_pos", "_tz_r2", "_tz_kind", "_tz_left"]:
+		f.append(["terrain", prop, SH | VARLEN, "", []])
+	for prop in ["alive", "pos", "progress", "elapsed", "next_at"]:
+		f.append(["blocks", prop, SH, "", []])
+	for prop in ["elapsed", "spawned", "dropped", "boss_spawned", "miniboss_fired"]:
+		f.append(["director", prop, SH, "", []])
+	f.append(["director", "@milli", SH | VARLEN, "", ["_milli"]])
+	f.append(["director_rng", "state", SH, "", ["rng"]])
+	for s in SessionRules.MAX_PLAYERS:
+		var fk := "flow%d" % s
+		f.append([fk, "_dist", SH | VARLEN, "", []])
+		for prop in ["_ox", "_oy", "_centre", "_ready"]:
+			f.append([fk, prop, SH, "", []])
+	f.append(["rng_sim", "state", SH, "", ["_rng"]])
+	f.append(["rng_block", "state", SH, "", ["_block_rng"]])
+	for s in SessionRules.MAX_PLAYERS:
+		f.append(["rng_card%d" % s, "state", SH, "", ["_card_rng"]])
+	# --- the ring window: recovery continuity only, never hashed --------------
+	f.append(["lockstep", "@ring", SNAPSHOT | VARLEN, "",
+		["_moves", "_cards", "_targets", "_offers", "_tick_tag", "_have"]])
+	STATE_FIELDS = f
+
+	NOT_IN_MANIFEST = {
+		"run": {
+			"enemies": "container; its fields are listed by population key",
+			"projectiles": "container", "shards": "container", "botnet": "container",
+			"hostiles": "container", "grid": "container; rebuilt before first read",
+			"terrain": "container", "blocks": "container", "queue": "container",
+			"director": "container", "lockstep": "container",
+			"_flow": "container; each field is listed under flowN",
+			"_enemy_target": "scratch: decided in _behave before any read each tick",
+			"_live_pos": "per-tick cache packed in _step2_integrate",
+			"_live_of": "per-tick cache packed in _step2_integrate",
+			"_execute_by_exploit": "derived: _rebuild_execute_table on recompile",
+			"_execute_immune_type": "constant per enemy type",
+			"_pending_fusions": "presentation: derived from _offer_open by _emit_local_offer",
+			"_stalled_ticks": "transport liveness, local",
+			"_local_choice": "local staged input, not yet a record",
+			"_rec_moves": "take buffer", "_rec_cards": "take buffer",
+			"_rec_targets": "take buffer", "_rec_offers": "take buffer",
+			"_modules": "constant table cache", "_module_index": "constant",
+			"_recipe_index": "constant",
+			"_target_slot": "scratch: set at the top of _behave",
+			"_hit_weight": "constant per enemy type",
+			"_no_grid": "rebuilt whole in _step3_rebuild before the grid reads it",
+			"_pending_splits": "filled and drained within one tick",
+			"_fork_bomb_index": "constant", "_packet_filter_index": "constant",
+			"player_render_pos": "presentation", "_alpha": "presentation",
+			"_sheet": "derived from the descriptor counters",
+			"alive": "derived: _any_live() after restore",
+			"_route": "local presentation; recomputed from player_pos[local_slot]",
+			"_route_cell": "local presentation; reset so the route recomputes",
+			"feel": "presentation", "_shake_pref": "preference",
+			"_numbers_pref": "preference", "_falling": "presentation",
+			"_vignette": "presentation", "_fx_line": "presentation",
+			"_fx_ring": "presentation", "_order": "rebuilt whole in _depth_sort",
+			"_band_count": "scratch for _depth_sort",
+			"thresholds": "derived: _refresh_thresholds from subnet",
+			"enemy_types": "constant", "resolved": "derived: _recompile on restore",
+			"_buf": "scratch", "_counts": "scratch", "_pos_arrays": "scratch",
+			"_skips": "scratch", "_unlocked": "derived from the descriptor counters",
+			"input_override": "test seam", "inputs": "",
+			"_mm_enemy": "presentation", "_mm_proj": "presentation",
+			"_mm_shard": "presentation", "_mm_botnet": "presentation",
+			"_camera": "presentation", "_session": "immutable descriptor",
+			"local_slot": "this process's identity", "_players": "immutable roster size",
+			"pickup_radius": "derived from the descriptor counters",
+			"user_paused": "local overlay",
+			"STATE_FIELDS": "the manifest itself", "NOT_IN_MANIFEST": "the manifest itself",
+		},
+		"population": {"capacity": "constant"},
+		"terrain": {
+			"origin": "immutable: Terrain.plan from the seed", "size": "immutable",
+			"w": "immutable", "h": "immutable", "solid": "immutable: generate from the seed",
+			"zone": "immutable", "rects": "immutable", "arenas": "immutable",
+			"gates": "immutable layout; open flags carried by @gate_open",
+			"_blocks": "derived from gate state: set_gate_open_flags rebuilds",
+			"dist_from_gate": "derived: restore_collapse when CLEARED",
+			"max_dist": "derived", "voided": "derived: restore_collapse voids the prefix",
+			"_collapse_order": "derived", "_collapse_dist": "derived",
+			"corridor_collapse_len": "derived",
+			"just_voided": "filled and drained within one tick",
+		},
+		"blocks": {},
+		"director": {"waves": "constant", "rate_mult": "derived from the immutable roster"},
+		"flow_field": {},
+		"grid": {
+			"cell_size": "rebuilt before first read", "_cols": "rebuilt",
+			"_rows": "rebuilt", "_ncells": "rebuilt", "_origin": "rebuilt",
+			"_max_cols": "constant", "_max_rows": "constant", "_max_cells": "constant",
+			"_cell_start": "rebuilt", "_cursor": "rebuilt", "_items": "rebuilt",
+			"_item_pos": "rebuilt", "_item_mask": "rebuilt",
+		},
+		"hit_queue": {
+			"kind": "begin_tick before first read", "source_exploit": "begin_tick",
+			"target": "begin_tick", "target_generation": "begin_tick",
+			"amount": "begin_tick", "count": "begin_tick",
+			"dropped": "diagnostic counter, local", "_capacity": "constant",
+			"adjudication": "begin_tick", "outcome": "begin_tick",
+			"killer_exploit": "begin_tick", "flipper_exploit": "begin_tick",
+			"hit_exploit": "per pass", "hit_target": "per pass", "hit_count": "per pass",
+			"execute_best": "per pass", "execute_by": "per pass",
+		},
+		"lockstep": {
+			"executed": "set from the snapshot label: after_tick + 1",
+			"delay": "immutable descriptor", "_required": "derived: _sync_ring_roster",
+			"_present_mask": "derived: _sync_ring_roster",
+			"_live_mask": "derived: _sync_ring_roster", "_players": "constant",
+			"_checksums": "arrival state: peer reports, never simulation",
+		},
+	}
+	# `inputs` IS carried; the empty reason above is a guard against listing it
+	# twice by accident and is removed here.
+	(NOT_IN_MANIFEST["run"] as Dictionary).erase("inputs")
+
+func _manifest_object(key: String) -> Variant:
+	match key:
+		"run": return self
+		"enemies": return enemies
+		"projectiles": return projectiles
+		"shards": return shards
+		"botnet": return botnet
+		"hostiles": return hostiles
+		"terrain": return terrain
+		"blocks": return blocks
+		"director": return director
+		"director_rng": return director.rng
+		"lockstep": return lockstep
+		"rng_sim": return _rng
+		"rng_block": return _block_rng
+	if key.begins_with("rng_card"):
+		return _card_rng[int(key.substr(8))]
+	if key.begins_with("flow"):
+		return _flow[int(key.substr(4))]
+	return null
+
+func _population_of(key: String) -> Population:
+	return _manifest_object(key) as Population
+
+## The value an entry carries right now: the property, or the derived primitive,
+## sliced to its population's count where the entry says so.
+func _manifest_get(entry: Array) -> Variant:
+	var obj = _manifest_object(entry[0])
+	var prop: String = entry[1]
+	var v = _derived_get(entry[0], prop) if prop.begins_with("@") else obj.get(prop)
+	var slice_key: String = entry[3]
+	if slice_key != "":
+		var n := _population_of(slice_key).count
+		v = v.slice(0, n)
+	return v
+
+# ------------------------------------------------------ derived primitives ---
+
+func _derived_get(key: String, prop: String) -> Variant:
+	match prop:
+		"@worms":
+			var ids := PackedInt32Array()
+			for id in _worm_trail.keys():
+				ids.append(int(id))
+			ids.sort()
+			var cursors := PackedInt32Array()
+			var trails := PackedVector2Array()
+			for id in ids:
+				cursors.append(int(_worm_cursor[id]))
+				trails.append_array(_worm_trail[id])
+			return [ids, cursors, trails]
+		"@loadouts":
+			var stride := GID_STRIDE * Exploit.SLOT_COUNT
+			var codes := PackedInt32Array(); codes.resize(SessionRules.MAX_PLAYERS * stride)
+			codes.fill(-1)
+			var ranks := PackedInt32Array(); ranks.resize(codes.size())
+			var fused := PackedByteArray(); fused.resize(SessionRules.MAX_PLAYERS * GID_STRIDE)
+			for s in SessionRules.MAX_PLAYERS:
+				var lo: Loadout = loadouts[s]
+				if lo == null:
+					continue
+				for e in mini(lo.exploits.size(), GID_STRIDE):
+					var ex: Exploit = lo.exploits[e]
+					fused[s * GID_STRIDE + e] = 1 if ex.head_is_fused() else 0
+					for si in Exploit.SLOT_COUNT:
+						var em: EquippedModule = ex.at(si)
+						if em == null:
+							continue
+						var k := s * stride + e * Exploit.SLOT_COUNT + si
+						codes[k] = _encode_card(em.module)
+						ranks[k] = int(em.rank)
+			return [codes, ranks, fused]
+		"@offers":
+			var n := SessionRules.MAX_PLAYERS
+			var oseq := PackedInt32Array(); oseq.resize(n)
+			var okind := PackedInt32Array(); okind.resize(n); okind.fill(-1)
+			var odl := PackedInt32Array(); odl.resize(n)
+			var olen := PackedInt32Array(); olen.resize(n)
+			var oflat := PackedInt32Array()
+			var qslot := PackedInt32Array()
+			var qseq := PackedInt32Array()
+			var qkind := PackedInt32Array()
+			var qlen := PackedInt32Array()
+			var qflat := PackedInt32Array()
+			for s in n:
+				var open: Dictionary = _offer_open[s]
+				if not open.is_empty():
+					oseq[s] = int(open["seq"]); okind[s] = int(open["kind"])
+					odl[s] = int(open["deadline"])
+					var c: PackedInt32Array = open["contents"]
+					olen[s] = c.size(); oflat.append_array(c)
+				for row in (_offer_queue[s] as Array):
+					qslot.append(s); qseq.append(int(row["seq"]))
+					qkind.append(int(row["kind"]))
+					var qc: PackedInt32Array = row["contents"]
+					qlen.append(qc.size()); qflat.append_array(qc)
+			return [oseq, okind, odl, olen, oflat, qslot, qseq, qkind, qlen, qflat]
+		"@banked":
+			var n := SessionRules.MAX_PLAYERS
+			var bs := PackedInt32Array(); bs.resize(n)
+			var bk := PackedInt32Array(); bk.resize(n)
+			var bf := PackedInt32Array(); bf.resize(n)
+			for s in n:
+				var b: Dictionary = _banked[s]
+				bs[s] = int(b[&"salvage"]); bk[s] = int(b[&"kills"]); bf[s] = int(b[&"flips"])
+			return [bs, bk, bf]
+		"@trigger_fires":
+			var keys := PackedInt32Array()
+			for k in _trigger_fires.keys():
+				keys.append(int(k))
+			keys.sort()
+			var vals := PackedInt32Array()
+			for k in keys:
+				vals.append(int(_trigger_fires[k]))
+			return [keys, vals]
+		"@gate_open":
+			return terrain.gate_open_flags()
+		"@milli":
+			var out := PackedInt32Array()
+			for m in director._milli:
+				out.append(int(m))
+			return out
+		"@ring":
+			return lockstep.snapshot_window(tick)
+	return null
+
+func _derived_set(key: String, prop: String, v) -> void:
+	match prop:
+		"@worms":
+			_worm_trail.clear()
+			_worm_cursor.clear()
+			var ids: PackedInt32Array = v[0]
+			var cursors: PackedInt32Array = v[1]
+			var trails: PackedVector2Array = v[2]
+			for k in ids.size():
+				_worm_cursor[ids[k]] = cursors[k]
+				_worm_trail[ids[k]] = trails.slice(k * WORM_TRAIL_LEN, (k + 1) * WORM_TRAIL_LEN)
+		"@loadouts":
+			var stride := GID_STRIDE * Exploit.SLOT_COUNT
+			var codes: PackedInt32Array = v[0]
+			var ranks: PackedInt32Array = v[1]
+			for s in SessionRules.MAX_PLAYERS:
+				var lo: Loadout = loadouts[s]
+				if lo == null:
+					continue
+				var exploits := []
+				var last := -1
+				for e in GID_STRIDE:
+					var ex := Exploit.new()
+					var any := false
+					for si in Exploit.SLOT_COUNT:
+						var k := s * stride + e * Exploit.SLOT_COUNT + si
+						var m := _decode_card(codes[k])
+						if m == null:
+							continue
+						var em := EquippedModule.new(m)
+						em.rank = ranks[k]
+						ex.set_at(si, em)
+						any = true
+					exploits.append(ex)
+					if any:
+						last = e
+				lo.exploits = exploits.slice(0, last + 1)
+		"@offers":
+			var n := SessionRules.MAX_PLAYERS
+			var oseq: PackedInt32Array = v[0]; var okind: PackedInt32Array = v[1]
+			var odl: PackedInt32Array = v[2]; var olen: PackedInt32Array = v[3]
+			var oflat: PackedInt32Array = v[4]
+			var qslot: PackedInt32Array = v[5]; var qseq: PackedInt32Array = v[6]
+			var qkind: PackedInt32Array = v[7]; var qlen: PackedInt32Array = v[8]
+			var qflat: PackedInt32Array = v[9]
+			var at := 0
+			for s in n:
+				_offer_queue[s] = []
+				if okind[s] < 0:
+					_offer_open[s] = {}
+				else:
+					_offer_open[s] = {"seq": oseq[s], "kind": okind[s],
+						"contents": oflat.slice(at, at + olen[s]), "deadline": odl[s]}
+				at += olen[s]
+			var qat := 0
+			for k in qslot.size():
+				(_offer_queue[qslot[k]] as Array).append({"seq": qseq[k],
+					"kind": qkind[k], "contents": qflat.slice(qat, qat + qlen[k]),
+					"deadline": -1})
+				qat += qlen[k]
+		"@banked":
+			for s in SessionRules.MAX_PLAYERS:
+				_banked[s] = {&"salvage": v[0][s], &"kills": v[1][s], &"flips": v[2][s]}
+		"@trigger_fires":
+			_trigger_fires.clear()
+			var keys: PackedInt32Array = v[0]
+			var vals: PackedInt32Array = v[1]
+			for k in keys.size():
+				_trigger_fires[keys[k]] = vals[k]
+		"@gate_open":
+			terrain.set_gate_open_flags(v)
+		"@milli":
+			var out := []
+			for m in v:
+				out.append(int(m))
+			director._milli = out
+		"@ring":
+			pass    # merged in _after_restore, once executed is set
+
+## Shape-check a derived value against what this run would produce, so a
+## hostile payload cannot smuggle a wrong type or an inconsistent pair of
+## parallel arrays into the apply pass.
+func _derived_valid(prop: String, v) -> bool:
+	var cur: Variant = _derived_get("", prop)
+	if prop == "@gate_open" or prop == "@milli":
+		return typeof(v) == typeof(cur) and (prop == "@milli" or v.size() == cur.size())
+	if prop == "@ring":
+		return typeof(v) == TYPE_DICTIONARY
+	if typeof(v) != TYPE_ARRAY or v.size() != cur.size():
+		return false
+	for k in v.size():
+		if typeof(v[k]) != typeof(cur[k]):
+			return false
+	match prop:
+		"@worms":
+			return v[0].size() == v[1].size() \
+				and v[2].size() == v[0].size() * WORM_TRAIL_LEN
+		"@loadouts":
+			if v[0].size() != cur[0].size() or v[1].size() != cur[1].size() \
+					or v[2].size() != cur[2].size():
+				return false
+			for r in v[1]:
+				if r < 0 or r > 99:
+					return false
+			return true
+		"@offers":
+			var n := SessionRules.MAX_PLAYERS
+			for i in 4:
+				if v[i].size() != n:
+					return false
+			var total := 0
+			for s in n:
+				if v[1][s] < -1 or v[1][s] >= OfferKind.size() or v[3][s] < 0:
+					return false
+				total += v[3][s]
+			if v[4].size() != total:
+				return false
+			var qn: int = v[5].size()
+			if v[6].size() != qn or v[7].size() != qn or v[8].size() != qn:
+				return false
+			var qtotal := 0
+			for k in qn:
+				if v[5][k] < 0 or v[5][k] >= n or v[7][k] < 0 \
+						or v[7][k] >= OfferKind.size() or v[8][k] < 0:
+					return false
+				qtotal += v[8][k]
+			return v[9].size() == qtotal
+		"@banked":
+			return v[0].size() == SessionRules.MAX_PLAYERS \
+				and v[1].size() == v[0].size() and v[2].size() == v[0].size()
+		"@trigger_fires":
+			return v[0].size() == v[1].size()
+	return true
+
+# ------------------------------------------------------- hash / snapshot ---
+
+## A checksum of executed simulation state: every HASH entry, sliced to its
+## live prefix, in manifest order, hashed by its raw bytes. Arrival state (the
+## ring) is excluded, so two peers with identical simulations but different
+## in-flight records agree.
+func _state_hash() -> int:
+	var vals := []
+	for entry in STATE_FIELDS:
+		if (int(entry[2]) & HASH) == 0:
+			continue
+		vals.append(_manifest_get(entry))
+	return hash(var_to_bytes(vals))
+
+## The whole SNAPSHOT-flagged manifest, labelled with the tick whose record was
+## applied last, as primitives. Carries the ring's (tick, tick + delay] window
+## so the restoring peer resumes at tick + 1 with every record it needs.
+func serialize_state(after_tick: int) -> PackedByteArray:
+	var fields := []
+	for entry in STATE_FIELDS:
+		if (int(entry[2]) & SNAPSHOT) == 0:
+			continue
+		if entry[1] == "@ring":
+			fields.append(lockstep.snapshot_window(after_tick))
+		else:
+			fields.append(_manifest_get(entry))
+	return var_to_bytes({"v": SessionRules.SNAPSHOT_VERSION, "tick": after_tick,
+		"fields": fields})
+
+## Restore from a peer's bytes. Everything is validated into a pending list
+## FIRST — root shape, version, label, field count, each field's type and
+## size, every population count against its capacity, every sliced array
+## against its count, every enum — and only then written. On any violation the
+## live run is untouched and false is returned. Derived state is rebuilt after
+## the write: builds recompiled, terrain blockers and collapse re-derived, the
+## ring merged without overwriting delivered records, the local offer re-emitted.
+func restore_state(bytes: PackedByteArray, after_tick: int) -> bool:
+	if bytes.size() > SessionRules.SNAPSHOT_MAX or bytes.is_empty():
+		return false
+	var raw = bytes_to_var(bytes)
+	if typeof(raw) != TYPE_DICTIONARY:
+		return false
+	if int(_num(raw.get("v", -1))) != SessionRules.SNAPSHOT_VERSION:
+		return false
+	if int(_num(raw.get("tick", -1))) != after_tick:
+		return false
+	var fields = raw.get("fields", null)
+	if typeof(fields) != TYPE_ARRAY:
+		return false
+	var entries := []
+	for entry in STATE_FIELDS:
+		if (int(entry[2]) & SNAPSHOT) != 0:
+			entries.append(entry)
+	if fields.size() != entries.size():
+		return false
+	# Pass 1: population counts, which every sliced length is checked against.
+	var counts := {}
+	for k in entries.size():
+		var e: Array = entries[k]
+		if e[1] == "count" and MANIFEST_FILES.get(e[0], "") == "population":
+			var v = fields[k]
+			if typeof(v) != TYPE_INT:
+				return false
+			var cap: int = _population_of(e[0]).capacity
+			if v < 0 or v > cap:
+				return false
+			counts[e[0]] = v
+	# Pass 2: every field's shape and value.
+	for k in entries.size():
+		var e: Array = entries[k]
+		var prop: String = e[1]
+		var v = fields[k]
+		if prop.begins_with("@"):
+			if not _derived_valid(prop, v):
+				return false
+			continue
+		var cur: Variant = _manifest_object(e[0]).get(prop)
+		if typeof(v) != typeof(cur):
+			return false
+		var slice_key: String = e[3]
+		if slice_key != "":
+			if v.size() != int(counts[slice_key]):
+				return false
+		elif _is_packed(v) and (int(e[2]) & VARLEN) == 0 and v.size() != cur.size():
+			return false
+		if not _valid_value(e[0], prop, v):
+			return false
+	# Pass 3: write. Nothing above mutated the run.
+	for k in entries.size():
+		var e: Array = entries[k]
+		var prop: String = e[1]
+		var v = fields[k]
+		if prop.begins_with("@"):
+			_derived_set(e[0], prop, v)
+			continue
+		var obj = _manifest_object(e[0])
+		var slice_key: String = e[3]
+		if slice_key != "":
+			var arr = obj.get(prop)
+			for i in v.size():
+				arr[i] = v[i]
+			obj.set(prop, arr)
+		else:
+			obj.set(prop, v)
+	_after_restore(after_tick, raw)
+	return true
+
+static func _num(v) -> float:
+	if typeof(v) != TYPE_FLOAT and typeof(v) != TYPE_INT:
+		return -1.0
+	var f := float(v)
+	return f if is_finite(f) else -1.0
+
+static func _is_packed(v) -> bool:
+	var t := typeof(v)
+	return t == TYPE_PACKED_BYTE_ARRAY or t == TYPE_PACKED_INT32_ARRAY \
+		or t == TYPE_PACKED_INT64_ARRAY or t == TYPE_PACKED_FLOAT32_ARRAY \
+		or t == TYPE_PACKED_FLOAT64_ARRAY or t == TYPE_PACKED_VECTOR2_ARRAY
+
+## Enum and range rules for the fields that have them. Anything a later step
+## indexes with must be in range HERE, or a hostile count becomes a crash.
+func _valid_value(key: String, prop: String, v) -> bool:
+	var file: String = MANIFEST_FILES.get(key, "")
+	if file == "population":
+		match prop:
+			"state":
+				for b in v:
+					if b > Population.FLIPPED:
+						return false
+			"type_index":
+				if key == "enemies":
+					for t in v:
+						if t < 0 or t >= enemy_types.size():
+							return false
+			"_next_generation":
+				return v >= 1
+		return true
+	if key == "run":
+		match prop:
+			"slot_state":
+				for b in v:
+					if b > SlotState.ABSENT:
+						return false
+			"phase":
+				return v >= Phase.FIGHTING and v <= Phase.CLEARED
+			"subnet":
+				return v >= 1 and v <= SpawnDirector.CAMPAIGN_SUBNETS
+			"level":
+				return v >= 1
+			"tick":
+				return v >= 0
+			"_worm_id":
+				for w in v:
+					if w < 0:
+						return false
+	if key == "terrain":
+		match prop:
+			"current":
+				return v >= 0 and v < terrain.arenas.size()
+			"_collapse_idx":
+				return v >= 0
+			"_tz_pos", "_tz_r2", "_tz_kind", "_tz_left":
+				return v.size() <= Terrain.MAX_TEMP_ZONES
+	if key.begins_with("flow") and prop == "_dist":
+		return v.size() == 0 or v.size() == FlowField.SIDE * FlowField.SIDE
+	return true
+
+## Rebuild everything the manifest deliberately does not carry, in dependency
+## order, and re-arm the ring at the tick after the snapshot.
+func _after_restore(after_tick: int, raw: Dictionary) -> void:
+	tick = after_tick
+	lockstep.executed = after_tick + 1
+	_sync_ring_roster()
+	# Merge the carried window; records already delivered here are kept.
+	var entries := []
+	for entry in STATE_FIELDS:
+		if (int(entry[2]) & SNAPSHOT) != 0:
+			entries.append(entry)
+	for k in entries.size():
+		if entries[k][1] == "@ring":
+			lockstep.merge_window(raw["fields"][k], after_tick)
+	_recompile()
+	_refresh_thresholds()
+	# Temp zones' parallel arrays must agree; a bad payload passed the length
+	# rule per array, so trim to the shortest rather than index past one.
+	var tzn: int = mini(mini(terrain._tz_pos.size(), terrain._tz_r2.size()),
+		mini(terrain._tz_kind.size(), terrain._tz_left.size()))
+	terrain._tz_pos.resize(tzn); terrain._tz_r2.resize(tzn)
+	terrain._tz_kind.resize(tzn); terrain._tz_left.resize(tzn)
+	if phase == Phase.CLEARED:
+		terrain.restore_collapse(terrain._collapse_idx)
+	else:
+		terrain._clear_collapse_state()
+	_route = PackedInt32Array()
+	_route_cell = -1
+	_pending_splits.clear()
+	_enemy_target.fill(-1)
+	_refresh_live_cache()
+	alive = _any_live()
+	_emit_local_offer()
+	emit_signal("stats_changed")

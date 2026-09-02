@@ -79,8 +79,12 @@ func _initialize() -> void:
 	# Press the button, exactly as the keyboard would.
 	ui.fusion_buttons()[0].emit_signal("pressed")
 	await process_frame
-	# The button staged a choice record; the next tick applies it.
-	run._physics_process(DT)
+	# The button staged a choice record; tick until it has been submitted and
+	# applied (the engine's own tick may already hold this tick's record).
+	for k in 4:
+		if run._local_choice.x == -1:
+			break
+		run._physics_process(DT)
 	_ck("the row fused", run.loadouts[run.local_slot].exploits[0].head_is_fused(), true)
 	_ck("into frag_packet", run.loadouts[run.local_slot].exploits[0].vector.module.id,
 		&"frag_packet")
