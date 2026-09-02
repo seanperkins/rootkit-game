@@ -1182,15 +1182,24 @@ If `flips` still reads 0 after the run, replace the director's spawns with a det
 **Files:**
 - Modify: `tests/perf_milestone0.gd` (header 10-18; `_real_run` 187-250; `_kite` 254-299)
 
-- [ ] **Step 1: Record the baseline BEFORE changing the fixture**
+- [ ] **Step 1: Record the baselines BEFORE the game changes — three measurements**
 
-First make the gate print what the pin needs (this edit changes no behaviour): replace the `print("    %s at %.0fs, peak enemies %d" ...)` line in `_real_run` with
+The pin's baseline is the NEW fixture on the OLD tree, so fixture changes and game changes are attributed separately. Do this task's fixture edits (Steps 1 and 2) on a scratch checkout of `main` (or `git stash` the game changes), run the gate there for the pin's baseline, and also note today's unchanged-fixture numbers for the header; then run the new fixture on this branch in Step 3.
+
+First make the gate print what the pin needs. Today the loop runs while `g.alive`, which is true whenever ANY slot is LIVE; slots 1-3 are force-LIVE every tick, so a dead slot 0 never ends the run. Change the loop condition to end on slot 0 and replace the `print("    %s at %.0fs, peak enemies %d" ...)` line in `_real_run` with
 
 ```gdscript
-	var outcome := "won" if g.won else ("died" if not g.alive else "timeout")
+	while t < 24000 and g.slot_state[0] == g.SlotState.LIVE and not g.won:
+```
+(replacing `while t < 24000 and g.alive and not g.won`), and after the loop:
+```gdscript
+	var outcome := "won" if g.won else ("died" if g.slot_state[0] != g.SlotState.LIVE else "timeout")
 	var ticks := maxf(float(t), 1.0)
-	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, at cap %.0f%% of ticks" % [
-		outcome, t, t * DT, _enemy_sum / ticks, _hit_sum / ticks, 100.0 * _cap_ticks / ticks])
+	var total_kills := 0
+	for s in SessionRules.MAX_PLAYERS:
+		total_kills += g.kills[s]
+	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, kills/tick %.3f, at cap %.0f%% of ticks" % [
+		outcome, t, t * DT, _enemy_sum / ticks, _hit_sum / ticks, float(total_kills) / ticks, 100.0 * _cap_ticks / ticks])
 ```
 and inside the loop, after `g._physics_process(DT)`, add
 ```gdscript
@@ -1199,10 +1208,10 @@ and inside the loop, after `g._physics_process(DT)`, add
 		if g.enemies.count >= g.MAX_ENEMIES:
 			_cap_ticks += 1.0
 ```
-with `var _enemy_sum := 0.0`, `var _hit_sum := 0.0`, `var _cap_ticks := 0.0` at file scope, zeroed at the top of `_real_run`. Two load statistics because they move in opposite directions: a lighter field lowers the enemy mean, a weaker or blind-aimed build lowers the hit mean while raising the enemy mean.
+with `var _enemy_sum := 0.0`, `var _hit_sum := 0.0`, `var _cap_ticks := 0.0` at file scope, zeroed at the top of `_real_run`. Three load statistics because they move in different directions: a lighter field lowers the enemy mean; a weaker or blind-aimed build lowers the hit and kill means while raising the enemy mean; a dead slot 0 lowers kills.
 
 Run: `godot --headless -s res://tests/perf_milestone0.gd 2>&1 | grep -E 'at tick|PASS|FAIL|INCONCLUSIVE'`
-On this branch the baseline is a TIMEOUT at tick 24000 (measured during review: p95 9.09 ms against a 9.61 ms budget, about five percent headroom). Write the outcome, the tick, the mean live enemies and the mean hits per tick into the constants below (the at-cap fraction goes in the comment only).
+On this branch the baseline is a TIMEOUT at tick 24000 (measured during review: p95 9.09 ms against a 9.61 ms budget, about five percent headroom). Write the outcome, the tick, the mean live enemies, the mean hits per tick and the kills per tick from the NEW-fixture-on-OLD-tree run into the constants below (the at-cap fraction and today's old-fixture numbers go in the comment only).
 
 - [ ] **Step 2: Rows, pinned facing, the kite and the pin**
 
@@ -1293,13 +1302,15 @@ func _kite(g: Node2D) -> Vector2:
 	return Vector2.ZERO
 
 ## One tick toward the swarm's mass (the negative flee sum), else toward the
-## nearest enemy, else nothing.
+## nearest enemy, else nothing. NOT through _around_walls: this is a facing
+## intent, its step is rejected by terrain.slide against rock anyway, and a
+## wall-deflected nudge would face away from the swarm.
 func _nudge(g: Node2D, flee: Vector2, k: int, nearest: int) -> Vector2:
 	if k > 0 and flee.length_squared() > 0.000001:
-		return _around_walls(g, (-flee).normalized())
+		return (-flee).normalized()
 	if nearest < 0:
 		return Vector2.ZERO
-	return _around_walls(g, (g.enemies.pos[nearest] - g.player_pos[g.local_slot]).normalized())
+	return (g.enemies.pos[nearest] - g.player_pos[g.local_slot]).normalized()
 ```
 
 The pin — constants from Step 1 and an assertion after the loop:
@@ -1327,15 +1338,20 @@ const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout" — from Step
 const BASELINE_END_TICK := 24000      # from Step 1
 const BASELINE_MEAN_ENEMIES := 0.0    # from Step 1
 const BASELINE_MEAN_HITS := 0.0       # from Step 1
+const BASELINE_KILLS_PER_TICK := 0.0  # from Step 1
 ```
 and after the loop (replacing the print added in Step 1's edit):
 ```gdscript
-	var outcome := "won" if g.won else ("died" if not g.alive else "timeout")
+	var outcome := "won" if g.won else ("died" if g.slot_state[0] != g.SlotState.LIVE else "timeout")
 	var ticks := maxf(float(t), 1.0)
 	var mean_enemies := _enemy_sum / ticks
 	var mean_hits := _hit_sum / ticks
-	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, at cap %.0f%% of ticks" % [
-		outcome, t, t * DT, mean_enemies, mean_hits, 100.0 * _cap_ticks / ticks])
+	var total_kills := 0
+	for s in SessionRules.MAX_PLAYERS:
+		total_kills += g.kills[s]
+	var kills_per_tick := float(total_kills) / ticks
+	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, kills/tick %.3f, at cap %.0f%% of ticks" % [
+		outcome, t, t * DT, mean_enemies, mean_hits, kills_per_tick, 100.0 * _cap_ticks / ticks])
 	var covered := true
 	if BASELINE_OUTCOME == "won":
 		covered = outcome == "won"
@@ -1343,22 +1359,23 @@ and after the loop (replacing the print added in Step 1's edit):
 		covered = outcome != "died" or t >= int(float(BASELINE_END_TICK) * 0.9)
 	elif BASELINE_OUTCOME == "timeout":
 		covered = outcome != "died"
-	if mean_enemies < BASELINE_MEAN_ENEMIES * 0.97 or mean_hits < BASELINE_MEAN_HITS * 0.97:
+	if mean_enemies < BASELINE_MEAN_ENEMIES * 0.97 or mean_hits < BASELINE_MEAN_HITS * 0.97 \
+			or kills_per_tick < BASELINE_KILLS_PER_TICK * 0.97:
 		covered = false
 	_gate_covered = covered
 ```
 with `var _gate_covered := true` at file scope, and in `_initialize`, right after the `_gate_drops > 0` check and BEFORE the `scale > MAX_CONTENTION` branch (a loaded machine must not turn a coverage regression into PASS-by-INCONCLUSIVE). The gate also refuses an unpopulated baseline, so the pin cannot be vacuous by omission — put this first:
 ```gdscript
-	if BASELINE_MEAN_ENEMIES <= 0.0 or BASELINE_MEAN_HITS <= 0.0 or BASELINE_END_TICK <= 0:
+	if BASELINE_MEAN_ENEMIES <= 0.0 or BASELINE_MEAN_HITS <= 0.0 or BASELINE_KILLS_PER_TICK <= 0.0 or BASELINE_END_TICK <= 0:
 		print("  FAIL — the coverage baseline is not pinned; run the gate on the pre-change tree and record it (Task 10, Step 1).")
 		quit(1)
 		return
 	if not _gate_covered:
-		print("  FAIL — the fixture measured less than its baseline (%s at %d, mean enemies %.1f, mean hits %.2f): a coverage regression, not a speedup." % [BASELINE_OUTCOME, BASELINE_END_TICK, BASELINE_MEAN_ENEMIES, BASELINE_MEAN_HITS])
+		print("  FAIL — the fixture measured less than its baseline (%s at %d, mean enemies %.1f, mean hits %.2f, kills/tick %.3f): a coverage regression, not a speedup." % [BASELINE_OUTCOME, BASELINE_END_TICK, BASELINE_MEAN_ENEMIES, BASELINE_MEAN_HITS, BASELINE_KILLS_PER_TICK])
 		quit(1)
 		return
 ```
-If the hysteresis kite dies before the cap (standing still lets ranged shots connect that the always-moving kite dodged, and a ring closing from every bearing can cancel the flee sum), widen the band — `KITE_FLEE_IN` 150 first, then toward 190 — until the run reaches the cap again, and record the value in the constant's comment. If p95 comes back OVER budget on a fuller field, that is coverage: profile the beam selection (k up to 56) and optimise; do not thin the fixture or touch `BUDGET_MS`.
+If the hysteresis kite dies before the cap (standing still lets ranged shots connect that the always-moving kite dodged, and a ring closing from every bearing can cancel the flee sum), widen the band — `KITE_FLEE_IN` 150 first, then toward 190 — and if that is not enough also enter the flee state whenever an enemy within 300 units is in `CH_WINDUP` or `CH_DASH` (read `_ai_phase` for CHARGER enemies; a sentinel's dash lands 21 units short of a stationary target), until the run reaches the cap again, and record the values in the constants' comment. If p95 comes back OVER budget on a fuller field, that is coverage: profile the beam selection (k up to 56) and optimise; do not thin the fixture or touch `BUDGET_MS`.
 (If `quit` inside `_real_run` is awkward, return an empty array and let the caller fail on it.) Rewrite the header's packet-query sentence to name the beam capsule and the homing rows as the load.
 
 - [ ] **Step 3: Run the gate** — `godot --headless -s res://tests/perf_milestone0.gd 2>&1 | tail -12`. Expected: PASS within budget and the coverage assertion holding. If INCONCLUSIVE, rerun on a quiet machine. Write the post-pass outcome, tick and mean enemies into the constants' comment beside the pre-pass values. Headroom is about five percent, so if p95 is over budget, profile the beam selection first (k up to 56) before touching anything else.
