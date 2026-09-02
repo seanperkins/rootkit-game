@@ -1328,8 +1328,12 @@ and after the loop (replacing the print added in Step 1's edit):
 		covered = false
 	_gate_covered = covered
 ```
-with `var _gate_covered := true` at file scope, and in `_initialize`, right after the `_gate_drops > 0` check and BEFORE the `scale > MAX_CONTENTION` branch (a loaded machine must not turn a coverage regression into PASS-by-INCONCLUSIVE):
+with `var _gate_covered := true` at file scope, and in `_initialize`, right after the `_gate_drops > 0` check and BEFORE the `scale > MAX_CONTENTION` branch (a loaded machine must not turn a coverage regression into PASS-by-INCONCLUSIVE). The gate also refuses an unpopulated baseline, so the pin cannot be vacuous by omission — put this first:
 ```gdscript
+	if BASELINE_MEAN_ENEMIES <= 0.0 or BASELINE_END_TICK <= 0:
+		print("  FAIL — the coverage baseline is not pinned; run the gate on the pre-change tree and record it (Task 10, Step 1).")
+		quit(1)
+		return
 	if not _gate_covered:
 		print("  FAIL — the fixture measured less than its baseline (%s at %d, mean enemies %.1f): a coverage regression, not a speedup." % [BASELINE_OUTCOME, BASELINE_END_TICK, BASELINE_MEAN_ENEMIES])
 		quit(1)
