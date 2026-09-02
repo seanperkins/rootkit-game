@@ -309,6 +309,7 @@ func _refresh() -> void:
 	if run._session != null and run._session.reconnecting:
 		tally += "\nreconnecting… (attempt %d of %d)" % [run._reconnect_attempts,
 			run.RECONNECT_ATTEMPTS]
+	tally += _teammate_strip(ls)
 	_hud.get_node("Tally").text = tally
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())
@@ -316,6 +317,45 @@ func _refresh() -> void:
 ## One line per exploit of the LOCAL slot's build. Shared with the run summary,
 ## so the two cannot drift. `resolved` is slot-strided, so each exploit's
 ## compiled row is looked up by its global id.
+## The strip for everyone else in the session: name, integrity or state. And
+## this screen's own notices — whom it is spectating once its slot is not
+## LIVE, and the leash when a teammate is holding it at the window's edge.
+## Presentation only, read straight off the run.
+func _teammate_strip(ls: int) -> String:
+	var out := ""
+	if run._session == null:
+		return out
+	for s in SessionRules.MAX_PLAYERS:
+		if s == ls or run._session.profile(s).is_empty():
+			continue
+		var nm := _slot_name(s)
+		match run.slot_state[s]:
+			run.SlotState.LIVE:
+				var hp := int(run.player_health[s])
+				var mx := int(run._eff_integrity(s))
+				out += "\n%-10s [%s] %3d" % [nm, _bar(float(hp) / maxf(float(mx), 1.0), 8), hp]
+			run.SlotState.DEAD:
+				out += "\n%-10s down" % nm
+			_:
+				out += "\n%-10s away" % nm
+	if run.slot_state[ls] != run.SlotState.LIVE and run.view_slot != ls:
+		out += "\nspectating %s — confirm cycles" % _slot_name(run.view_slot)
+	elif run.slot_state[ls] == run.SlotState.LIVE:
+		var held := []
+		for s in SessionRules.MAX_PLAYERS:
+			if s == ls or run.slot_state[s] != run.SlotState.LIVE:
+				continue
+			var d: Vector2 = (run.player_pos[s] - run.player_pos[ls]).abs()
+			if maxf(d.x, d.y) >= SessionRules.LEASH - 1.0:
+				held.append(_slot_name(s))
+		if not held.is_empty():
+			out += "\nat the leash: %s" % ", ".join(held)
+	return out
+
+func _slot_name(s: int) -> String:
+	var nm := String(run._session.profile(s).get("name", ""))
+	return nm if nm != "" else "slot %d" % s
+
 func _build_lines() -> Array:
 	var lines := []
 	var ls: int = run.local_slot
@@ -833,6 +873,9 @@ func _input(e: InputEvent) -> void:
 		elif e.is_action_pressed("confirm"):      _activate()
 		elif e.is_action_pressed("recipes"):      _toggle_recipes()
 		else:                                     handled = false
+	elif e.is_action_pressed("confirm") and run != null and run.cycle_spectate():
+		# No offer owns confirm: a spectator looks through the next LIVE slot.
+		pass
 	else:
 		handled = false
 	if not handled:

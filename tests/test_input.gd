@@ -14,7 +14,7 @@ const CASES := ["every_referenced_action_exists", "tools_use_real_actions",
 	"a_joypad_can_drive_the_overlay", "user_pause_gates_the_tick",
 	"a_card_decline_does_not_release_a_player_pause", "cancel_routes_by_screen",
 	"the_sim_reads_inputs_not_the_device", "input_override_feeds_slot_zero",
-	"the_device_is_polled_in_one_place"]
+	"the_device_is_polled_in_one_place", "confirm_cycles_spectate_targets"]
 
 const DT := 1.0 / 60.0
 
@@ -31,6 +31,7 @@ func _initialize() -> void:
 	await the_sim_reads_inputs_not_the_device()
 	await input_override_feeds_slot_zero()
 	the_device_is_polled_in_one_place()
+	await confirm_cycles_spectate_targets()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -236,3 +237,30 @@ func the_device_is_polled_in_one_place() -> void:
 	_check("and only inside _poll_local_input (offenders: %s)" % [offenders],
 		offenders.is_empty(), true)
 	finished["the_device_is_polled_in_one_place"] = true
+
+func _confirm() -> InputEventAction:
+	var e := InputEventAction.new()
+	e.action = "confirm"
+	e.pressed = true
+	return e
+
+## Confirm belongs to the card overlay while one is up; otherwise a spectator
+## cycles LIVE targets with it, and a LIVE player gets nothing from it.
+func confirm_cycles_spectate_targets() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 3, 0, 20260830)
+	var r: Node2D = h.runs[0]
+	var ui := _ui(r)
+	_check("a LIVE slot has nothing to cycle", r.cycle_spectate(), false)
+	r._die(0)
+	r._refresh_view()
+	_check("dead, the view starts on the next LIVE slot", r.view_slot, 1)
+	ui._input(_confirm())
+	_check("confirm cycles to the next", r.view_slot, 2)
+	ui._input(_confirm())
+	_check("and wraps, skipping the dead local slot", r.view_slot, 1)
+	r._die(2)
+	_check("with one LIVE slot left there is nowhere to cycle", r.cycle_spectate(), false)
+	h.teardown()
+	await process_frame
+	finished["confirm_cycles_spectate_targets"] = true

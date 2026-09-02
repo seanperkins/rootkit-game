@@ -11,7 +11,8 @@ var failures := 0
 var finished := {}
 
 const CASES := ["the_blocks_exist_and_populate", "integrity_warns_proportionally",
-	"the_summary_reports_a_finished_run", "the_summary_survives_a_short_build"]
+	"the_summary_reports_a_finished_run", "the_summary_survives_a_short_build",
+	"the_teammate_strip_names_everyone_else"]
 
 func _initialize() -> void:
 	print("ROOTKIT — hud\n")
@@ -21,6 +22,7 @@ func _initialize() -> void:
 	await integrity_warns_proportionally()
 	await the_summary_reports_a_finished_run()
 	await the_summary_survives_a_short_build()
+	await the_teammate_strip_names_everyone_else()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -128,3 +130,28 @@ func the_summary_survives_a_short_build() -> void:
 	r.free()
 	await process_frame
 	finished["the_summary_survives_a_short_build"] = true
+
+func the_teammate_strip_names_everyone_else() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 3, 0, 20260830)
+	var r: Node2D = h.runs[0]
+	var ui := _ui(r)
+	ui._refresh()
+	var tally: String = ui._hud.get_node("Tally").text
+	_check("teammates are named", tally.contains("p1") and tally.contains("p2"), true)
+	_check("the local slot is not in its own strip", tally.contains("p0"), false)
+	r._die(1)
+	r._park(2)
+	ui._refresh()
+	tally = ui._hud.get_node("Tally").text
+	_check("a dead teammate reads down, a parked one away",
+		tally.contains("down") and tally.contains("away"), true)
+	r._return(2, r.lockstep.executed - 1)
+	r._die(0)
+	r._refresh_view()
+	ui._refresh()
+	tally = ui._hud.get_node("Tally").text
+	_check("a dead local slot reads whom it spectates", tally.contains("spectating p2"), true)
+	h.teardown()
+	await process_frame
+	finished["the_teammate_strip_names_everyone_else"] = true

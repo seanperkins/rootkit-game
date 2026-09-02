@@ -11,12 +11,14 @@ extends SceneTree
 var failures := 0
 var finished := {}
 
-const CASES := ["standing_objects_draw_over_everything_that_moves"]
+const CASES := ["standing_objects_draw_over_everything_that_moves",
+	"every_live_player_is_drawn_and_the_camera_follows_the_view"]
 
 func _initialize() -> void:
 	SaveGame.use_test_paths()
 	print("ROOTKIT — draw order\n")
 	await standing_objects_draw_over_everything_that_moves()
+	await every_live_player_is_drawn_and_the_camera_follows_the_view()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -72,3 +74,44 @@ func standing_objects_draw_over_everything_that_moves() -> void:
 		backdrop.z_index < r.z_index, true)
 	r.free()
 	finished["standing_objects_draw_over_everything_that_moves"] = true
+
+## Three peers on one screen: every LIVE slot is in the draw list, the local
+## one nameless in the solo hue, teammates in distinct hues under their names;
+## a DEAD slot vanishes; an ABSENT slot dims where it parked. The camera sits
+## on the local slot while it is LIVE and on the spectate target after.
+func every_live_player_is_drawn_and_the_camera_follows_the_view() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 3, 0, 20260830)
+	var r: Node2D = h.runs[0]
+	r._shake_pref = 0.0                   # a death shakes; the camera test wants the anchor alone
+	r._refresh_view()
+	var list: Array = r.player_draw_list()
+	var slots := []
+	var hues := {}
+	for e in list:
+		slots.append(e[0])
+		hues[e[1]] = true
+	_check("every LIVE slot is drawn", slots, [0, 1, 2])
+	_check("the local slot keeps the solo hue, unnamed", [list[0][1], list[0][3]], [r.TEAM_HUES[0], ""])
+	_check("teammates carry their names", [list[1][3], list[2][3]], ["p1", "p2"])
+	_check("three distinct hues", hues.size(), 3)
+	_check("everyone at full alpha", [list[0][2], list[1][2], list[2][2]], [1.0, 1.0, 1.0])
+	r._process(0.0)
+	_check("the camera follows the local slot while LIVE",
+		r._camera.global_position, r.to_iso(r.player_render_pos[0]))
+	r._die(1)
+	r._park(2)
+	list = r.player_draw_list()
+	_check("a DEAD slot is not drawn, an ABSENT one is dimmed",
+		[list.size(), list[1][0], list[1][2] < 1.0, list[1][3]], [2, 2, true, "p2 (away)"])
+	# The local slot dies: the view moves to the next LIVE slot.
+	r._return(2, r.lockstep.executed - 1)
+	r._die(0)
+	r._process(0.0)
+	_check("dead, this screen looks through the next LIVE slot", r.view_slot, 2)
+	_check("and the camera goes with it",
+		r._camera.global_position, r.to_iso(r.player_render_pos[2]))
+	_check("a dead local slot is not drawn", r.player_draw_list().size(), 1)
+	h.teardown()
+	await process_frame
+	finished["every_live_player_is_drawn_and_the_camera_follows_the_view"] = true

@@ -618,6 +618,84 @@ var _mm_shard: MultiMeshInstance2D
 var _mm_botnet: MultiMeshInstance2D
 var _camera: Camera2D
 
+# ---------------------------------------------------------------- the view ---
+#
+# The slot this SCREEN looks through: the local slot while it is LIVE, else a
+# spectate target — the next LIVE slot in ascending order from the last one,
+# or the local slot itself when nobody is LIVE. The camera, the culling
+# rectangle and the depth bands follow it; the simulation never does — enemies
+# target by census, and this is never hashed or snapshotted.
+
+var view_slot := 0
+var _spectate := -1
+
+## One hue per screen-relative slot: index 0 is the local player's own hue,
+## unchanged from solo; teammates take the rest in a fixed order, so a given
+## teammate is the same colour on every frame of this screen.
+const TEAM_HUES := [Color(0.9, 1.8, 1.3), Color(1.8, 1.4, 0.6),
+	Color(1.1, 1.0, 1.9), Color(1.9, 0.9, 1.3)]
+const HURT_HUE := Color(1.9, 0.8, 0.8)
+const ABSENT_ALPHA := 0.35
+
+func _next_live_from(from: int) -> int:
+	for k in range(1, SessionRules.MAX_PLAYERS + 1):
+		var s := (from + k) % SessionRules.MAX_PLAYERS
+		if slot_state[s] == SlotState.LIVE:
+			return s
+	return -1
+
+func _refresh_view() -> void:
+	if slot_state[local_slot] == SlotState.LIVE:
+		view_slot = local_slot
+		_spectate = -1
+		return
+	if _spectate >= 0 and slot_state[_spectate] == SlotState.LIVE:
+		view_slot = _spectate
+		return
+	_spectate = _next_live_from(local_slot)
+	view_slot = _spectate if _spectate >= 0 else local_slot
+
+## Confirm, with no offer owning it and this slot not LIVE: look through the
+## next LIVE slot. Returns whether the view moved.
+func cycle_spectate() -> bool:
+	if slot_state[local_slot] == SlotState.LIVE:
+		return false
+	var n := _next_live_from(view_slot)
+	if n < 0 or n == view_slot:
+		return false
+	_spectate = n
+	view_slot = n
+	return true
+
+## The hue a slot wears on THIS screen.
+func slot_hue(slot: int) -> Color:
+	return TEAM_HUES[(slot - local_slot + SessionRules.MAX_PLAYERS) % SessionRules.MAX_PLAYERS]
+
+## What the player pass draws, as [slot, colour, alpha, name]: every LIVE slot,
+## the local one nameless in its own hue and a teammate in its hue with a name
+## tag; an ABSENT slot dimmed where it parked; a DEAD slot not at all.
+func player_draw_list() -> Array:
+	var out := []
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] == SlotState.DEAD:
+			continue
+		var row := _session.profile(s)
+		if row.is_empty():
+			continue
+		var name := ""
+		if s != local_slot:
+			name = String(row.get("name", ""))
+			if name == "":
+				name = "slot %d" % s
+		if slot_state[s] == SlotState.ABSENT:
+			out.append([s, slot_hue(s), ABSENT_ALPHA, name + " (away)"])
+			continue
+		var c := slot_hue(s)
+		if player_iframe[s] > 0.0:
+			c = HURT_HUE
+		out.append([s, c, 1.0, name])
+	return out
+
 ## Bind the session this run derives itself from. Must be called before the node
 ## enters the tree, i.e. before _ready. Tests and the lobby use it; absent it,
 ## _ready builds a one-slot solo session so offline play needs no setup.
@@ -1820,11 +1898,12 @@ func _process(_dt: float) -> void:
 	_alpha = clampf(Engine.get_physics_interpolation_fraction(), 0.0, 1.0)
 	for s in SessionRules.MAX_PLAYERS:
 		player_render_pos[s] = player_prev_pos[s].lerp(player_pos[s], _alpha)
-	# The camera follows the LOCAL slot, explicitly. The shake preference
-	# multiplies the composed offset, outside Feel and after the square — folded
-	# into trauma it would scale quadratically and a legal shake of 2.0 would
-	# give 4x.
-	_camera.global_position = to_iso(player_render_pos[local_slot]) \
+	# The camera follows the VIEW: the local slot while it is LIVE, the
+	# spectate target once it is not. The shake preference multiplies the
+	# composed offset, outside Feel and after the square — folded into trauma
+	# it would scale quadratically and a legal shake of 2.0 would give 4x.
+	_refresh_view()
+	_camera.global_position = to_iso(player_render_pos[view_slot]) \
 		+ feel.shake_offset() * _shake_pref
 	_update_renderers()
 	queue_redraw()
@@ -4397,8 +4476,9 @@ func _depth_sort() -> void:
 		return
 	for b in DEPTH_BANDS + 1:
 		_band_count[b] = 0
-	# Banded around the LOCAL slot: draw order is a property of this screen.
-	var lp := player_pos[local_slot]
+	# Banded around the VIEW slot: draw order is a property of this screen,
+	# and this screen may be looking through a teammate.
+	var lp := player_pos[view_slot]
 	var lo := lp.x + lp.y - 1800.0
 	var span := 3600.0
 	for i in n:
@@ -4459,7 +4539,7 @@ func _draw_chunk(at: Vector2, drop: float, fade: float) -> void:
 func _visible_world_rect() -> Rect2:
 	var vp := get_viewport_rect().size
 	var half := from_iso(vp * 0.6).abs() + from_iso(Vector2(vp.x, -vp.y) * 0.6).abs()
-	return Rect2(player_pos[local_slot] - half, half * 2.0)
+	return Rect2(player_pos[view_slot] - half, half * 2.0)
 
 ## Ground the collapse has already taken, as horizontal RUNS of cells, clipped
 ## to the view.
@@ -4708,7 +4788,12 @@ func _draw() -> void:
 			if frac2 > 0.0 and frac2 < 0.28:
 				var k3: float = 1.0 - frac2 / 0.28
 				var from2 := to_iso(_rp(enemies, i))
-				var to2 := to_iso(player_render_pos[local_slot])
+				# At the slot this enemy is actually hunting, not at whoever
+				# holds this screen.
+				var aim := _enemy_target[i] if i < _enemy_target.size() else -1
+				if aim < 0 or aim >= SessionRules.MAX_PLAYERS or slot_state[aim] != SlotState.LIVE:
+					aim = view_slot
+				var to2 := to_iso(player_render_pos[aim])
 				draw_line(from2, from2.lerp(to2, 0.35 + 0.5 * k3),
 					Color(1.9, 0.5, 0.45, 0.30 + 0.45 * k3), 1.0 + k3)
 
@@ -4788,17 +4873,27 @@ func _draw() -> void:
 				HORIZONTAL_ALIGNMENT_CENTER, -1, 13,
 				Color(nc.r, nc.g, nc.b, nf_a))
 
-	# The player, drawn screen-aligned at the projected position: a glyph that
-	# tilts with the ground plane reads as debris, not as the thing you steer.
+	# The players, drawn screen-aligned at their projected positions: a glyph
+	# that tilts with the ground plane reads as debris, not as the thing you
+	# steer.
 	#
 	# A disc at PLAYER_RADIUS, so what you see is exactly what collides. The
 	# arrow this replaced pointed somewhere — and the movement has no facing, so
 	# the direction it pointed was never the direction anything happened in.
-	var o := to_iso(player_render_pos[local_slot])
-	var c := Color(0.9, 1.8, 1.3) if player_iframe[local_slot] <= 0.0 \
-		else Color(1.9, 0.8, 0.8)
-	draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22))
-	draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, c, 2.0)
+	# Every LIVE slot is drawn, a teammate in its own hue under a name tag; an
+	# ABSENT slot sits dimmed where it parked; a DEAD one is gone.
+	var pf := ThemeDB.fallback_font
+	for e in player_draw_list():
+		var ps: int = e[0]
+		var o := to_iso(player_render_pos[ps])
+		var c: Color = e[1]
+		var a: float = e[2]
+		draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22, a))
+		draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, Color(c.r, c.g, c.b, a), 2.0)
+		var tag: String = e[3]
+		if tag != "":
+			draw_string(pf, o + Vector2(0.0, -PLAYER_RADIUS - 6.0), tag,
+				HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color(c.r, c.g, c.b, a))
 
 # ========================================================== state manifest ===
 #
@@ -4955,6 +5050,8 @@ func _build_manifest() -> void:
 			"_mm_enemy": "presentation", "_mm_proj": "presentation",
 			"_mm_shard": "presentation", "_mm_botnet": "presentation",
 			"_camera": "presentation", "_session": "immutable descriptor",
+			"view_slot": "presentation: the slot this screen looks through",
+			"_spectate": "presentation: the chosen spectate target",
 			"_transport": "the network, polled above the guard; never simulation",
 			"_pending_park": "host bookkeeping above the guard; the ABSENT tick it names is the state",
 			"_pending_absent": "roster change keyed by tick, applied above the guard",
