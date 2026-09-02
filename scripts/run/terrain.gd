@@ -98,10 +98,26 @@ var _blocks: Array[Rect2] = []
 var dist_from_gate: PackedInt32Array
 var max_dist := 0
 var voided: PackedByteArray
-## Arena cells ordered by distance from the gate, farthest FIRST, plus how far
-## down that order the collapse has already eaten.
+## Cells ordered for the collapse, farthest FIRST, plus how far down that order it
+## has already eaten. Arena cells come first, ordered by distance from the gate;
+## the current gate's corridor cells are appended after them, ordered from the
+## arena end toward g.end, so once the arena is gone the corridor voids too and no
+## slot can idle there forever. One order, one index, one write into `voided`.
 var _collapse_order: PackedInt32Array
 var _collapse_idx := 0
+## The collapse key for each entry in `_collapse_order`, descending. Arena entries
+## carry their dist_from_gate (0..max_dist); corridor entries carry -1..-N so they
+## sort after the whole arena and void from the arena end outward. Kept separate
+## from dist_from_gate, which stays arena-only for the route and never goes
+## negative.
+var _collapse_dist: PackedInt32Array
+## How many corridor cells the collapse can eat — the magnitude of the most
+## negative _collapse_dist. Zero when the current gate has no corridor.
+var corridor_collapse_len := 0
+
+## Ticks the corridor takes to collapse once the arena is fully gone. Long enough
+## to cross a leash-length corridor, short enough that idling is fatal.
+const CORRIDOR_COLLAPSE_TICKS := 600
 
 ## Where each arena is plotted, in walk order.
 ##
@@ -174,6 +190,9 @@ func enter_next() -> void:
 	if g != null:
 		g.open = false
 	current = mini(current + 1, arenas.size() - 1)
+	# The old arena's collapse is over; drop it in one place so a stale voided
+	# frontier or order cannot leak into the next subnet.
+	_clear_collapse_state()
 	_rebuild_blocks()
 
 func _rebuild_blocks() -> void:
@@ -661,15 +680,23 @@ func has_line_of_sight(a: Vector2, b: Vector2) -> bool:
 ## Bounded to the current arena's cells. The whole campaign is one connected
 ## region by design, so an unbounded fill would measure the subnet already left
 ## and hand the collapse a max distance from ground nobody can reach.
+## Reset everything the collapse derives, in ONE place. Called when a new field is
+## built and when the player enters the next arena, so no partial reset is left
+## scattered where a later change can forget it.
+func _clear_collapse_state() -> void:
+	voided = PackedByteArray()
+	voided.resize(w * h)
+	_collapse_order = PackedInt32Array()
+	_collapse_dist = PackedInt32Array()
+	_collapse_idx = 0
+	corridor_collapse_len = 0
+
 func build_distance_field() -> void:
 	dist_from_gate = PackedInt32Array()
 	dist_from_gate.resize(w * h)
 	dist_from_gate.fill(-1)
-	voided = PackedByteArray()
-	voided.resize(w * h)
 	max_dist = 0
-	_collapse_order = PackedInt32Array()
-	_collapse_idx = 0
+	_clear_collapse_state()
 	var g := gate()
 	if g == null:
 		return
@@ -730,6 +757,8 @@ func _build_collapse_order() -> void:
 		acc += counts[d]
 	_collapse_order = PackedInt32Array()
 	_collapse_order.resize(total)
+	_collapse_dist = PackedInt32Array()
+	_collapse_dist.resize(total)
 	for y in range(c.position.y, c.end.y):
 		var row := y * w
 		for x in range(c.position.x, c.end.x):
@@ -738,7 +767,40 @@ func _build_collapse_order() -> void:
 				continue
 			var d := dist_from_gate[i]
 			_collapse_order[starts[d]] = i
+			_collapse_dist[starts[d]] = d
 			starts[d] += 1
+	_append_corridor_collapse()
+
+## Append the current gate's corridor cells to the collapse order, ordered from
+## the arena end toward g.end, each with a negative collapse key (-1, -2, …) so
+## they sort after the whole arena and void from the mouth outward. The corridor
+## is exempt from the arena collapse — the route out must stay open — but once the
+## arena is gone it collapses too, so idling in it is no longer safe.
+func _append_corridor_collapse() -> void:
+	var g := gate()
+	if g == null:
+		return
+	var cells := _cells_of(g.corridor)
+	# Corridor cells not already part of the arena field, projected onto the gate
+	# direction so the arena end sorts first.
+	var found: Array = []          # [projection, cell_index]
+	for y in range(cells.position.y, cells.position.y + cells.size.y):
+		if y < 0 or y >= h:
+			continue
+		var row := y * w
+		for x in range(cells.position.x, cells.position.x + cells.size.x):
+			if x < 0 or x >= w:
+				continue
+			var i := row + x
+			if solid[i] != 0 or dist_from_gate[i] >= 0:
+				continue          # solid, or an arena cell already ordered
+			var centre := origin + Vector2(float(x) + 0.5, float(y) + 0.5) * CELL
+			found.append([(centre - g.pos).dot(g.dir), i])
+	found.sort_custom(func(a, b): return a[0] < b[0])
+	corridor_collapse_len = found.size()
+	for rank in found.size():
+		_collapse_order.append(found[rank][1])
+		_collapse_dist.append(-(rank + 1))
 
 ## Void every open ARENA cell farther from the gate than `threshold`.
 ##
@@ -756,14 +818,16 @@ func collapse_to(threshold: int) -> void:
 	if _collapse_order.is_empty():
 		return
 	# Thresholds only fall during a collapse, but a caller may reset one; rewind
-	# rather than silently leaving voided ground behind.
-	if _collapse_idx > 0 and threshold >= dist_from_gate[_collapse_order[_collapse_idx - 1]]:
+	# rather than silently leaving voided ground behind. Keyed on _collapse_dist,
+	# which continues negative through the corridor, so the threshold can drop past
+	# zero to eat the corridor after the arena.
+	if _collapse_idx > 0 and threshold >= _collapse_dist[_collapse_idx - 1]:
 		voided.fill(0)
 		_collapse_idx = 0
 	while _collapse_idx < _collapse_order.size():
-		var c := _collapse_order[_collapse_idx]
-		if dist_from_gate[c] <= threshold:
+		if _collapse_dist[_collapse_idx] <= threshold:
 			break
+		var c := _collapse_order[_collapse_idx]
 		voided[c] = 1
 		just_voided.append(c)
 		_collapse_idx += 1

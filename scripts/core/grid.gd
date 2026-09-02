@@ -30,10 +30,18 @@ static func index_of(tagged: int) -> int:
 	return tagged & INDEX_MASK
 
 var cell_size: float
+## The LIVE rectangle: the window rebuild and every query actually walk. It is a
+## sub-region of the preallocated maximum, resized each tick by set_window.
 var _cols: int
 var _rows: int
 var _ncells: int
 var _origin: Vector2
+## The preallocated maximum. The backing arrays are sized for this once; the live
+## rect never exceeds it. A party standing together rebuilds ~10,000 cells even
+## though the store holds 50,625.
+var _max_cols: int
+var _max_rows: int
+var _max_cells: int
 
 var _cell_start: PackedInt32Array   # size _ncells + 1
 var _cursor: PackedInt32Array       # size _ncells, doubles as the pass-1 count
@@ -57,21 +65,44 @@ var _item_mask: PackedInt32Array    # 1 << population, parallel to _items
 ## player is not in the grid, so a projectile out there passes through enemies.
 ## At a 3200-unit window that is far off-screen in every direction, and those
 ## enemies are already too far away to be steering.
-func _init(origin: Vector2, size: Vector2, p_cell_size: float, capacity: int) -> void:
+func _init(origin: Vector2, max_size: Vector2, p_cell_size: float,
+		capacity: int) -> void:
 	cell_size = p_cell_size
-	_origin = origin
-	_cols = int(ceil(size.x / cell_size))
-	_rows = int(ceil(size.y / cell_size))
-	_ncells = _cols * _rows
-	_cell_start.resize(_ncells + 1)
-	_cursor.resize(_ncells)
+	_max_cols = int(ceil(max_size.x / cell_size))
+	_max_rows = int(ceil(max_size.y / cell_size))
+	_max_cells = _max_cols * _max_rows
+	_cell_start.resize(_max_cells + 1)
+	_cursor.resize(_max_cells)
 	_items.resize(capacity)
 	_item_pos.resize(capacity)
 	_item_mask.resize(capacity)
+	# Start with the whole maximum live; run.gd sizes it down to the party window
+	# every tick before rebuild.
+	set_window(Rect2(origin, max_size))
 
-## Re-centre the window. Snapped to the cell size so cell boundaries do not
-## slide under entities as the player moves, which would let an entity change
-## cell without moving.
+## Set the live window to a world rectangle, snapped OUTWARD to whole cells so a
+## cell boundary never slides under an entity — origin floored, far edge ceiled.
+## `_cols`, `_rows`, `_ncells` and `_origin` describe the live rect that rebuild
+## and every query walk; the live cell count never exceeds the preallocated
+## maximum.
+func set_window(world_rect: Rect2) -> void:
+	var start := (world_rect.position / cell_size).floor() * cell_size
+	var end := (world_rect.end / cell_size).ceil() * cell_size
+	_origin = start
+	_cols = mini(int(round((end.x - start.x) / cell_size)), _max_cols)
+	_rows = mini(int(round((end.y - start.y) / cell_size)), _max_rows)
+	_cols = maxi(_cols, 1)
+	_rows = maxi(_rows, 1)
+	_ncells = _cols * _rows
+
+## The number of cells the current live window rebuilds — the real per-tick cost,
+## not the preallocated maximum.
+func live_cell_count() -> int:
+	return _ncells
+
+## Re-centre a fixed-size window on a point. Snapped to the cell size so cell
+## boundaries do not slide under entities. Kept for callers that want the old
+## follow-the-player behaviour; the party window uses set_window directly.
 func set_centre(c: Vector2) -> void:
 	var half := Vector2(float(_cols), float(_rows)) * cell_size * 0.5
 	_origin = ((c - half) / cell_size).floor() * cell_size

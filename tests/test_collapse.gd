@@ -8,13 +8,15 @@ var failures := 0
 var finished := {}
 const CASES := ["the_field_measures_from_the_gate", "collapse_eats_the_far_side_first",
 	"the_route_follows_open_ground", "voided_ground_kills",
-	"the_route_home_is_lit", "the_void_is_drawn_as_merged_runs"]
+	"the_route_home_is_lit", "the_void_is_drawn_as_merged_runs",
+	"the_corridor_collapses_after_the_arena"]
 
 func _initialize() -> void:
 	print("ROOTKIT — collapse\n")
 	the_field_measures_from_the_gate()
 	collapse_eats_the_far_side_first()
 	the_route_follows_open_ground()
+	the_corridor_collapses_after_the_arena()
 	await voided_ground_kills()
 	await the_route_home_is_lit()
 	await the_void_is_drawn_as_merged_runs()
@@ -52,6 +54,46 @@ func _void_count(t: Terrain) -> int:
 	for i in t.voided.size():
 		if t.voided[i] != 0: n += 1
 	return n
+
+## The corridor is appended to the collapse order AFTER the whole arena, ordered
+## from the arena end toward g.end, so once the arena is gone the way out itself
+## voids and idling in the corridor is fatal. The corridor keys are negative and
+## descending, sorting them strictly after every arena cell.
+func the_corridor_collapses_after_the_arena() -> void:
+	var t := _built()
+	_check("the corridor contributes collapse cells",
+		t.corridor_collapse_len > 0, true)
+	var order: PackedInt32Array = t._collapse_order
+	var dist: PackedInt32Array = t._collapse_dist
+	var arena_total := order.size() - t.corridor_collapse_len
+	_check("the last arena entry is still non-negative",
+		dist[arena_total - 1] >= 0, true)
+
+	# Every corridor entry: a real corridor cell (not part of the arena field),
+	# a strictly descending negative key, and a projection along the gate
+	# direction that only increases — the arena end first, g.end last.
+	var g := t.gate()
+	var ok_cells := true
+	var ok_keys := true
+	var ok_order := true
+	var prev_proj := -INF
+	for k in range(arena_total, order.size()):
+		var c: int = order[k]
+		if t.solid[c] != 0 or t.dist_from_gate[c] >= 0:
+			ok_cells = false
+		if dist[k] != -(k - arena_total + 1):
+			ok_keys = false
+		var cx := c % t.w
+		var cy := c / t.w
+		var centre := t.origin + Vector2(float(cx) + 0.5, float(cy) + 0.5) * Terrain.CELL
+		var proj: float = (centre - g.pos).dot(g.dir)
+		if proj < prev_proj:
+			ok_order = false
+		prev_proj = proj
+	_check("every appended cell is a corridor cell", ok_cells, true)
+	_check("corridor keys descend -1, -2, … after the arena", ok_keys, true)
+	_check("corridor cells run from the arena end toward g.end", ok_order, true)
+	finished["the_corridor_collapses_after_the_arena"] = true
 
 func the_field_measures_from_the_gate() -> void:
 	var t := _built()

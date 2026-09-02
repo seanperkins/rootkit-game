@@ -323,6 +323,9 @@ var phase := Phase.FIGHTING
 ## the run should be at its tensest.
 const COLLAPSE_SECONDS := 75.0
 var collapse_left := 0.0
+## Ticks the corridor collapse has run since the arena finished. Drives the
+## threshold past zero into the corridor's negative keys.
+var _corridor_collapse_ticks := 0
 var _route: PackedInt32Array = PackedInt32Array()
 var _route_cell := -1
 ## director.spawned is per-SUBNET, because director.reset() zeroes it on every
@@ -554,10 +557,13 @@ func _ready() -> void:
 	for i in enemy_types.size():
 		thresholds[i] = enemy_types[i].corruption_threshold
 
-	# A fixed window that follows the player, NOT the arena. See Grid._init:
-	# every query in this game is near the player, so indexing the whole map
-	# spends per-tick work on ground nobody is standing on.
-	grid = Grid.new(Vector2.ZERO, Vector2(GRID_WINDOW, GRID_WINDOW), CELL,
+	# A window that follows the PARTY, not the arena. See Grid._init: every query
+	# in this game is near a player, so indexing the whole map spends per-tick
+	# work on ground nobody is standing on. Preallocated for the MAX_WINDOW cap a
+	# fully spread party needs; the live rect is sized down to the party's
+	# bounding box each tick, so solo still rebuilds a 3200 square.
+	grid = Grid.new(Vector2.ZERO,
+		Vector2(SessionRules.MAX_WINDOW, SessionRules.MAX_WINDOW), CELL,
 		MAX_ENEMIES + MAX_PROJECTILES + MAX_SHARDS + MAX_BOTNET + 1)
 	enemies = Population.new(MAX_ENEMIES)
 	projectiles = Population.new(MAX_PROJECTILES)
@@ -1300,8 +1306,30 @@ func _step3_rebuild() -> void:
 	for i in enemies.count:
 		_no_grid[i] = 1 if (_submerged[i] != 0 or _arriving[i] > 0.0) else 0
 	_skips[Grid.Pop.ENEMY] = _no_grid
-	grid.set_centre(player_pos)
+	grid.set_window(_party_window())
 	grid.rebuild(_pos_arrays, _counts, _skips)
+
+## The world rectangle the spatial grid covers this tick. Solo is exactly the
+## old follow-the-player 3200 square: a fixed GRID_WINDOW box, its origin snapped
+## to the cell size just as set_centre did, then held inside the terrain grid so
+## it never indexes ground off the plotted world. The plural cutover replaces the
+## single point with the bounding box of every LIVE slot, grown and floored to
+## GRID_WINDOW; the shape of this function is why that is a one-line change.
+func _party_window() -> Rect2:
+	var half := GRID_WINDOW * 0.5
+	var origin := ((player_pos - Vector2(half, half)) / CELL).floor() * CELL
+	var span := Vector2(GRID_WINDOW, GRID_WINDOW)
+	# Hold the window inside the terrain grid. Terrain bounds are cell-aligned and
+	# the span is a whole number of cells, so the clamp keeps the origin aligned;
+	# with the terrain far larger than the window it is a no-op away from the very
+	# edges, which is why solo play is unchanged.
+	var lo: Vector2 = terrain.origin
+	var hi: Vector2 = terrain.origin + terrain.size - span
+	if hi.x >= lo.x:
+		origin.x = clampf(origin.x, lo.x, hi.x)
+	if hi.y >= lo.y:
+		origin.y = clampf(origin.y, lo.y, hi.y)
+	return Rect2(origin, span)
 
 ## Steering is time-sliced across STEER_SLICES ticks: each tick recomputes one
 ## slice and every other enemy keeps the force it was last given. At 60 Hz a
@@ -2374,8 +2402,21 @@ func _step2d_collapse(dt: float) -> void:
 	if phase != Phase.CLEARED:
 		return
 	collapse_left = maxf(0.0, collapse_left - dt)
-	var frac := collapse_left / COLLAPSE_SECONDS
-	terrain.collapse_to(int(float(terrain.max_dist) * frac))
+	var threshold: int
+	if collapse_left > 0.0:
+		# Arena phase: the frontier walks in from the far side to the gate.
+		var frac := collapse_left / COLLAPSE_SECONDS
+		threshold = int(float(terrain.max_dist) * frac)
+		_corridor_collapse_ticks = 0
+	else:
+		# Corridor phase: the arena is gone, so the threshold slides past zero
+		# into the corridor's negative keys over CORRIDOR_COLLAPSE_TICKS, eating
+		# the way out from the mouth so no slot can idle there forever.
+		_corridor_collapse_ticks += 1
+		var cfrac := clampf(float(_corridor_collapse_ticks)
+			/ float(Terrain.CORRIDOR_COLLAPSE_TICKS), 0.0, 1.0)
+		threshold = -int(round(float(terrain.corridor_collapse_len + 1) * cfrac))
+	terrain.collapse_to(threshold)
 	for c in terrain.just_voided:
 		if _falling.size() >= MAX_FALLING:
 			break
@@ -2535,6 +2576,7 @@ func _advance_subnet() -> void:
 	subnet += 1
 	phase = Phase.FIGHTING
 	collapse_left = 0.0
+	_corridor_collapse_ticks = 0
 	_route = PackedInt32Array()
 	_route_cell = -1
 	terrain.clear_temp_zones()
