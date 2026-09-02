@@ -10,6 +10,8 @@ run/main_scene="res://scenes/main.tscn"
 common/physics_ticks_per_second=60
 
 [rendering]
+
+textures/vram_compression/import_etc2_astc=true
 renderer/rendering_method="forward_plus"
 environment/defaults/default_clear_color=Color(0.016, 0.031, 0.027, 1)
 viewport/hdr_2d=true
