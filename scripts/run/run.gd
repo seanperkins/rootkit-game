@@ -736,9 +736,163 @@ func _holding_for_snapshot() -> bool:
 ## Three divergences: the session is over. The host says so; the world stops.
 func _terminate() -> void:
 	_session.terminated = true
+	_session.ended = true
 	if _transport != null and _transport.is_host:
-		_transport.send_control(Protocol.Message.END, tick, {"outcome": 2, "hash": 0})
+		_transport.send_control(Protocol.Message.END, tick,
+			{"outcome": NetworkSession.Outcome.TERMINATED, "hash": 0})
 	emit_signal("run_ended", false, 0)
+
+# ------------------------------------------------------------------ ending ---
+#
+# `run_ended` has exactly two sources: the solo candidate tick, and the host's
+# END. Every terminal state a peer reaches in a session is a CANDIDATE — the
+# world holds below the guard, lockstep keeps consuming above it, this peer's
+# records go neutral — and the host confirms it through every PRESENT peer's
+# report at a future check tick. A false local ending is therefore repaired,
+# not announced. These methods are driven by the tick when a transport is
+# attached and directly by the ending suite, which pumps messages by hand.
+
+## A terminal state was reached here: nobody LIVE, or the campaign won.
+func _terminal(outcome: int) -> void:
+	var es := _session
+	if es.ended or es.terminated:
+		return
+	if es.role == NetworkSession.Role.SOLO:
+		# Nobody to confirm with: solo ends on the candidate tick.
+		es.ended = true
+		es.end_outcome = outcome
+		emit_signal("run_ended", outcome == NetworkSession.Outcome.WIN,
+			salvage if outcome == NetworkSession.Outcome.WIN else 0)
+		return
+	es.end_outcome = outcome
+	if es.role == NetworkSession.Role.HOST:
+		es.end_candidate_pending = true
+	elif _transport != null:
+		_transport.send_control(Protocol.Message.END_CANDIDATE, tick,
+			{"outcome": outcome, "hash": 0})
+
+## Slots other than this one whose controller is PRESENT (LIVE or DEAD).
+func _present_remote_count() -> int:
+	var n := 0
+	for s in SessionRules.MAX_PLAYERS:
+		if s != local_slot and slot_state[s] != SlotState.ABSENT:
+			n += 1
+	return n
+
+## Host: a client's END_CANDIDATE, or — when its tick names the open check —
+## that client's report for it.
+func receive_end_candidate(slot: int, at_tick: int, outcome: int, hash_value: int) -> void:
+	var es := _session
+	if es.end_check_tick >= 0 and at_tick == es.end_check_tick:
+		es.end_reports[slot] = [hash_value, outcome]
+		return
+	es.end_candidate_pending = true
+
+## Any peer: the host opened a check at C.
+func receive_end_check(c: int) -> void:
+	_session.open_end_check(c)
+
+## A client: the host confirmed. This is the one place a session emits
+## run_ended.
+func receive_end(_c: int, outcome: int) -> void:
+	var es := _session
+	if es.ended:
+		return
+	es.ended = true
+	if outcome == NetworkSession.Outcome.TERMINATED:
+		es.terminated = true
+		emit_signal("run_ended", false, 0)
+		return
+	emit_signal("run_ended", outcome == NetworkSession.Outcome.WIN,
+		salvage if outcome == NetworkSession.Outcome.WIN else 0)
+
+## Host: END. Reliable, to everyone, once.
+func _confirm_end(outcome: int) -> void:
+	var es := _session
+	var c := es.end_check_tick
+	es.ended = true
+	es.clear_end_check()
+	es.end_candidate_pending = false
+	if _transport != null:
+		_transport.send_control(Protocol.Message.END, c, {"outcome": outcome, "hash": 0})
+	emit_signal("run_ended", outcome == NetworkSession.Outcome.WIN,
+		salvage if outcome == NetworkSession.Outcome.WIN else 0)
+
+## Host: judge the open check once every PRESENT slot has reported. Returns
+## "" while waiting, "end" when it confirmed, "clear" when everyone agreed
+## nobody is terminal, and "resync" when it scheduled a repair.
+func evaluate_end_check() -> String:
+	var es := _session
+	var c := es.end_check_tick
+	if c < 0 or not es.end_reports.has(local_slot):
+		return ""
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] != SlotState.ABSENT and not es.end_reports.has(s):
+			return ""
+	var mine: Array = es.end_reports[local_slot]
+	var targets := PackedInt32Array()
+	for s in SessionRules.MAX_PLAYERS:
+		if s == local_slot or not es.end_reports.has(s):
+			continue
+		var r: Array = es.end_reports[s]
+		if r[0] != mine[0] or r[1] != mine[1]:
+			targets.append(s)
+	if targets.is_empty():
+		if es.end_outcome != NetworkSession.Outcome.NONE:
+			_confirm_end(es.end_outcome)
+			return "end"
+		es.clear_end_check()
+		es.end_candidate_pending = false
+		return "clear"
+	# Disagreement: the authority rule at a FRESH future boundary — the host may
+	# already be past C and keeps no snapshot of it. A terminal host repairs the
+	# others to its terminal state and checks again; a nonterminal host repairs
+	# the false-ending client and play resumes.
+	es.clear_end_check()
+	if es.record_desync(c):
+		_terminate()
+		return "terminated"
+	var r := lockstep.executed + lockstep.delay + Protocol.BOUNDARY_MARGIN
+	es.announce_resync(r, targets)
+	if _transport != null:
+		_transport.send_control(Protocol.Message.RESYNC, r, {"clears_end": false})
+	es.end_candidate_pending = es.end_outcome != NetworkSession.Outcome.NONE
+	return "resync"
+
+## The per-tick ending bookkeeping, above the guard: report at C + 1, and, as
+## host, open checks for candidates and judge the open one.
+func _ending_step() -> void:
+	var es := _session
+	if es.role == NetworkSession.Role.SOLO or es.ended or es.terminated:
+		return
+	if es.end_check_tick >= 0 and not es.end_reported \
+			and lockstep.executed == es.end_check_tick + 1:
+		es.end_reported = true
+		var h := _state_hash()
+		es.end_report = [es.end_check_tick, h, es.end_outcome]
+		if es.role == NetworkSession.Role.HOST:
+			receive_end_candidate(local_slot, es.end_check_tick, es.end_outcome, h)
+		elif _transport != null:
+			_transport.send_control(Protocol.Message.END_CANDIDATE, es.end_check_tick,
+				{"outcome": es.end_outcome, "hash": h})
+	if es.role != NetworkSession.Role.HOST:
+		return
+	if es.end_check_tick < 0:
+		if es.end_candidate_pending and not es.recovering():
+			if _present_remote_count() == 0:
+				# Nobody to confirm with: the host's own candidate is the verdict.
+				if es.end_outcome != NetworkSession.Outcome.NONE:
+					es.open_end_check(tick)
+					_confirm_end(es.end_outcome)
+				else:
+					es.end_candidate_pending = false
+				return
+			var c := lockstep.executed + lockstep.delay + Protocol.BOUNDARY_MARGIN
+			es.open_end_check(c)
+			if _transport != null:
+				_transport.send_control(Protocol.Message.END_CHECK, c, {})
+		return
+	evaluate_end_check()
 
 ## The LIVE slots whose record for the next tick has not arrived, for the HUD's
 ## stall notice once _stalled_ticks passes STALL_NOTICE.
@@ -1211,6 +1365,7 @@ func _physics_process(_dt: float) -> void:
 	# ticks and applies the choices that will unpause it.
 	_sync_ring_roster()
 	_recovery_step()
+	_ending_step()
 	if _session.terminated:
 		return
 	if not lockstep.ready(lockstep.executed) or _holding_for_snapshot():
@@ -1236,7 +1391,7 @@ func _physics_process(_dt: float) -> void:
 	var solo := _session.role == NetworkSession.Role.SOLO
 	if hitstop_ticks > 0:
 		hitstop_ticks -= 1
-	elif not (paused or (user_paused and solo) or not alive or won):
+	elif not (paused or (user_paused and solo) or not alive or won or _session.ended):
 		_step_world()
 	_report_checksum()
 
@@ -1260,10 +1415,14 @@ func _drain_inbox() -> void:
 		match int(msg["kind"]):
 			Protocol.Message.RESYNC:
 				announce_resync(int(body["tick"]))
+			Protocol.Message.END_CANDIDATE:
+				if _transport != null and _transport.slot_of_peer.has(int(msg["peer"])):
+					receive_end_candidate(int(_transport.slot_of_peer[int(msg["peer"])]),
+						int(body["tick"]), int(body["outcome"]), int(body["hash"]))
+			Protocol.Message.END_CHECK:
+				receive_end_check(int(body["tick"]))
 			Protocol.Message.END:
-				if int(body.get("outcome", -1)) == 2 and not _session.terminated:
-					_session.terminated = true
-					emit_signal("run_ended", false, 0)
+				receive_end(int(body["tick"]), int(body["outcome"]))
 			_:
 				pass
 
@@ -1410,9 +1569,14 @@ func _poll_local_input() -> void:
 			# That is the right way round for a game where every dodge is
 			# judged on screen.
 			move = from_iso(screen.normalized())
-	# A session pause is a local overlay: the record it sends is neutral.
-	if user_paused and _session.role != NetworkSession.Role.SOLO:
+	# A session pause is a local overlay: the record it sends is neutral. So is
+	# the record of a DEAD slot, and of a world held in an unconfirmed terminal
+	# state — the controller stays PRESENT and keeps the host's ring fed, but a
+	# dead player's choice can never land.
+	if _session.role != NetworkSession.Role.SOLO \
+			and (user_paused or slot_state[local_slot] != SlotState.LIVE or not alive or won):
 		move = Vector2.ZERO
+		_local_choice = Vector3i(-1, -1, -1)
 	# The sampled intent is visible immediately for the local slot; the value
 	# the simulation actually applies is whatever the ring hands back for the
 	# tick it executes, which at delay zero is this same record.
@@ -2444,7 +2608,7 @@ func _die(slot: int) -> void:
 	_bank_slot(slot, false)
 	alive = _any_live()
 	if not alive:
-		emit_signal("run_ended", false, 0)
+		_terminal(NetworkSession.Outcome.LOSS)
 
 ## The STRONGER slow wins, never the most recent. Letting the latest write win
 ## means walking out of a heavy slow into a light one cancels the heavy one, so
@@ -2950,7 +3114,7 @@ func _on_death(i: int) -> void:
 			won = true
 			feel.emit("win")
 			_bank_progress(true)
-			emit_signal("run_ended", true, salvage)
+			_terminal(NetworkSession.Outcome.WIN)
 	_drop_shards(i)
 	# ON_KILL fires only the OWNER's build, and lifesteal heals only the owner.
 	if ks >= 0:
@@ -5002,5 +5166,15 @@ func _after_restore(after_tick: int, raw: Dictionary) -> void:
 	_enemy_target.fill(-1)
 	_refresh_live_cache()
 	alive = _any_live()
+	# The restored world's verdict replaces this peer's own: a false ending is
+	# gone, and a peer repaired INTO the host's terminal state now holds the
+	# same candidate, so the next check can agree. Nothing is emitted — only
+	# END ends a session.
+	if won:
+		_session.end_outcome = NetworkSession.Outcome.WIN
+	elif not alive:
+		_session.end_outcome = NetworkSession.Outcome.LOSS
+	else:
+		_session.end_outcome = NetworkSession.Outcome.NONE
 	_emit_local_offer()
 	emit_signal("stats_changed")

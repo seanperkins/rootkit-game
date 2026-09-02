@@ -54,12 +54,14 @@ func _choice_for(r: Node2D, s: int) -> Vector3i:
 	return Vector3i(0, 0, int(open["seq"]))
 
 ## The record every slot sends for tick `t`: the caller's movement function,
-## with a peer whose local overlay is up sending neutral movement — and every
-## other peer receiving that same neutral record, exactly as the wire would.
+## with a peer whose local overlay is up, whose slot is not LIVE, or whose
+## world is in a terminal hold sending neutral movement — and every other peer
+## receiving that same neutral record, exactly as the wire would.
 func _records_for(t: int, moves_fn: Callable) -> Array:
 	var m: Array = moves_fn.call(t)
 	for r in runs:
-		if r.user_paused:
+		if r.user_paused or r.slot_state[r.local_slot] != r.SlotState.LIVE \
+				or not r.alive or r.won:
 			m[r.local_slot] = Vector2.ZERO
 	return m
 

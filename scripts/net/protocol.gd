@@ -253,7 +253,7 @@ static func decode_control(kind: int, tick: int, body: PackedByteArray) -> Dicti
 			out = {"slot": slot}
 		Message.END_CANDIDATE, Message.END:
 			var outcome := int(_num(raw.get("outcome", -1)))
-			if outcome < 0 or outcome > 2:
+			if outcome < 0 or outcome >= NetworkSession.Outcome.size():
 				return {}
 			out = {"outcome": outcome, "hash": int(_num(raw.get("hash", 0)))}
 		Message.END_CHECK:

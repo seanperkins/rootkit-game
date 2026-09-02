@@ -115,6 +115,54 @@ func clear_resync() -> void:
 func recovering() -> bool:
 	return resync_tick >= 0
 
+# ----------------------------------------------------------------- ending ---
+#
+# A run in a session ends only on the host's reliable END. A peer that sees a
+# terminal state — nobody LIVE, or the campaign won — has a CANDIDATE, not
+# permission. The host names a future check tick C; every PRESENT peer,
+# DEAD spectators included and ABSENT ones alone excluded, reaches C and
+# reports (C, hash, outcome); the host confirms when every report agrees with
+# its own terminal one, and otherwise repairs the disagreeing peers at a fresh
+# future RESYNC and checks again.
+
+enum Outcome { NONE, LOSS, WIN, TERMINATED }
+
+## The active check tick C, or -1.
+var end_check_tick := -1
+## slot -> [hash, outcome] for the active check.
+var end_reports: Dictionary = {}
+## This peer's own terminal outcome, NONE while nonterminal.
+var end_outcome := Outcome.NONE
+## Host: a candidate exists (its own or a client's) and no check is open yet.
+var end_candidate_pending := false
+## This peer has reported for the active check; the report it made.
+var end_reported := false
+var end_report: Array = []
+## END has been sent or received: the run is over.
+var ended := false
+
+func open_end_check(c: int) -> void:
+	end_check_tick = c
+	end_reports = {}
+	end_reported = false
+	end_report = []
+
+func clear_end_check() -> void:
+	end_check_tick = -1
+	end_reports = {}
+	end_reported = false
+	end_report = []
+
+## The narrow cancellation a LIVE return needs: clear a NO-LIVE barrier and its
+## collected reports. A campaign-win barrier is never cancelled — a win stands.
+func cancel_no_live_check() -> bool:
+	if end_check_tick < 0 or end_outcome == Outcome.WIN:
+		return false
+	clear_end_check()
+	end_candidate_pending = false
+	end_outcome = Outcome.NONE
+	return true
+
 # ------------------------------------------------------------------- lobby ---
 #
 # Before START the roster is MUTABLE and lives here as `lobby_rows`, ordered by
