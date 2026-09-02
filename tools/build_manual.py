@@ -146,7 +146,7 @@ def read_shop() -> list:
 
 MODULE_NOTES = {
     "broadcast": "Hits everything in a ring around you. The reliable opener.",
-    "packet": "A straight shot along your facing. Your starting weapon: aim by moving.",
+    "packet": "A straight shot along your facing. Your starting weapon: aim with the right stick or the mouse, or by moving.",
     "chain": "Hops between enemies, jumping up to 120 units each time.",
     "beam": "A line along your facing through several enemies.",
     "spike": "A 90&deg; wedge along your facing. Heavy damage, demands facing.",

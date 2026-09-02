@@ -60,7 +60,7 @@ that architecture depends on, each of which has been broken at least once:
   intake and input application — in that order.** `_present` must survive
   `paused`/`user_paused`/`not alive`/`won`, because the hitstop triggers set one
   of those flags on the frame they fire. The lockstep ring is consumed above the
-  guard too: one tick's records are taken and applied — movement into `inputs`,
+  guard too: one tick's records are taken and applied — movement and aim into `inputs` and `aims`,
   choices into the per-slot offers, deadlines resolved — whether or not the
   world then steps, so an open card screen holds the world, never the input
   stream. The tick reads no device, clock or connection; it reads records. A

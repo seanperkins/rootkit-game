@@ -211,9 +211,14 @@ each taking `_ward_max(key)` — wards fold as **MAX across exploits, never a su
 
 ### Facing and firing
 `player_facing[slot]` (world space, unit, default RIGHT) is set in
-`_step2_integrate` from the APPLIED record when it is non-zero, held while the
+`_step2_integrate` from the APPLIED record: `aims[s]` when non-zero (the
+right stick while deflected, or the mouse for `MOUSE_AIM_HOLD` 1.5 s after
+it moved, sampled in `_poll_local_input`, sanitised and normalised by
+`_sanitise_aim` on apply), else the movement when non-zero, held while the
 slot stands still, reset to RIGHT by `_return`; simulation state (`SH`), so
-the local slot's facing lags the stick by the lockstep delay on purpose.
+the local slot's facing lags the device by the lockstep delay on purpose.
+`aim_override` is the headless seam beside `input_override`. Players draw as
+arrows along their facing.
 `_step5_fire` → `_emit_vector(ei, r)` dispatches on `VectorKind`:
 BROADCAST ring; PACKET along facing (a `homing` fused module binds a target
 via `_pick_target(VIEW_RANGE)` and launches toward it); CHAIN `_pick_target`
