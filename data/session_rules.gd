@@ -67,3 +67,19 @@ const SNAPSHOT_MAX := 1 << 20
 ## Snapshot payload version. A peer refuses any other value rather than guessing
 ## at a layout.
 const SNAPSHOT_VERSION := 1
+
+## A peer that has sent this many packets the codec refused is disconnected.
+## Twenty, not one: a single corrupt datagram is noise, twenty is a bad actor
+## or a broken build.
+const BAD_PACKETS := 20
+
+## Silence from a peer for this long parks its slot. ENet's own default is
+## longer, so the transport applies this to every packet peer on connect.
+const PEER_TIMEOUT_MS := 3000
+
+## Largest control-message body a peer may send. Descriptors and rosters are
+## small; anything near this is not a control message.
+const CONTROL_MAX := 16384
+
+## Longest a host address string may be, in characters.
+const ADDRESS_MAX := 64

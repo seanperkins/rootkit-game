@@ -765,6 +765,7 @@ func _ready() -> void:
 	# slot's neutral record so nobody waits on input that cannot exist yet.
 	lockstep = Lockstep.new(SessionRules.MAX_PLAYERS,
 		int(_session.descriptor.get("delay", 0)))
+	_session.lockstep = lockstep
 	_sync_ring_roster()
 	if lockstep.delay > 0:
 		lockstep.prime(0, lockstep.delay - 1)

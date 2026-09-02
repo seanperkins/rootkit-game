@@ -28,6 +28,33 @@ var local_slot: int = 0
 
 var role: int = Role.SOLO
 
+## The session's input ring. The run constructs it and binds it here so the
+## transport can submit records and checksum reports without holding a node.
+var lockstep: Lockstep = null
+
+## True once START has been sent or received: the roster is frozen and a new
+## participant is refused; only a reconnect to an existing slot is accepted.
+var started := false
+
+## Control messages the transport has decoded and validated, oldest first, as
+## {kind, body, peer}. The lobby and the run drain this; the transport never
+## calls into either — it delivers here and stops.
+var inbox: Array = []
+
+## Deliver one validated control message. Pure: no branching on the transport,
+## no callbacks out.
+func receive(kind: int, body: Dictionary, peer: int) -> void:
+	inbox.append({"kind": kind, "body": body, "peer": peer})
+
+## Whether a HELLO may be accepted: any HELLO before START; after START only a
+## reconnect naming this session and a slot the roster already holds.
+func accepts_hello(body: Dictionary) -> bool:
+	if not started:
+		return true
+	if int(body.get("session_id", -1)) != int(descriptor.get("session_id", -2)):
+		return false
+	return not profile(int(body.get("slot", -1))).is_empty()
+
 ## Bind a validated descriptor to this peer's slot and role.
 static func create(desc: Dictionary, slot: int, role_value: int) -> NetworkSession:
 	var s := NetworkSession.new()
