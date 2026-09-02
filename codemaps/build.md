@@ -8,7 +8,7 @@ Runs once per module pick, never per frame — combat reads only the flat result
 ```
 Module ──> EquippedModule (module + rank) ──> Exploit (vector/trigger/payload)
                                                  │
-                              Loadout (3 exploits + auto-slot rules)
+                              Loadout (5 exploits + auto-slot rules)
                                                  │  compile_all()
                                                  v
                               Compiler.build(exploit, mult) ──> ResolvedExploit
@@ -58,7 +58,7 @@ Also: `equipped()`, `holds(id)`, `at(i)`, `set_at(i, em)`, `place(m)`,
 
 ## `loadout.gd` (305) — the board and the auto-slot rules
 
-`MAX_EXPLOITS = 3`. `enum Rule { NONE, RANK_UP, EMPTY_SLOT, NEW_EXPLOIT, REPLACE }`.
+`MAX_EXPLOITS = 5`. `enum Rule { NONE, RANK_UP, EMPTY_SLOT, NEW_EXPLOIT, REPLACE }`.
 
 | API | Does |
 |---|---|

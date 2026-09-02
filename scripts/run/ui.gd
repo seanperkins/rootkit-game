@@ -563,7 +563,7 @@ const COLUMN_NAMES := ["VECTOR", "TRIGGER", "PAYLOAD"]
 
 ## One colour and one mark per outcome. Placing and founding a row are both
 ## "nothing is lost" but they are not the same move — founding spends one of the
-## three exploits — so they read differently.
+## MAX_EXPLOITS rows — so they read differently.
 const RANK := Color(1.0, 0.86, 0.35)
 const NEW_ROW := Color(0.45, 0.72, 1.0)
 const OFF := Color(0.18, 0.26, 0.22)
@@ -673,8 +673,9 @@ func _make_card(entry: Array, out_buttons: Array) -> Control:
 	# A minimum height, and a spacer above the buttons in every branch below.
 	# HBoxContainer already stretches all three cards to the tallest one, so
 	# without the spacer a card with a short stats line floats its buttons up
-	# and the three rows of buttons no longer line up across the screen.
-	card.custom_minimum_size = Vector2(268, 244)
+	# and the rows of buttons no longer line up across the screen. The height
+	# carries one 34 px button plus 7 px separation per exploit row.
+	card.custom_minimum_size = Vector2(268, 121.0 + 41.0 * Loadout.MAX_EXPLOITS)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 7)
 	card.add_child(box)

@@ -83,13 +83,15 @@ const IFRAMES := 0.5
 
 const FIRE_BUDGET := 4
 const CASCADE_PASSES := 8
-## 3 exploits x 4 fires x 600 enemies. The producer set is wider than that
+## MAX_EXPLOITS x FIRE_BUDGET fires x MAX_ENEMIES, derived so a wider board
+## cannot silently outgrow the queue. The producer set is wider than that
 ## derivation: the terrain hazard and corruption zones append up to one event per
 ## enemy per tick, and a mine or packet blast fans out over its own radius. Both
 ## were dead code until begin_tick moved to the top of the tick, so neither was
 ## counted here. The worst case still fits, but `append` drops silently past
-## capacity (hit_queue.gd), so measure before trusting the margin.
-const EVENT_BUDGET := 7200
+## capacity (hit_queue.gd), so measure before trusting the margin — the perf
+## gate refuses a run that dropped anything.
+const EVENT_BUDGET := Loadout.MAX_EXPLOITS * FIRE_BUDGET * MAX_ENEMIES
 const BOTNET_BASE_CAP := 8
 const BOTNET_BASE_LIFETIME := 12.0
 const BOTNET_BASE_RATIO := 0.6
@@ -513,7 +515,7 @@ var _shield_left: PackedFloat32Array
 var _fire_cd: PackedFloat32Array
 ## Transient shot visuals. BROADCAST, BEAM and CHAIN resolve straight through
 ## the hit queue and drew nothing at all — you saw enemies die with no sign of
-## what killed them. Bounded by the fire budget: 3 exploits x 4 fires x FX_LIFE
+## what killed them. Bounded by the fire budget: MAX_EXPLOITS x 4 fires x FX_LIFE
 ## worth of ticks.
 const FX_LIFE := 0.13
 ## Hit flash fades in about a sixth of a second — long enough to read at 60fps,
@@ -545,7 +547,7 @@ const ARRIVAL_TOTAL := ARRIVAL_CHARGE + ARRIVAL_POP
 ## flash, kernel_panic's telegraph). MINE and ORBIT fires append nothing: they
 ## show through the glyphs and the orbiter trail. An estimate for the reader,
 ## not a capacity (the Array is unbounded, aged by life): per LIVE slot about
-## 3 exploits x max(FIRE_BUDGET, BURST_MAX) x (max chain_count + 1) entries.
+## MAX_EXPLOITS x max(FIRE_BUDGET, BURST_MAX) x (max chain_count + 1) entries.
 ## Entry: [kind, at, dir, radius, life, colour]. `dir` is a unit facing with
 ## `radius` the length for DASH, BEAM and WEDGE, and the full link OFFSET
 ## (to - from) for BOLT.

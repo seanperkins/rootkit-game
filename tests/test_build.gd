@@ -72,8 +72,9 @@ func data_sweep() -> void:
 	_check("data sweep: 30 modules, 0 errors", errs.size(), 0)
 	_check("data sweep: module count", ModuleTable.all().size(), 30)
 
-## A 3-exploit board needs 3 distinct VECTORs and 3 distinct TRIGGERs. Fewer
-## unlocked and the advertised cap is unreachable, permanently, for a new player.
+## A full board needs MAX_EXPLOITS distinct VECTORs (one id occupies one slot)
+## and at least one TRIGGER. Fewer unlocked and the advertised cap is
+## unreachable, permanently, for a new player.
 func fillability_invariant() -> void:
 	var v := 0; var t := 0; var p := 0
 	for m in ModuleTable.starting_unlocked():
@@ -81,8 +82,10 @@ func fillability_invariant() -> void:
 			Module.Slot.VECTOR:  v += 1
 			Module.Slot.TRIGGER: t += 1
 			_:                   p += 1
-	_check("unlock invariant: >=3 VECTOR", v >= 3, true)
-	_check("unlock invariant: >=3 TRIGGER", t >= 3, true)
+	# One distinct VECTOR per row fills the board; a bare row fires without a
+	# trigger, so one trigger unlocked is enough for the whole board to fire.
+	_check("unlock invariant: >=MAX_EXPLOITS VECTOR", v >= Loadout.MAX_EXPLOITS, true)
+	_check("unlock invariant: >=1 TRIGGER", t >= 1, true)
 	_check("unlock invariant: >=6 PAYLOAD", p >= 6, true)
 
 ## Derived from the table, not hardcoded — a balance pass should not be able to
@@ -487,11 +490,12 @@ func uniqueness_is_loadout_wide() -> void:
 	_check("and that target is the slot holding it", t[0].exploit, 0)
 	_check("as a rank-up", t[0].action, Loadout.Rule.RANK_UP)
 
-	# 3 = the two empty payload slots in rows 1 and 2, plus a REPLACE over
-	# keylog in row 0. Naming the number rather than "both slots", which reads
-	# as 2 and invites a wrong fix to the count.
+	# The two empty payload slots in rows 1 and 2, plus a REPLACE over keylog
+	# in row 0, plus one EMPTY_SLOT per unfounded row (a payload may found a
+	# row through the player's choice, as it always could). Naming the count
+	# rather than "both slots", which reads as 2 and invites a wrong fix.
 	var u := lo.legal_targets(T[&"corrupt"])
-	_check("an unheld payload reaches three slots", u.size(), 3)
+	_check("an unheld payload reaches every open payload slot", u.size(), 3 + (Loadout.MAX_EXPLOITS - 3))
 
 	# At max rank, a held id has no target at all — the salvage path.
 	lo.exploits[0].vector.rank = T[&"packet"].max_rank

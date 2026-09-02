@@ -6,7 +6,12 @@ class_name Loadout extends RefCounted
 ## frees one for another row — see legal_targets for why the failure this rule
 ## caused the first time does not recur.
 
-const MAX_EXPLOITS := 3
+## Five rows. Three made every new vector a long wait for a trigger and a
+## build that could not breathe; with bare rows firing on a built-in interval
+## five rows is breadth the player can actually use. Everything downstream —
+## the run's gid stride, the manifest layout, the card screen's row buttons —
+## derives from this constant, and the wire protocol is versioned on it.
+const MAX_EXPLOITS := 5
 
 enum Rule { NONE, RANK_UP, EMPTY_SLOT, NEW_EXPLOIT, REPLACE }
 

@@ -7,7 +7,7 @@ class_name SessionRules extends RefCounted
 
 ## Wire-protocol version. Two peers with different values cannot share a
 ## simulation, so the handshake refuses a mismatch and the descriptor carries it.
-const PROTOCOL := 2   # 2: the input record carries an aim
+const PROTOCOL := 3   # 2: the input record carries an aim; 3: five exploit rows
 
 ## Longest a player display name may be, in characters. A roster row past this is
 ## rejected by descriptor validation rather than truncated — a hostile peer does

@@ -163,7 +163,8 @@ func _initialize() -> void:
 	# simulates, the whole steering path executes zero times, and the gate can
 	# only ever pass. A gate that cannot fail is not evidence.
 	#
-	# MAX_EXPLOITS is 3, so this SWAPS chain out rather than adding a fourth row:
+	# This SWAPS chain out rather than adding a row (MAX_EXPLOITS was 3 when the
+	# fixture was pinned; its three rows stay so the pin holds):
 	# a fourth pass through _emit_vector would move the figure whether or not
 	# homing costs anything, and the point is attribution.
 	var t := ModuleTable.by_id()

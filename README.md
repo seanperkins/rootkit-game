@@ -74,7 +74,7 @@ An **exploit** is one weapon with three slot types:
 | `TRIGGER` | 1 | when it fires, how it scales cadence, and how many shots one event produces | interval, on_kill, on_hit, on_damage_taken, on_low_integrity, on_flip, on_level_up |
 | `PAYLOAD` | 0–1 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice, checksum, bitmask, race_condition, heap_spray, tarpit |
 
-You hold three exploits. A module's slot type picks its **column**, so the only
+You hold five exploits. A module's slot type picks its **column**, so the only
 question left is which **row** — and each of the three level-up cards carries one
 button per exploit row, marked with what pressing it does: `^` rank up, `+` fill
 an empty slot, `x` replace the occupant, `*` found a new row. One click places
