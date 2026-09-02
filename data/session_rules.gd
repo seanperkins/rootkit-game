@@ -40,6 +40,14 @@ const LAN_DELAY := 3
 ## idle peer cannot stall the party forever.
 const CHOICE_TIMEOUT_TICKS := 1800
 
+## Each peer reports a checksum of its executed state this often, in ticks, so a
+## divergence is caught within a second of happening.
+const CHECKSUM_INTERVAL := 60
+
+## After this many consecutive ticks where lockstep cannot advance — a required
+## record has not arrived — the HUD names the slots being waited on.
+const STALL_NOTICE := 20
+
 ## The largest legal magnitude of a single movement input component. A record
 ## whose move has a component beyond this (or a non-finite one) is sanitised to
 ## Vector2.ZERO on application, so a hostile peer cannot teleport by inflating

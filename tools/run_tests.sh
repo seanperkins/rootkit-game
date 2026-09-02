@@ -22,7 +22,7 @@ SUITES=(
   test_behaviour test_effects test_minibosses test_cards_keyboard test_draw_order
   test_player_stats test_player_sheet test_meta test_meta_layout test_run
   test_feel test_synth test_audio_events test_input test_prefs test_hud test_arrivals test_flow test_interpolation
-  test_determinism_rules test_meta_derivation
+  test_determinism_rules test_meta_derivation test_lockstep
 )
 [ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)
 
