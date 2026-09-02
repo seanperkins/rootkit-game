@@ -3823,7 +3823,7 @@ func _step9_recycle() -> void:
 ## disconnect never makes the remaining players' enemies softer.
 func _hp_mult() -> float:
 	return SpawnDirector.hp_mult(subnet, director.elapsed) \
-		* SpawnDirector.party_hp_mult(_players)
+		* SpawnDirector.party_hp_mult(_players) * SpawnDirector.HP_ROWS
 
 func _refresh_thresholds() -> void:
 	var f := SpawnDirector.threshold_mult(subnet)

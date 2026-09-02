@@ -371,11 +371,11 @@ func scaling_follows_the_roster() -> void:
 	var r: Node2D = await _party_run(2)
 	_check("the roster size is two", r._players, 2)
 	_check("spawn rate doubles", r.director.rate_mult, 2.0)
-	_check("integrity is 1.5x", r._hp_mult(),
-		SpawnDirector.hp_mult(1, r.director.elapsed) * 1.5)
+	_check("integrity is 1.5x (times the board axis)", r._hp_mult(),
+		SpawnDirector.hp_mult(1, r.director.elapsed) * 1.5 * SpawnDirector.HP_ROWS)
 	r._die(1)
 	_check("a death does not soften the enemies", r._hp_mult(),
-		SpawnDirector.hp_mult(1, r.director.elapsed) * 1.5)
+		SpawnDirector.hp_mult(1, r.director.elapsed) * 1.5 * SpawnDirector.HP_ROWS)
 	await _done(r, "scaling_follows_the_roster")
 
 ## The spawn ring walks the LIVE slots in order and skips the dead.

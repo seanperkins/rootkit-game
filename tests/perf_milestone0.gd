@@ -118,13 +118,22 @@ var _cap_ticks := 0.0
 ## load floors sit BELOW that baseline with this reason: the baseline's
 ## means cover only its first 17218 ticks, and the budget removed the botnet
 ## allies that landed a large share of the hits and kills — a balance change
-## the game wanted, not a lighter tick. Pinned here so it cannot fall
-## further unnoticed.
+## the game wanted, not a lighter tick.
+##
+## Re-pinned 2026-09-02 with FIVE exploit rows and the board HP axis
+## (SpawnDirector.HP_ROWS 1.40). Five rows alone thinned the field to 308.6
+## enemies / 1.01 hits / 0.289 kills per tick — the party out-fired the
+## spawns — so enemy integrity was retuned by the gate: 1.25 gave 316.5 /
+## 1.16 / 0.238, 1.40 gives 353.0 / 3.42 / 0.235 at the cap, 1.55 killed the
+## autopilot at tick 23481. The enemy and hit floors moved UP. The kill floor
+## moves DOWN with this reason: tougher enemies die slower, while damage
+## throughput (kills x integrity, 0.235 x 1.40 = 0.33 against 0.276) rose —
+## a fuller field is heavier coverage, not lighter.
 const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout"
 const BASELINE_END_TICK := 24000
-const BASELINE_MEAN_ENEMIES := 333.1
-const BASELINE_MEAN_HITS := 1.24
-const BASELINE_KILLS_PER_TICK := 0.276
+const BASELINE_MEAN_ENEMIES := 353.0
+const BASELINE_MEAN_HITS := 3.42
+const BASELINE_KILLS_PER_TICK := 0.235
 
 ## The autopilot's hysteresis band and nudge cadence — see _kite. Measured
 ## on the pre-pass tree: a 120/190 band died at tick 10182 and 150/190 at

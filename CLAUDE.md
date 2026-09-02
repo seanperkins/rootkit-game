@@ -164,6 +164,10 @@ Two that drive the rest:
 
 - Enemy integrity scales on both axes (`SpawnDirector.hp_mult`) because a rank
   buys damage linearly — with constant HP everything one-shot forever past 34.
+- Five exploit rows fire up to two-thirds more than the three they replaced,
+  so `SpawnDirector.HP_ROWS` (1.40) scales every enemy's integrity. It was set
+  by the perf gate's coverage pin, not by feel: the smallest value whose
+  autopiloted field is no thinner than the three-row pin.
 - Terrain density is **flat** across subnets. A cramped late arena reads as
   cramped, not hard; escalation lives in enemy HP and the wave table.
 

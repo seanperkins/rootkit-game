@@ -54,6 +54,12 @@ static func hp_mult(subnet: int, elapsed: float) -> float:
 ## park never lowers it, so a party cannot shed difficulty by losing a member.
 const HP_PER_EXTRA_PLAYER := 0.50
 
+## The board axis: five exploit rows (from three) fire up to two-thirds more,
+## so every enemy carries this much more integrity on top of the subnet,
+## elapsed and party axes. Set by the perf gate's coverage pin: the smallest
+## value whose fixture field is no thinner than the three-row pin.
+const HP_ROWS := 1.40
+
 static func party_hp_mult(players: int) -> float:
 	return 1.0 + HP_PER_EXTRA_PLAYER * float(maxi(players, 1) - 1)
 

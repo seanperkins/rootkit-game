@@ -142,7 +142,7 @@ dist_from_gate max_dist voided _collapse_order _collapse_idx`.
 ```gdscript
 enum Formation { RING, STREAM, FLANK, BURST }
 SUBNET_SECONDS 300.0   CAMPAIGN_SUBNETS 3
-HP_PER_SUBNET 1.55     HP_OVER_SUBNET 0.45   HP_PER_EXTRA_PLAYER 0.50
+HP_PER_SUBNET 1.55     HP_OVER_SUBNET 0.45   HP_PER_EXTRA_PLAYER 0.50   HP_ROWS 1.40
 MINIBOSS_TIMES [60, 120, 180, 240]
 MINIBOSS_IDS   [fork_bomb, packet_filter, null_ptr, kernel_panic]
 ```
@@ -150,7 +150,8 @@ MINIBOSS_IDS   [fork_bomb, packet_filter, null_ptr, kernel_panic]
 `hp_mult(subnet, elapsed)` scales enemy integrity on **both** axes — a rank buys
 damage linearly, so constant HP meant everything one-shot forever past 34 damage.
 `threshold_mult(subnet)` does the same for corruption thresholds;
-`party_hp_mult(live)` adds 0.5 per extra LIVE slot and `rate_mult` scales the
+`HP_ROWS` (1.40, applied in `run._hp_mult`) is the board axis for five exploit
+rows, set by the perf gate's coverage pin; `party_hp_mult(live)` adds 0.5 per extra LIVE slot and `rate_mult` scales the
 wave rate with the party. Seeded from the session descriptor, never
 `randomize()`.
 Also: `step(dt, origin, radius) -> Array`, `due_minibosses(dt)`,
