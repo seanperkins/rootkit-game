@@ -1201,10 +1201,10 @@ First make the gate print what the pin needs. Today the loop runs while `g.alive
 	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, kills/tick %.3f, at cap %.0f%% of ticks" % [
 		outcome, t, t * DT, _enemy_sum / ticks, _hit_sum / ticks, float(total_kills) / ticks, 100.0 * _cap_ticks / ticks])
 ```
-and inside the loop, after `g._physics_process(DT)`, add
+The queue's `count` and `hit_count` are both zeroed by `drain_pass`, so nothing on the queue reads the tick's hits after the step. Add a per-tick counter to `scripts/combat/hit_queue.gd`: `var drained_events: int = 0` beside `dropped`, `drained_events = 0` in `begin_tick()`, and in `drain_pass()` — immediately before the line that sets `count = 0` after its event loop — `drained_events += count`. Classify it in the manifest's `NOT_IN_MANIFEST` entry for `hit_queue` as `"per-tick diagnostic; never carried"` (run `test_manifest` to see the exact key it expects). Then inside the loop, after `g._physics_process(DT)`, add
 ```gdscript
 		_enemy_sum += float(g.enemies.count)
-		_hit_sum += float(g.queue.count)          # hits adjudicated this tick
+		_hit_sum += float(g.queue.drained_events)   # hit events drained this tick
 		if g.enemies.count >= g.MAX_ENEMIES:
 			_cap_ticks += 1.0
 ```
