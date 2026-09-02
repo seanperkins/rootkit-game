@@ -313,11 +313,14 @@ is unowned.
 ### Scaling
 
 Wave rate multiplies by `players` (inert at the pool cap, and said so). Enemy
-integrity multiplies by `1 + HP_PER_EXTRA_PLAYER * (players - 1)`.
+integrity multiplies by `1 + 0.50 * (players - 1)`:
+`HP_PER_EXTRA_PLAYER := 0.50`.
 `xp_needed` is **not** scaled — kills are supply-bound at the cap and a ×4
 `xp_needed` made a group level four times slower than solo. A group levels
 faster; accepted. `MAX_SHARDS` is unchanged and a group can saturate it under
-load; lost XP at saturation is accepted and stated. Constants live in `data/`.
+load; lost XP at saturation is accepted and stated. Session constants live in
+`data/session_rules.gd`; `HP_PER_EXTRA_PLAYER` stays beside the existing enemy
+integrity constants in `scripts/run/spawn_director.gd`.
 
 ### Shared level-up and fusion
 
@@ -480,14 +483,16 @@ no meta to rebuild from. Carrying the arrays deletes both problems.
 **Primitives only.** Packed arrays, ints, floats, bools. Decoding uses
 `bytes_to_var`, never `bytes_to_var_with_objects` — the latter on a peer's
 bytes constructs arbitrary classes and is the standard Godot remote-code path.
-`restore_state` clamps every `count` to its pool cap and rejects a payload
-whose array lengths disagree with its counts.
+`restore_state` requires every `count` to be in `0..pool_cap` and rejects a
+payload whose parallel-array lengths disagree with its counts. Oversized counts
+are invalid; they are never truncated into a plausible state.
 
 Size: ~280 KB realistic worst case (L layout, cap, mid-collapse, ~40 worms)
 and ~480 KB absolute ceiling — shards at 79.5 KB and worm trails at 768 bytes
-per live worm are the terms that dominate — against a 1 MB cap; ~100 KB typical.
-`SNAPSHOT_MAX := 1 MB` stays as the bound on what a peer can make a client
-allocate; the snapshot shrank to fit it rather than the cap growing.
+per live worm are the terms that dominate — against a `1 << 20` byte cap;
+~100 KB typical. `SNAPSHOT_MAX := 1 << 20` stays as the bound on what a peer can
+make a client allocate; the snapshot shrank to fit it rather than the cap
+growing.
 `_state_hash()` every 60 ticks walks the live prefixes; the 4-slot perf run
 includes it.
 
@@ -507,18 +512,21 @@ use "tick" to mean a frame counter with different before/after semantics.
 ### The input record
 
 ```
-move:   Vector2   # WORLD direction as from_iso produces it; components reach ±1.3635; two raw float32
+move:   Vector2   # WORLD direction as from_iso produces it; each component bounded by SessionRules.MOVE_COMPONENT_MAX; two raw float32
 card:   int       # -1 none, -2 decline, 0..2 the offered card
 target: int       # index into Loadout.legal_targets(m), fixed iteration order
 offer:  int       # the per-slot offer_seq this choice answers; -1 when card is -1
 ```
 
-20 bytes. Every field is checked at application, not at the transport: `card`,
-`target` and `offer` out of range are treated as no choice; `move` with a
-non-finite component is treated as zero and each component is clamped to
-±1.3635. `clampf` is not a finiteness check — CLAUDE.md records that for
-`save.json`, and the same discipline applies to the eight bytes that arrive
-sixty times a second.
+20-byte body, plus the common envelope. Every field is checked at application,
+not at the transport: `card`, `target` and `offer` out of range are treated as
+no choice. `SessionRules.MOVE_COMPONENT_MAX := 1.3635` is the single movement
+component bound; it is just above the mathematical maximum produced by
+`from_iso(screen.normalized())`. A `move` with either a non-finite component or
+`abs(component) > MOVE_COMPONENT_MAX` is treated as `Vector2.ZERO`; otherwise
+it is preserved unchanged. `clampf` is not a finiteness check — CLAUDE.md
+records that for `save.json`, and the same discipline applies to the eight
+bytes that arrive sixty times a second.
 
 ### The ring
 
@@ -625,9 +633,12 @@ later ending control messages.
 At the boundary the host snapshots, sends `SNAPSHOT`, and announces
 `PRESENT(slot, tick)`. It adds the returning peer to its relay set in the same
 frame it serialises, so no relayed record falls between the snapshot and the
-first relay. `PRESENT` is applied **after `tick` is consumed**, on every
-machine. If parked health is positive, the placement anchor is the nearest LIVE
-slot, or `terrain.arena().get_center()` when none exists; the slot is placed at
+first relay. Because `PRESENT` uses channel 0 while `SNAPSHOT` uses channel 1,
+the returnee may receive `PRESENT` first. `Transport` buffers that peer's
+boundary control until the matching snapshot is validated and committed; only
+then can `PRESENT` be applied, **after `tick` is consumed**, on every machine.
+If parked health is positive, the placement anchor is the nearest LIVE slot, or
+`terrain.arena().get_center()` when none exists; the slot is placed at
 `terrain.nearest_open(anchor)`, marked LIVE, and required from `tick + 1`.
 Applying it clears `pending_live_return` and records the `PRESENT` tick.
 No-LIVE candidates with `candidate_tick <= present_tick` are stale — equality
@@ -733,17 +744,17 @@ Every suite is added to `tools/run_tests.sh`'s `SUITES` array.
 | `test_multiplayer_sim` | two, then four, instances; hashes identical for 3600 ticks; one instance sets `user_paused` and hashes still agree; dropped-append counter zero |
 | `test_recovery` | corrupt one instance; `RESYNC`; host waits for the ring window; **correct instances execute `delay` ticks past the resync tick before the snapshot is applied**, and the restored peer still reaches `tick + delay + 1`; its own records agree with what it broadcast; hashes agree after |
 | `test_parking` | withhold a slot; parks at the host's first-missing tick; run continues; the withheld peer resuming traffic without `HELLO` is disconnected |
-| `test_reconnect` | LIVE path: park, **advance a subnet**, return beside the party inside `terrain.arena()`; `WELCOME` re-sent; primed records let `ready(tick + 1)` pass; the returnee crosses the open gate; hashes agree. No-LIVE race: before any candidate exists, accepting the last positive-health ABSENT slot while DEAD spectators are PRESENT sets `pending_live_return`; across multiple ticks before `PRESENT`, local evaluation plus delayed no-LIVE candidates cannot create a check, while a campaign-win candidate still can. When an old no-LIVE barrier exists, flagged `RESYNC` clears it on every peer. `PRESENT(T)` returns the slot at `nearest_open(arena centre)`, clears the latch, rejects candidates at both `T - 1` and `T`, resumes play, and emits no `END`; aborting the reconnect clears the latch and allows a new no-LIVE check. DEAD path: DEAD → ABSENT → PRESENT with zero parked health stays DEAD, remains outside the LIVE required mask, leaves the ending check active, and still contributes to it |
+| `test_reconnect` | LIVE path: park, **advance a subnet**, return beside the party inside `terrain.arena()`; `WELCOME` re-sent; primed records let `ready(tick + 1)` pass; channel-0 RELAY records and `PRESENT` arriving before the channel-1 snapshot are buffered, survive restore, and apply only after that snapshot commits; the returnee crosses the open gate; hashes agree. No-LIVE race: before any candidate exists, accepting the last positive-health ABSENT slot while DEAD spectators are PRESENT sets `pending_live_return`; across multiple ticks before `PRESENT`, local evaluation plus delayed no-LIVE candidates cannot create a check, while a campaign-win candidate still can. When an old no-LIVE barrier exists, flagged `RESYNC` clears it on every peer. `PRESENT(T)` returns the slot at `nearest_open(arena centre)`, clears the latch, rejects candidates at both `T - 1` and `T`, resumes play, and emits no `END`; aborting the reconnect clears the latch and allows a new no-LIVE check. DEAD path: DEAD → ABSENT → PRESENT with zero parked health stays DEAD, remains outside the LIVE required mask, leaves the ending check active, and still contributes to it |
 | `test_plurality` | every census row; a slot idling in the corridor dies when the corridor voids; the leash clamps at 4000; the live window is ~10,000 cells with the party together and never exceeds `MAX_WINDOW` apart; ward fold is per slot; ON_KILL fires only the owner's exploits; botnet cap sums LIVE slots; unowned kills bank to nobody; per-slot kills |
 | `test_offers` | a choice with a stale `offer_seq` is dropped, including across two rounds opened on one tick; `pending_levels = 2` opens two rounds on the same tick on every machine; a payout offer queues behind an open level offer; death resolves an open offer |
 | `test_meta_derivation` | two different saves exchange `HELLO` counters; both machines derive byte-identical `_sheet`, `_unlocked` and `resolved` for both slots |
 | `test_ending` | a false local death while a teammate remains LIVE sends neutral records, does not stall the host, and is repaired at the next check. A correct last death on a non-cadence tick reaches `END_CHECK`; every PRESENT peer, including a DEAD spectator, contributes; only host `END` emits `run_ended`. Divergent client terminal / host nonterminal: check mismatch, a fresh future `RESYNC` restores the client, no `END`, run resumes. Host terminal / client nonterminal: mismatch, a fresh future `RESYNC` restores the client to the host, a second check agrees, then `END` |
 | `test_determinism_rules` | no clock or delta parameter in the tick's call graph; every tick RNG seeded from the session; no `get_connections()`; `Input.` in one place |
-| `test_snapshot_hostile` | truncated buffer, oversized `count`, mismatched lengths, random bytes — rejected, never crash; a `move` of NaN or 1e30 is applied as zero |
+| `test_snapshot_hostile` | truncated buffer, oversized `count`, mismatched lengths, random bytes — rejected, never crash; movement at `MOVE_COMPONENT_MAX` is preserved, while NaN, `MOVE_COMPONENT_MAX + 0.001`, or a finite `1e30` component makes the whole `move` `Vector2.ZERO` |
 | `test_transport_loopback` | peers created with two user channels; `INPUT` and `RELAY` use reliable ordered mode; withholding polling for three input intervals still delivers all three records in order; a full-size `SNAPSHOT` on channel 1 does not delay `INPUT`; `set_timeout` parks at 3 s; malformed packets dropped and counted; input, retained-report and announced-boundary tick windows are distinct; mismatched protocol/session and a new join after `START` are refused |
 | `perf_milestone0` | a 4-slot run at cap, party at full leash, four flow fields, `_state_hash` every 60 ticks; same budget |
 
-**Migration surface:** 26 suites, 10 tools and `ui.gd` read scalars that
+**Migration surface:** 27 suites, 10 tools and `ui.gd` read scalars that
 become per-slot; a mechanical pass indexing slot 0, budgeted at four days. The
 shot tools' pass is verified windowed.
 
@@ -797,7 +808,7 @@ Windows determinism verification — a precondition, not a feature.
   rule, `just_voided`, `capacity`, `waves`; `_route`, `_route_cell`,
   `collapse_left` placed correctly.
 - Bounds checks at input application; Godot channel numbering; explicit relay.
-- Migration surface 26 suites and 10 tools; three new suites (`test_offers`,
+- Migration surface 27 suites and 10 tools; three new suites (`test_offers`,
   `test_snapshot_hostile`, `test_transport_loopback`); CLAUDE.md suite count.
 
 ## Verification passes, after round 3
@@ -855,3 +866,5 @@ Windows determinism verification — a precondition, not a feature.
   `PRESENT` applies or the reconnect aborts, without suppressing campaign win.
   Candidate ticks through the `PRESENT` tick are stale. The DEAD path leaves
   the barrier active.
+  Reconnect control is also ordered across user channels: an early `PRESENT`
+  waits for the matching channel-1 snapshot to commit before application.
