@@ -166,6 +166,10 @@ const SPLIT_SPREAD := 0.22
 ## Equal to MINE_TRIGGER on purpose, so a ring's charges do not sit inside each
 ## other's fuse radius.
 const MINE_SPREAD := 46.0
+## How far behind the owner a mine drop is centred: MINE_SPREAD + 40, so a
+## three-mine ring's nearest vertex sits exactly 40 behind. Running lays a
+## trail behind you.
+const MINE_DROP := 86.0
 const MINE_TRIGGER := 46.0
 const MINE_LIFE := 12.0
 ## Orbiters circle at this rate, and live exactly one cadence so that firing
@@ -2704,15 +2708,20 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# A projectile with no velocity and a proximity fuse, so mines cost
 			# no new population and inherit terrain collision for free.
 			var mines: int = maxi(int(r.split_count), 1)
+			var back: Vector2 = player_facing[owner]
+			var centre := at - back * MINE_DROP
 			for sm in mines:
-				var mat := at
+				var mat := centre
 				if mines > 1:
-					# Through nearest_open: the owner's position is always
-					# walkable, so a single mine never needed this, but a ring of
-					# three can put two of them inside a wall where nothing will
-					# ever trip them.
-					mat = terrain.nearest_open(mat + Vector2(MINE_SPREAD, 0.0).rotated(
-						TAU * float(sm) / float(mines)))
+					# The ring is rotated so one vertex lies on the facing axis
+					# (nearest the owner), by complex multiply — no new
+					# transcendental enters the tick.
+					var v := Vector2(MINE_SPREAD, 0.0).rotated(TAU * float(sm) / float(mines))
+					mat = centre + Vector2(v.x * back.x - v.y * back.y, v.x * back.y + v.y * back.x)
+				# Behind the owner may be rock — the owner's position is
+				# walkable, a step behind it need not be — so every mine, single
+				# or ring, goes through nearest_open.
+				mat = terrain.nearest_open(mat)
 				var mi := projectiles.spawn(mat, Vector2.ZERO, 1.0,
 					PROJECTILE_RADIUS, 0)
 				if mi < 0:

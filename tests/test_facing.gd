@@ -13,7 +13,8 @@ const CASES := ["facing_follows_the_applied_record_and_holds",
 	"a_return_resets_facing",
 	"packet_flies_along_facing", "a_homing_packet_still_binds",
 	"beam_hits_its_capsule_only", "spike_hits_its_wedge_only",
-	"beam_radius_floor_holds_in_the_tables"]
+	"beam_radius_floor_holds_in_the_tables",
+	"mines_drop_behind_on_open_ground", "mines_avoid_a_wall"]
 
 func _initialize() -> void:
 	print("ROOTKIT — facing\n")
@@ -28,6 +29,8 @@ func _initialize() -> void:
 	await beam_hits_its_capsule_only()
 	await spike_hits_its_wedge_only()
 	beam_radius_floor_holds_in_the_tables()
+	await mines_drop_behind_on_open_ground()
+	await mines_avoid_a_wall()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -223,3 +226,47 @@ func beam_radius_floor_holds_in_the_tables() -> void:
 			bad.append(rec.fused.id)
 	_check("every beam radius clears the query-cover floor of 31", bad, [])
 	finished["beam_radius_floor_holds_in_the_tables"] = true
+
+func _mine_positions(r: Node2D, gid: int) -> Array:
+	var before: int = r.projectiles.count
+	r._emit_vector(gid, r.resolved[gid])
+	var out := []
+	for i in range(before, r.projectiles.count):
+		out.append(r.projectiles.pos[i])
+	return out
+
+func mines_drop_behind_on_open_ground() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"landmine")
+	_face(r, Vector2.RIGHT)
+	var p: Vector2 = r.player_pos[r.local_slot]   # after the facing tick moved it
+	var one := _mine_positions(r, gid)
+	_check("one mine lands MINE_DROP behind", one[0], p - Vector2.RIGHT * r.MINE_DROP)
+	# No base payload carries split_count on a mine; set it on the resolved row.
+	var ring := _with(r, &"landmine")
+	r.resolved[ring].split_count = 3.0
+	var three := _mine_positions(r, ring)
+	_check("three mines dropped", three.size(), 3)
+	var nearest := INF
+	for q in three:
+		nearest = minf(nearest, (q - p).length())
+	_check("a three-mine ring's nearest vertex is MINE_DROP - MINE_SPREAD behind",
+		absf(nearest - (r.MINE_DROP - r.MINE_SPREAD)) < 0.5, true)
+	for q in three:
+		_check_true("every mine is behind the owner", (q - p).dot(Vector2.RIGHT) < 0.0)
+	r.free(); await process_frame
+	finished["mines_drop_behind_on_open_ground"] = true
+
+func mines_avoid_a_wall() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"landmine")
+	r.resolved[gid].split_count = 3.0
+	_face(r, Vector2.RIGHT)
+	var p: Vector2 = r.player_pos[r.local_slot]
+	# Wall the ring's centre cell.
+	var c: int = r.terrain.cell_index(p - Vector2.RIGHT * r.MINE_DROP)
+	r.terrain.solid[c] = 1
+	for q in _mine_positions(r, gid):
+		_check("every mine lands on open ground", r.terrain.is_solid(q), false)
+	r.free(); await process_frame
+	finished["mines_avoid_a_wall"] = true
