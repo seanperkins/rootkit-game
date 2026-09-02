@@ -40,6 +40,12 @@ func rate_limited() -> void:
 	var idx: int = run._gid(run.local_slot, run.loadouts[run.local_slot].exploits.size() - 1)
 	var cd: float = run.resolved[idx].cooldown
 
+	# Face +X for one tick: the ring has an enemy there, so the default packet
+	# (the kill source) connects instead of relying on the initial facing.
+	run.input_override = Vector2(1.0, 0.0)
+	run._physics_process(DT)
+	run.input_override = Vector2.ZERO
+
 	var fires := 0
 	var seconds := 4.0
 	for tick in int(seconds / DT):
@@ -87,6 +93,12 @@ func fires(trigger_id: StringName, label: String) -> void:
 		var a := TAU * k / 12.0
 		run.enemies.spawn(run.player_pos[run.local_slot] + Vector2(cos(a), sin(a)) * 60.0,
 			Vector2.ZERO, 40.0, run.ENEMY_RADIUS, 0)
+
+	# Face +X for one tick so the packet row (the on_kill / on_hit source)
+	# fires into the ring rather than depending on the initial facing.
+	run.input_override = Vector2(1.0, 0.0)
+	run._physics_process(DT)
+	run.input_override = Vector2.ZERO
 
 	var fired := 0
 	for tick in 600:

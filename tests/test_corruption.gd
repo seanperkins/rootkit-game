@@ -24,6 +24,20 @@ func _initialize() -> void:
 
 	run.input_override = Vector2.ZERO
 	var t := 0
+	while run.enemies.count == 0 and t < 600:       # warm up until the director has spawned
+		run._physics_process(DT); t += 1
+	# The packet fires along facing now, so face the nearest enemy once; the
+	# swarm closes from every bearing after that and the flips follow.
+	var nearest := -1
+	var best := INF
+	for i in run.enemies.count:
+		var d: float = run.enemies.pos[i].distance_squared_to(run.player_pos[run.local_slot])
+		if d < best:
+			best = d; nearest = i
+	if nearest >= 0:
+		run.input_override = (run.enemies.pos[nearest] - run.player_pos[run.local_slot]).normalized()
+		run._physics_process(DT); t += 1
+		run.input_override = Vector2.ZERO
 	while t < 3600 and run.alive:
 		run._physics_process(DT)
 		t += 1
