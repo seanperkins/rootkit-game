@@ -80,22 +80,22 @@ func projectiles_die_on_walls() -> void:
 
 func hazard_zones_hurt() -> void:
 	var r := await _fresh_run()
-	_paint(r.terrain, r.player_pos, Terrain.Kind.HAZARD)
-	var before: float = r.player_health
+	_paint(r.terrain, r.player_pos[r.local_slot], Terrain.Kind.HAZARD)
+	var before: float = r.player_health[r.local_slot]
 	for k in 60:
 		r._step2b_zones(1.0 / 60.0)
-	var lost: float = before - r.player_health
+	var lost: float = before - r.player_health[r.local_slot]
 	# Bounded, not exact: the hazard goes through _mitigated, so armour and
 	# defence from the player sheet reduce it by an amount the shop can change.
 	_check("standing in a hazard costs integrity", lost > 0.0, true)
 	_check("and never more than its rated output",
 		lost <= Terrain.HAZARD_DPS + 0.01, true)
 
-	var mid: float = r.player_health
-	r.player_pos = Vector2(1200, 800)
+	var mid: float = r.player_health[r.local_slot]
+	r.player_pos[r.local_slot] = Vector2(1200, 800)
 	for k in 60:
 		r._step2b_zones(1.0 / 60.0)
-	_check("leaving the hazard stops the damage", r.player_health, mid)
+	_check("leaving the hazard stops the damage", r.player_health[r.local_slot], mid)
 	r.free()
 	finished["hazard_zones_hurt"] = true
 
@@ -130,10 +130,10 @@ func advancing_moves_the_player_on_not_the_ground() -> void:
 	var r := await _fresh_run()
 	var before: PackedByteArray = r.terrain.solid.duplicate()
 	var arena_before: Rect2 = r.terrain.arena()
-	var was: Vector2 = r.player_pos
+	var was: Vector2 = r.player_pos[r.local_slot]
 	r._advance_subnet()
 	_check("the ground is untouched", r.terrain.solid, before)
-	_check("the player is not moved", r.player_pos, was)
+	_check("the player is not moved", r.player_pos[r.local_slot], was)
 	_check("but the current arena is the next one", r.terrain.arena() == arena_before, false)
 	_check("and it is where the corridor pointed",
 		r.terrain.arena(), r.terrain.arenas[1])

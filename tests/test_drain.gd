@@ -174,8 +174,8 @@ func a_step_two_detonation_reaches_the_drain() -> void:
 	# _detonate blasts with `r.radius`, and exploit 0 in a fresh run is
 	# packet + interval — packet carries no radius at all, so a zero-radius query
 	# would hit nothing and this test would fail identically before and after.
-	run.loadout.place_at(ModuleTable.by_id()[&"landmine"], 1, 0)
-	run.loadout.place_at(ModuleTable.by_id()[&"interval"], 1, 1)
+	run.loadouts[run.local_slot].place_at(ModuleTable.by_id()[&"landmine"], 1, 0)
+	run.loadouts[run.local_slot].place_at(ModuleTable.by_id()[&"interval"], 1, 1)
 	run._recompile()
 
 	# Blank terrain zones under the probe. Once this fix lands, a HAZARD or
@@ -184,7 +184,7 @@ func a_step_two_detonation_reaches_the_drain() -> void:
 	run.terrain.zone.fill(0)
 	run.terrain.clear_temp_zones()
 
-	var at: Vector2 = run.player_pos + Vector2(200.0, 0.0)
+	var at: Vector2 = run.player_pos[run.local_slot] + Vector2(200.0, 0.0)
 	var e: int = run.enemies.spawn(at, Vector2.ZERO, 50.0, run.ENEMY_RADIUS, 0)
 	# A mine 30 px away: inside MINE_TRIGGER (46) and outside the step-6
 	# projectile-contact radius (PROJECTILE_RADIUS + ENEMY_RADIUS = 16), so the

@@ -25,6 +25,6 @@ func _process(_d: float) -> bool:
 		var img := root.get_texture().get_image()
 		img.save_png("/tmp/rootkit_shot.png")
 		print("saved; enemies=%d shards=%d level=%d hp=%.0f paused=%s" % [
-			run.enemies.count, run.shards.count, run.level, run.player_health, run.paused])
+			run.enemies.count, run.shards.count, run.level, run.player_health[run.local_slot], run.paused])
 		return true
 	return false

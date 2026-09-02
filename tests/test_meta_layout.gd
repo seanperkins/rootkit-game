@@ -89,7 +89,7 @@ func the_recipe_panel_lists_only_reachable_recipes() -> void:
 	var ui := _ui(run)
 
 	var unlocked := {}
-	for m in run._unlocked:
+	for m in run._unlocked[run.local_slot]:
 		unlocked[m.id] = true
 	var want := 0
 	for r in RecipeTable.all():
@@ -105,7 +105,7 @@ func the_recipe_panel_lists_only_reachable_recipes() -> void:
 	var mods := ModuleTable.by_id()
 	var ex := Exploit.new()
 	ex.place(mods[&"packet"]); ex.place(mods[&"interval"]); ex.place(mods[&"fork_bomb"])
-	run.loadout.exploits = [ex]
+	run.loadouts[run.local_slot].exploits = [ex]
 	var partial := ""
 	for line in ui.recipe_lines():
 		if line.contains("frag_packet"):

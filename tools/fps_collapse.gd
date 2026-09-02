@@ -26,11 +26,11 @@ func _process(_d: float) -> bool:
 		Engine.max_fps = 0
 		run.input_override = Vector2.ZERO
 		var t := ModuleTable.by_id()
-		run.loadout.exploits[0].vector.rank = 5
+		run.loadouts[run.local_slot].exploits[0].vector.rank = 5
 		for pair in [[&"broadcast", &"on_hit"], [&"chain", &"interval"]]:
 			var ex := Exploit.new()
 			ex.place(t[pair[0]]); ex.place(t[pair[1]]); ex.vector.rank = 5
-			run.loadout.exploits.append(ex)
+			run.loadouts[run.local_slot].exploits.append(ex)
 		run._recompile()
 		# Clear the subnet, then wind the collapse to its halfway point — the
 		# most void the arena ever has on screen at once with ground still left
@@ -81,12 +81,12 @@ func _fill() -> void:
 	var rng := RandomNumberGenerator.new(); rng.seed = 4242 + run.enemies.count
 	while run.enemies.count < run.MAX_ENEMIES:
 		var a := rng.randf() * TAU
-		run.enemies.spawn(run.player_pos + Vector2(cos(a), sin(a))
+		run.enemies.spawn(run.player_pos[run.local_slot] + Vector2(cos(a), sin(a))
 			* rng.randf_range(60, 620), Vector2.ZERO, 999999.0, run.ENEMY_RADIUS,
 			rng.randi_range(0, 2))
 	while run.projectiles.count < run.MAX_PROJECTILES:
 		var a2 := rng.randf() * TAU
-		var pi: int = run.projectiles.spawn(run.player_pos
+		var pi: int = run.projectiles.spawn(run.player_pos[run.local_slot]
 			+ Vector2(cos(a2), sin(a2)) * 200.0,
 			Vector2(cos(a2), sin(a2)) * 300.0, 1.0, run.PROJECTILE_RADIUS, 0)
 		if pi >= 0:
@@ -94,5 +94,5 @@ func _fill() -> void:
 			run._proj_last[pi] = -1; run._proj_dist_left[pi] = 99999.0
 	while run.shards.count < run.MAX_SHARDS:
 		var a3 := rng.randf() * TAU
-		run.shards.spawn(run.player_pos + Vector2(cos(a3), sin(a3))
+		run.shards.spawn(run.player_pos[run.local_slot] + Vector2(cos(a3), sin(a3))
 			* rng.randf_range(300, 900), Vector2.ZERO, 1.0, 4.0, 0)

@@ -39,7 +39,7 @@ func _process(_d: float) -> bool:
 				far = k
 				break
 		if far >= 0:
-			run.player_pos = run.terrain.origin + Vector2(
+			run.player_pos[run.local_slot] = run.terrain.origin + Vector2(
 				float(far % run.terrain.w) + 0.5,
 				float(far / run.terrain.w) + 0.5) * Terrain.CELL
 		run._physics_process(1.0 / 60.0)
@@ -47,7 +47,7 @@ func _process(_d: float) -> bool:
 		root.get_texture().get_image().save_png("/tmp/collapse_1_frontier.png")
 		# And from the gate end, looking back up the lit route.
 		var g = run.terrain.gate()
-		run.player_pos = g.pos - g.dir * 520.0
+		run.player_pos[run.local_slot] = g.pos - g.dir * 520.0
 		run._physics_process(1.0 / 60.0)
 	if frames == 80:
 		root.get_texture().get_image().save_png("/tmp/collapse_2_route.png")

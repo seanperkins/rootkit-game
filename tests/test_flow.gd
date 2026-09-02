@@ -67,15 +67,15 @@ func _open_near(r: Node2D, from: Vector2, dist: float) -> Vector2:
 
 func open_ground_matches_the_straight_line() -> void:
 	var r := await _bare_run()
-	r._flow.rebuild(r.terrain, r.player_pos)
-	var at := _open_near(r, r.player_pos, 140.0)
+	r._flow.rebuild(r.terrain, r.player_pos[r.local_slot])
+	var at := _open_near(r, r.player_pos[r.local_slot], 140.0)
 	var d: Vector2 = r._flow.dir_at(r.terrain, at)
 	if d == Vector2.ZERO:
 		# No gradient here (the sample landed somewhere sealed); the caller
 		# falls back to the straight line, which is the documented contract.
 		_check_true("no gradient falls back cleanly", true)
 	else:
-		var straight: Vector2 = (r.player_pos - at).normalized()
+		var straight: Vector2 = (r.player_pos[r.local_slot] - at).normalized()
 		# Eight-way, so it can only ever be within 45 degrees of straight.
 		_check_true("open ground points broadly at the player",
 			d.dot(straight) > 0.55)
@@ -113,8 +113,8 @@ func it_routes_around_a_wall() -> void:
 		if not blocked:
 			continue
 
-		r.player_pos = pp
-		r._flow.rebuild(r.terrain, r.player_pos)
+		r.player_pos[r.local_slot] = pp
+		r._flow.rebuild(r.terrain, r.player_pos[r.local_slot])
 		var d: Vector2 = r._flow.dir_at(r.terrain, bp)
 		if d == Vector2.ZERO:
 			continue        # walled off entirely; not this wall's test
@@ -136,8 +136,8 @@ func it_routes_around_a_wall() -> void:
 ## exactly what the game did before this class existed.
 func it_falls_back_outside_the_window() -> void:
 	var r := await _bare_run()
-	r._flow.rebuild(r.terrain, r.player_pos)
-	var far: Vector2 = r.player_pos + Vector2(
+	r._flow.rebuild(r.terrain, r.player_pos[r.local_slot])
+	var far: Vector2 = r.player_pos[r.local_slot] + Vector2(
 		FlowField.RADIUS * Terrain.CELL * 4.0, 0.0)
 	_check("far outside the window yields no direction",
 		r._flow.dir_at(r.terrain, far), Vector2.ZERO)
@@ -150,12 +150,12 @@ func it_falls_back_outside_the_window() -> void:
 ## look worse than a hundred grunts shoving.
 func only_bosses_consult_it() -> void:
 	var r := await _bare_run()
-	r._flow.rebuild(r.terrain, r.player_pos)
-	var at: Vector2 = _open_near(r, r.player_pos, 200.0)
+	r._flow.rebuild(r.terrain, r.player_pos[r.local_slot])
+	var at: Vector2 = _open_near(r, r.player_pos[r.local_slot], 200.0)
 
 	var grunt: int = r.enemies.spawn(at, Vector2.ZERO, 10.0, 20.0, 0)
 	r._spawn_enemy_state(grunt, 10.0)
-	var to_player: Vector2 = r.player_pos - at
+	var to_player: Vector2 = r.player_pos[r.local_slot] - at
 	_check("a grunt walks the straight line",
 		r._approach_dir(grunt, to_player), to_player.normalized())
 
@@ -172,10 +172,10 @@ func only_bosses_consult_it() -> void:
 ## player crosses a cell every few frames at walking speed.
 func a_rebuild_follows_the_player() -> void:
 	var r := await _bare_run()
-	r._flow.rebuild(r.terrain, r.player_pos)
+	r._flow.rebuild(r.terrain, r.player_pos[r.local_slot])
 	_check("no rebuild needed while inside the same cell",
-		r._flow.needs_rebuild(r.terrain, r.player_pos), false)
-	var moved: Vector2 = r.player_pos + Vector2(Terrain.CELL * 3.0, 0.0)
+		r._flow.needs_rebuild(r.terrain, r.player_pos[r.local_slot]), false)
+	var moved: Vector2 = r.player_pos[r.local_slot] + Vector2(Terrain.CELL * 3.0, 0.0)
 	_check_true("but a cell crossing asks for one",
 		r._flow.needs_rebuild(r.terrain, moved))
 	r.free()

@@ -45,7 +45,7 @@ func _process(_d: float) -> bool:
 				biggest = area
 				best = w
 		var c := best.get_center()
-		run.player_pos = c + Vector2(190, 190)
+		run.player_pos[run.local_slot] = c + Vector2(190, 190)
 		for k in 26:
 			var a := TAU * k / 26.0
 			run.enemies.spawn(c + Vector2(cos(a), sin(a)) * 34.0, Vector2.ZERO,
@@ -59,7 +59,7 @@ func _process(_d: float) -> bool:
 		# And the gate, whose posts are the tallest boxes in the game.
 		run.terrain.open_gate()
 		var g = run.terrain.gate()
-		run.player_pos = g.pos - g.dir * 200.0
+		run.player_pos[run.local_slot] = g.pos - g.dir * 200.0
 		while run.enemies.count > 0:
 			run.enemies.despawn(run.enemies.count - 1)
 		for k in 24:

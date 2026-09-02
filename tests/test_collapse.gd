@@ -173,7 +173,7 @@ func voided_ground_kills() -> void:
 	for k in r.terrain.dist_from_gate.size():
 		if r.terrain.dist_from_gate[k] == r.terrain.max_dist:
 			far = k
-	r.player_pos = r.terrain.origin + Vector2(
+	r.player_pos[r.local_slot] = r.terrain.origin + Vector2(
 		float(far % r.terrain.w) + 0.5, float(far / r.terrain.w) + 0.5) * Terrain.CELL
 	r.collapse_left = 0.001
 	r._physics_process(1.0 / 60.0)
@@ -196,7 +196,7 @@ func the_route_home_is_lit() -> void:
 
 	_check("a route exists to draw", r._route.size() > 0, true)
 	_check("it starts under the player",
-		r._route[0], r.terrain.cell_index(r.player_pos))
+		r._route[0], r.terrain.cell_index(r.player_pos[r.local_slot]))
 	_check("and ends on the gate",
 		r.terrain.dist_from_gate[r._route[r._route.size() - 1]], 0)
 
@@ -209,7 +209,7 @@ func the_route_home_is_lit() -> void:
 	# Walking out ends the collapse, so the wash goes with it.
 	r.terrain.open_gate()
 	var g = r.terrain.gate()
-	r.player_pos = g.end + g.dir * 8.0
+	r.player_pos[r.local_slot] = g.end + g.dir * 8.0
 	r._physics_process(1.0 / 60.0)
 	_check("arriving on the next subnet clears the route", r._route.size(), 0)
 	r.free()

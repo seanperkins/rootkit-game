@@ -23,12 +23,12 @@ func _process(_d: float) -> bool:
 		run.fusion_offered.connect(func(_m): run.choose_fusion(0))
 		# Do NOT jump elapsed: every wave would dump its whole backlog in one
 		# tick, since spawns are derived from elapsed rather than accumulated.
-		run.player_pos = Vector2(1180, 640)     # near corner, so the slab faces are in frame
+		run.player_pos[run.local_slot] = Vector2(1180, 640)     # near corner, so the slab faces are in frame
 	if frames > 20:
 		# kite, so the player survives long enough to photograph
 		var flee := Vector2.ZERO
 		for i in run.enemies.count:
-			var d: Vector2 = run.player_pos - run.enemies.pos[i]
+			var d: Vector2 = run.player_pos[run.local_slot] - run.enemies.pos[i]
 			var dl := d.length()
 			if dl < 200.0 and dl > 0.01:
 				flee += d / dl * (200.0 - dl)

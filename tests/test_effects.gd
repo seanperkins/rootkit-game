@@ -38,7 +38,7 @@ func _fresh_run() -> Node2D:
 
 func knockback_pushes_then_fades() -> void:
 	var r := await _fresh_run()
-	r.player_pos = Vector2.ZERO
+	r.player_pos[r.local_slot] = Vector2.ZERO
 	var i: int = r.enemies.spawn(Vector2(300, 0), Vector2.ZERO, 100.0, 12.0, 0)
 	r._spawn_enemy_state(i, 100.0)
 	r.apply_knockback(i, Vector2(900, 0))
@@ -60,25 +60,25 @@ func knockback_pushes_then_fades() -> void:
 
 func the_shield_absorbs_before_integrity() -> void:
 	var r := await _fresh_run()
-	r.player_shield = 20.0
-	var hp: float = r.player_health
-	r.player_iframe = 0.0
-	r._damage_player(8.0)
-	_check("integrity is untouched while shielded", r.player_health, hp)
-	_check("and the shield paid for it", r.player_shield, 12.0)
+	r.player_shield[r.local_slot] = 20.0
+	var hp: float = r.player_health[r.local_slot]
+	r.player_iframe[r.local_slot] = 0.0
+	r._damage_player(r.local_slot, 8.0)
+	_check("integrity is untouched while shielded", r.player_health[r.local_slot], hp)
+	_check("and the shield paid for it", r.player_shield[r.local_slot], 12.0)
 
 	# Overflow spills through rather than being swallowed.
-	r.player_shield = 3.0
-	r.player_iframe = 0.0
-	r._damage_player(20.0)
-	_check("a shield smaller than the hit spills over", r.player_health < hp, true)
-	_check("and is spent", r.player_shield, 0.0)
+	r.player_shield[r.local_slot] = 3.0
+	r.player_iframe[r.local_slot] = 0.0
+	r._damage_player(r.local_slot, 20.0)
+	_check("a shield smaller than the hit spills over", r.player_health[r.local_slot] < hp, true)
+	_check("and is spent", r.player_shield[r.local_slot], 0.0)
 
 	# With no shield the hit lands as it always did.
-	r.player_iframe = 0.0
-	var hp2: float = r.player_health
-	r._damage_player(5.0)
-	_check("with no shield the hit lands in full", r.player_health < hp2, true)
+	r.player_iframe[r.local_slot] = 0.0
+	var hp2: float = r.player_health[r.local_slot]
+	r._damage_player(r.local_slot, 5.0)
+	_check("with no shield the hit lands in full", r.player_health[r.local_slot] < hp2, true)
 	r.free()
 	finished["the_shield_absorbs_before_integrity"] = true
 
@@ -90,9 +90,9 @@ func burst_emits_more_than_once() -> void:
 	var ex := Exploit.new()
 	ex.place(t[&"packet"])
 	ex.place(t[&"on_level_up"])          # burst 8
-	r.loadout.exploits.append(ex)
+	r.loadouts[r.local_slot].exploits.append(ex)
 	r._recompile()
-	var ei: int = r.loadout.exploits.size() - 1
+	var ei: int = r.loadouts[r.local_slot].exploits.size() - 1
 	var res: ResolvedExploit = r.resolved[ei]
 	_check("the exploit resolved a burst", res.burst, 8)
 
@@ -111,9 +111,9 @@ func burst_emits_more_than_once() -> void:
 	var ex2 := Exploit.new()
 	ex2.place(t[&"packet"])
 	ex2.place(t[&"on_kill"])
-	r.loadout.exploits.append(ex2)
+	r.loadouts[r.local_slot].exploits.append(ex2)
 	r._recompile()
-	var ei2: int = r.loadout.exploits.size() - 1
+	var ei2: int = r.loadouts[r.local_slot].exploits.size() - 1
 	var res2: ResolvedExploit = r.resolved[ei2]
 	_check("a burstless trigger resolves zero", res2.burst, 0)
 	var b2: int = r.projectiles.count

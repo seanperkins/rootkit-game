@@ -15,17 +15,17 @@ func _initialize() -> void:
 	root.add_child(run)
 func _process(_d: float) -> bool:
 	frames += 1
-	if run == null or run.loadout == null:
+	if run == null or run.loadouts[run.local_slot] == null:
 		return false
 	if frames == 30:
 		# A half-built board, so one screen shows every button state at once:
 		# exploit_01 is full, exploit_02 has an empty payload column, and
 		# exploit_03 is not founded yet.
 		var t := ModuleTable.by_id()
-		run.loadout.place_at(t[&"corrupt"], 0, 2)
-		run.loadout.exploits[0].payloads[0].rank = 3
-		run.loadout.place_at(t[&"broadcast"], 1, 0)
-		run.loadout.place_at(t[&"on_hit"], 1, 1)
+		run.loadouts[run.local_slot].place_at(t[&"corrupt"], 0, 2)
+		run.loadouts[run.local_slot].exploits[0].payloads[0].rank = 3
+		run.loadouts[run.local_slot].place_at(t[&"broadcast"], 1, 0)
+		run.loadouts[run.local_slot].place_at(t[&"on_hit"], 1, 1)
 		run._recompile()
 	if frames == 60 and not shown:
 		shown = true
@@ -34,7 +34,7 @@ func _process(_d: float) -> bool:
 		var t := ModuleTable.by_id()
 		var cards := []
 		for id in [&"corrupt", &"buffer_overflow", &"interval"]:
-			cards.append([t[id], run.loadout.legal_targets(t[id])])
+			cards.append([t[id], run.loadouts[run.local_slot].legal_targets(t[id])])
 		ui._cards_data = cards
 		ui._show_cards()
 		ui._overlay.visible = true

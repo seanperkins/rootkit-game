@@ -50,9 +50,9 @@ func _with(run: Node2D, vector_id: StringName, trigger_id: StringName,
 	ex.place(t[vector_id]); ex.place(t[trigger_id])
 	for p in payloads:
 		ex.place(t[p])
-	run.loadout.exploits.append(ex)
+	run.loadouts[run.local_slot].exploits.append(ex)
 	run._recompile()
-	return run.resolved.size() - 1
+	return run._gid(run.local_slot, run.loadouts[run.local_slot].exploits.size() - 1)
 
 func arms_and_decays() -> void:
 	var run := await _bare_run()
@@ -62,7 +62,7 @@ func arms_and_decays() -> void:
 
 	for tick in 120:
 		run._physics_process(DT)
-	_check("firing arms the ward", run._eff_defense(), mag)
+	_check("firing arms the ward", run._eff_defense(run.local_slot), mag)
 
 	# Stop it re-arming, then let the live timer run out. Zeroing the duration
 	# rather than the timer is what makes this a decay test rather than a
@@ -70,7 +70,7 @@ func arms_and_decays() -> void:
 	run.resolved[idx].ward_duration = 0.0
 	for tick in int((dur + 1.0) / DT):
 		run._physics_process(DT)
-	_check("an expired ward contributes nothing", run._eff_defense(), 0.0)
+	_check("an expired ward contributes nothing", run._eff_defense(run.local_slot), 0.0)
 	run.queue_free()
 	await process_frame
 
@@ -83,7 +83,7 @@ func targetless_beam_still_wards() -> void:
 	_with(run, &"beam", &"interval", [&"harden"])
 	for tick in 120:
 		run._physics_process(DT)
-	_check("targetless beam still wards", run._eff_armor() > 0.0, true)
+	_check("targetless beam still wards", run._eff_armor(run.local_slot) > 0.0, true)
 	run.queue_free()
 	await process_frame
 
@@ -95,7 +95,7 @@ func max_across_exploits() -> void:
 	var mag: float = run.resolved[a].ward_defense
 	for tick in 120:
 		run._physics_process(DT)
-	_check("two exploits take the max, not the sum", run._eff_defense(), mag)
+	_check("two exploits take the max, not the sum", run._eff_defense(run.local_slot), mag)
 	run.queue_free()
 	await process_frame
 
@@ -109,10 +109,10 @@ func ward_moves_the_player() -> void:
 	# maxed bus_speed line, and that is measurable.
 	var run := await _bare_run()
 	var idx := _with(run, &"broadcast", &"interval", [&"nice"])
-	var ex: Exploit = run.loadout.exploits[run.loadout.exploits.size() - 1]
+	var ex: Exploit = run.loadouts[run.local_slot].exploits[run.loadouts[run.local_slot].exploits.size() - 1]
 	ex.payloads[0].rank = 5
 	run._recompile()
-	var base: float = run._sheet[&"clock_speed"]
+	var base: float = run._sheet[run.local_slot][&"clock_speed"]
 
 	# Open ground, so this measures the ward and not what the generator rolled.
 	# The player covers about 840 units here; a wall anywhere along that line
@@ -120,12 +120,12 @@ func ward_moves_the_player() -> void:
 	run.terrain.solid.fill(0)
 
 	run.input_override = Vector2.RIGHT
-	var start: Vector2 = run.player_pos
+	var start: Vector2 = run.player_pos[run.local_slot]
 	for tick in 180:
 		run._physics_process(DT)
-	var warded: float = run.player_pos.distance_to(start)
+	var warded: float = run.player_pos[run.local_slot].distance_to(start)
 
-	_check("nice r5 raises effective clock speed", run._eff_clock_speed(), base + 60.0)
+	_check("nice r5 raises effective clock speed", run._eff_clock_speed(run.local_slot), base + 60.0)
 	# The ward is down for the first cooldown, so the average sits between the
 	# base and the warded speed rather than at either end.
 	_check("nice moves the player farther than base speed",
@@ -139,9 +139,9 @@ func ward_moves_the_player() -> void:
 func absorbs_its_own_hit() -> void:
 	var run := await _bare_run()
 	_with(run, &"broadcast", &"on_damage_taken", [&"harden"])
-	var before: float = run.player_health
-	run._damage_player(10.0)
-	var loss: float = before - run.player_health
+	var before: float = run.player_health[run.local_slot]
+	run._damage_player(run.local_slot, 10.0)
+	var loss: float = before - run.player_health[run.local_slot]
 	_check("a ward reduces its own triggering hit", loss < 10.0, true)
 	_check("the hit is not fully negated", loss > 0.0, true)
 	run.queue_free()

@@ -179,14 +179,14 @@ func the_sim_reads_inputs_not_the_device() -> void:
 	var r := await _fresh_run()
 	r.input_override = null
 	r.phase = r.Phase.FIGHTING
-	var before: Vector2 = r.player_pos
-	r.inputs[r.LOCAL_SLOT] = Vector2.ZERO
+	var before: Vector2 = r.player_pos[r.local_slot]
+	r.inputs[r.local_slot] = Vector2.ZERO
 	r._step2_integrate(DT)
-	_check("zero input: the player stays put", r.player_pos, before)
-	r.inputs[r.LOCAL_SLOT] = Vector2(1, 0)
+	_check("zero input: the player stays put", r.player_pos[r.local_slot], before)
+	r.inputs[r.local_slot] = Vector2(1, 0)
 	r._step2_integrate(DT)
-	_check("world +x input: the player moved +x", r.player_pos.x > before.x, true)
-	_check("and only along x", absf(r.player_pos.y - before.y) < 0.001, true)
+	_check("world +x input: the player moved +x", r.player_pos[r.local_slot].x > before.x, true)
+	_check("and only along x", absf(r.player_pos[r.local_slot].y - before.y) < 0.001, true)
 	r.queue_free()
 	finished["the_sim_reads_inputs_not_the_device"] = true
 
@@ -199,11 +199,11 @@ func input_override_feeds_slot_zero() -> void:
 	r.input_override = Vector2(0, 3)
 	r._poll_local_input()
 	_check("override lands in slot 0, normalised",
-		r.inputs[r.LOCAL_SLOT], Vector2(0, 1))
+		r.inputs[r.local_slot], Vector2(0, 1))
 	r.input_override = null
 	r._poll_local_input()
 	_check("no override and no device: slot 0 is zero",
-		r.inputs[r.LOCAL_SLOT], Vector2.ZERO)
+		r.inputs[r.local_slot], Vector2.ZERO)
 	r.queue_free()
 	finished["input_override_feeds_slot_zero"] = true
 

@@ -213,7 +213,7 @@ func recycling_carries_every_parallel_array() -> void:
 		run.projectiles.despawn(run.projectiles.count - 1)
 
 	for k in 3:
-		var pi: int = run.projectiles.spawn(run.player_pos + Vector2(k * 40, 0),
+		var pi: int = run.projectiles.spawn(run.player_pos[run.local_slot] + Vector2(k * 40, 0),
 			Vector2.ZERO, 1.0, run.PROJECTILE_RADIUS, 0)
 		run._proj_owner[pi] = k
 		run._proj_target[pi] = 100 + k

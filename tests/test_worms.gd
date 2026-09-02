@@ -38,7 +38,7 @@ func _fresh() -> Node2D:
 
 func spawns_as_a_chain() -> void:
 	var run := await _fresh()
-	run._spawn_worm(run.player_pos + Vector2(300, 0))
+	run._spawn_worm(run.player_pos[run.local_slot] + Vector2(300, 0))
 	_check("a worm spawns as %d entities" % run.WORM_BASE_SEGMENTS,
 		run.enemies.count, run.WORM_BASE_SEGMENTS)
 	_check("exactly one head", _heads(run), 1)
@@ -61,8 +61,11 @@ func grows_over_the_run() -> void:
 func segments_trail_the_head() -> void:
 	var run := await _fresh()
 	run.director.elapsed = 300.0          # a long worm
-	run.resolved = []                     # no weapons: this tests shape, not survival
-	run._spawn_worm(run.player_pos + Vector2(420, 0))
+	# No weapons: this tests shape, not survival. Empty the local build and
+	# recompile so every slot's stride of `resolved` is null.
+	run.loadouts[run.local_slot].exploits.clear()
+	run._recompile()
+	run._spawn_worm(run.player_pos[run.local_slot] + Vector2(420, 0))
 	for t in 120:
 		run._physics_process(DT)
 	var head := -1
@@ -76,15 +79,15 @@ func segments_trail_the_head() -> void:
 	if head >= 0 and tail >= 0:
 		var spread: float = run.enemies.pos[head].distance_to(run.enemies.pos[tail])
 		_check("the chain is strung out, not stacked", spread > 30.0, true)
-		var dh: float = run.enemies.pos[head].distance_to(run.player_pos)
-		var dt2: float = run.enemies.pos[tail].distance_to(run.player_pos)
+		var dh: float = run.enemies.pos[head].distance_to(run.player_pos[run.local_slot])
+		var dt2: float = run.enemies.pos[tail].distance_to(run.player_pos[run.local_slot])
 		_check("the head leads the tail toward the player", dh < dt2, true)
 	run.queue_free(); await process_frame
 
 func head_death_decoheres() -> void:
 	var run := await _fresh()
 	run.director.elapsed = 300.0
-	run._spawn_worm(run.player_pos + Vector2(300, 0))
+	run._spawn_worm(run.player_pos[run.local_slot] + Vector2(300, 0))
 	for t in 30:
 		run._physics_process(DT)
 	var before: int = run.enemies.count

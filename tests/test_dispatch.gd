@@ -50,13 +50,13 @@ func _place(run: Node2D, n: int, at: Vector2) -> void:
 ## Baseline: no cascade, so a single pass. Proves the harness itself is honest.
 func one_death_pays_once() -> void:
 	var run := await _fresh()
-	_place(run, 1, run.player_pos + Vector2(20, 0))
-	var before: int = run.kills
+	_place(run, 1, run.player_pos[run.local_slot] + Vector2(20, 0))
+	var before: int = run.kills[run.local_slot]
 	for t in 90:
 		run._physics_process(DT)
-		if run.kills > before:
+		if run.kills[run.local_slot] > before:
 			break
-	_check("one enemy, one kill", run.kills - before, 1)
+	_check("one enemy, one kill", run.kills[run.local_slot] - before, 1)
 	run.queue_free()
 	await process_frame
 
@@ -74,11 +74,11 @@ func cascade_pays_each_corpse_once() -> void:
 	ex.place(table[&"buffer_overflow"])
 	ex.vector.rank = 5
 	ex.payloads[0].rank = 5
-	run.loadout.exploits.append(ex)
+	run.loadouts[run.local_slot].exploits.append(ex)
 	run._recompile()
 
-	_place(run, 3, run.player_pos + Vector2(26, 0))
-	var k0: int = run.kills
+	_place(run, 3, run.player_pos[run.local_slot] + Vector2(26, 0))
+	var k0: int = run.kills[run.local_slot]
 	var s0: int = run.shards.count + run.xp
 
 	for t in 180:
@@ -86,7 +86,7 @@ func cascade_pays_each_corpse_once() -> void:
 		if run.enemies.count == 0:
 			break
 
-	_check("3 enemies produce exactly 3 kills", run.kills - k0, 3)
+	_check("3 enemies produce exactly 3 kills", run.kills[run.local_slot] - k0, 3)
 	_check("3 enemies produce exactly 3 shards", run.shards.count + run.xp - s0, 3)
 	_check("field cleared", run.enemies.count, 0)
 	run.queue_free()

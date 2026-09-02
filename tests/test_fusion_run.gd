@@ -40,13 +40,13 @@ func _initialize() -> void:
 	# frag_packet is INTERVAL-triggered, so it fires unconditionally and this
 	# probe does not depend on a kill to see it work.
 	var mods := ModuleTable.by_id()
-	run.loadout.exploits[0].vector = EquippedModule.new(mods[&"packet"], 5)
-	run.loadout.exploits[0].trigger = EquippedModule.new(mods[&"interval"], 5)
-	run.loadout.exploits[0].payloads[0] = EquippedModule.new(mods[&"fork_bomb"], 5)
+	run.loadouts[run.local_slot].exploits[0].vector = EquippedModule.new(mods[&"packet"], 5)
+	run.loadouts[run.local_slot].exploits[0].trigger = EquippedModule.new(mods[&"interval"], 5)
+	run.loadouts[run.local_slot].exploits[0].payloads[0] = EquippedModule.new(mods[&"fork_bomb"], 5)
 	run._recompile()
-	_ck("the row matches a recipe", run.loadout.matched_recipes().size(), 1)
-	_ck("and it can fuse", run.loadout.can_fuse(0,
-		run.loadout.matched_recipes()[0][1].fused), true)
+	_ck("the row matches a recipe", run.loadouts[run.local_slot].matched_recipes().size(), 1)
+	_ck("and it can fuse", run.loadouts[run.local_slot].can_fuse(0,
+		run.loadouts[run.local_slot].matched_recipes()[0][1].fused), true)
 
 	# A real fusion screen, taken the way the player takes it.
 	var ui: CanvasLayer = null
@@ -66,10 +66,10 @@ func _initialize() -> void:
 
 	# Teleport the player onto it and hold. This is the only thing the probe
 	# fakes — walking there is the player's job, not the engine's.
-	run.player_pos = run.blocks.pos
+	run.player_pos[run.local_slot] = run.blocks.pos
 	var held := 0
 	while run.blocks.alive and held < 1200 and not run.paused:
-		run.player_pos = run.blocks.pos
+		run.player_pos[run.local_slot] = run.blocks.pos
 		run._physics_process(DT)
 		held += 1
 	_ck("holding it completed the block", run.blocks.alive, false)
@@ -79,8 +79,8 @@ func _initialize() -> void:
 	# Press the button, exactly as the keyboard would.
 	ui.fusion_buttons()[0].emit_signal("pressed")
 	await process_frame
-	_ck("the row fused", run.loadout.exploits[0].head_is_fused(), true)
-	_ck("into frag_packet", run.loadout.exploits[0].vector.module.id,
+	_ck("the row fused", run.loadouts[run.local_slot].exploits[0].head_is_fused(), true)
+	_ck("into frag_packet", run.loadouts[run.local_slot].exploits[0].vector.module.id,
 		&"frag_packet")
 	_ck("and the run resumed", run.paused, false)
 	_ck("the fused row is not inert", run.resolved[0].inert, false)
@@ -88,16 +88,16 @@ func _initialize() -> void:
 
 	# The three ids are free: each is placeable again.
 	_ck("packet is placeable again",
-		run.loadout.legal_targets(mods[&"packet"]).is_empty(), false)
+		run.loadouts[run.local_slot].legal_targets(mods[&"packet"]).is_empty(), false)
 	_ck("fork_bomb is placeable again",
-		run.loadout.legal_targets(mods[&"fork_bomb"]).is_empty(), false)
+		run.loadouts[run.local_slot].legal_targets(mods[&"fork_bomb"]).is_empty(), false)
 
 	# Does the fused weapon actually KILL anything? Put an enemy in front of it
 	# and run the real tick. This is the question Task 0 was written about.
 	while run.enemies.count > 0:
 		run.enemies.despawn(run.enemies.count - 1)
 	run.terrain.zone.fill(0)
-	var at: Vector2 = run.player_pos + Vector2(120.0, 0.0)
+	var at: Vector2 = run.player_pos[run.local_slot] + Vector2(120.0, 0.0)
 	var e: int = run.enemies.spawn(at, Vector2.ZERO, 400.0, run.ENEMY_RADIUS, 0)
 	var before: float = run.enemies.integrity[e]
 	for i in 180:

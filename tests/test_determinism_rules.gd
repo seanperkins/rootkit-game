@@ -59,12 +59,12 @@ func tick_ignores_dt_below_guard() -> void:
 	var b: Node2D = await _fresh_run()
 	a.input_override = Vector2.RIGHT
 	b.input_override = Vector2.RIGHT
-	var a0: Vector2 = a.player_pos
-	var b0: Vector2 = b.player_pos
+	var a0: Vector2 = a.player_pos[a.local_slot]
+	var b0: Vector2 = b.player_pos[b.local_slot]
 	a._physics_process(DT)
 	b._physics_process(DT * 50.0)
-	var da: Vector2 = a.player_pos - a0
-	var db: Vector2 = b.player_pos - b0
+	var da: Vector2 = a.player_pos[a.local_slot] - a0
+	var db: Vector2 = b.player_pos[b.local_slot] - b0
 	_check_true("player moved at all", da.length() > 0.0)
 	_check_true("displacement is independent of the frame delta",
 		da.distance_to(db) < 1e-4)
@@ -88,18 +88,18 @@ func hitstop_costs_fixed_ticks() -> void:
 	r._hitstop()
 	_check("a hitstop is HITSTOP_TICKS long", r.hitstop_ticks,
 		SessionRules.HITSTOP_TICKS)
-	var frozen_at: Vector2 = r.player_pos
+	var frozen_at: Vector2 = r.player_pos[r.local_slot]
 	for i in SessionRules.HITSTOP_TICKS:
 		r._physics_process(DT)
 		_check_true("world frozen on hitstop tick %d" % i,
-			r.player_pos.distance_to(frozen_at) < 1e-6)
+			r.player_pos[r.local_slot].distance_to(frozen_at) < 1e-6)
 	_check("the hitstop drained to zero", r.hitstop_ticks, 0)
 	_check_true("effects aged while the world was frozen",
 		r._fx_ring[0][2] < life_before)
 
 	r._physics_process(DT)
 	_check_true("the world steps again after the hitstop",
-		r.player_pos.distance_to(frozen_at) > 0.0)
+		r.player_pos[r.local_slot].distance_to(frozen_at) > 0.0)
 	r.free()
 	await process_frame
 	finished["hitstop_costs_fixed_ticks"] = true

@@ -102,7 +102,7 @@ func _offered(ui: CanvasLayer) -> Array:
 ## then true before a key is ever pressed.
 func _snapshot(r: Node2D) -> Array:
 	var out := []
-	for ex in r.loadout.exploits:
+	for ex in r.loadouts[r.local_slot].exploits:
 		var ids := []
 		for em in ex.equipped():
 			ids.append("%s:%d" % [em.module.id, em.rank])
@@ -146,7 +146,7 @@ func up_and_down_walk_the_exploit_rows() -> void:
 	var mods := _offered(ui)
 	var col := 0
 	while col < mods.size() and (mods[col] == null
-			or r.loadout.legal_targets(mods[col]).size() < 2):
+			or r.loadouts[r.local_slot].legal_targets(mods[col]).size() < 2):
 		_key(ui, KEY_RIGHT)
 		col += 1
 	_check("some card offers a second row", col < mods.size(), true)
@@ -211,7 +211,7 @@ func enter_places_the_highlighted_target() -> void:
 	# on that one moves nothing, and the test would assert against row 0.
 	var col := 0
 	while col < mods.size() and (mods[col] == null
-			or r.loadout.legal_targets(mods[col]).size() < 2):
+			or r.loadouts[r.local_slot].legal_targets(mods[col]).size() < 2):
 		_key(ui, KEY_RIGHT)
 		col += 1
 	if col >= mods.size():
@@ -230,13 +230,13 @@ func enter_places_the_highlighted_target() -> void:
 
 	_check("the run is running again", r.paused, false)
 	_check("the highlighted card's module went in",
-		r.loadout.holds(picked.id) >= 0, true)
+		r.loadouts[r.local_slot].holds(picked.id) >= 0, true)
 	# holds() reports the FIRST exploit carrying the id, which is the starting
 	# row whenever the card was a rank-up. Ask the row the highlight named.
 	_check("the second exploit row now exists",
-		r.loadout.exploits.size() >= 2, true)
+		r.loadouts[r.local_slot].exploits.size() >= 2, true)
 	_check("and it is the one that received the module",
-		r.loadout.exploits[1].holds(picked.id) != null, true)
+		r.loadouts[r.local_slot].exploits[1].holds(picked.id) != null, true)
 	r.free()
 	finished["enter_places_the_highlighted_target"] = true
 
@@ -348,7 +348,7 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 	# TWO rows, both maxed. can_fuse refuses zero_day (ON_KILL) unless an
 	# INTERVAL trigger survives elsewhere, and refuses any row not at max rank —
 	# either way this would assert against an empty screen.
-	r.loadout.exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
+	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
 		_row(r, &"packet", &"interval", &"")]
 	r._recompile()
 	r._block_payout()
@@ -360,7 +360,7 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 
 	buttons[0].emit_signal("pressed")
 	await process_frame
-	_check("pressing it fuses", r.loadout.exploits[0].head_is_fused(), true)
+	_check("pressing it fuses", r.loadouts[r.local_slot].exploits[0].head_is_fused(), true)
 	_check("and unpauses", r.paused, false)
 	r.free()
 	finished["the_fusion_screen_takes_the_keyboard"] = true
@@ -372,7 +372,7 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 func escape_declines_a_fusion() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
-	r.loadout.exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
+	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
 		_row(r, &"packet", &"interval", &"")]
 	r._recompile()
 	var before: int = r.salvage
@@ -382,11 +382,11 @@ func escape_declines_a_fusion() -> void:
 	_key(ui, KEY_ESCAPE)
 	_check("escape unpauses", r.paused, false)
 	_check("and pays the decline salvage", r.salvage, before + 25)
-	_check("and fuses nothing", r.loadout.exploits[0].head_is_fused(), false)
+	_check("and fuses nothing", r.loadouts[r.local_slot].exploits[0].head_is_fused(), false)
 	# A stale index from the screen just dismissed must consume nothing.
 	r.choose_fusion(0)
 	_check("a stale choose_fusion after a decline does nothing",
-		r.loadout.exploits[0].head_is_fused(), false)
+		r.loadouts[r.local_slot].exploits[0].head_is_fused(), false)
 	r.free()
 	finished["escape_declines_a_fusion"] = true
 

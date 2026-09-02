@@ -257,15 +257,17 @@ func _refresh() -> void:
 	if run == null:
 		return
 	var t: float = run.time_left()
-	var hp := int(run.player_health)
+	# The HUD renders the LOCAL slot only; teammates get their own strip later.
+	var ls: int = run.local_slot
+	var hp := int(run.player_health[ls])
 	# The maximum was hardcoded in the FORMAT STRING, so no compiler caught it:
 	# a memory-r10 player read "integrity 180/100".
-	var maxhp := int(run._eff_integrity())
+	var maxhp := int(run._eff_integrity(ls))
 
 	var status: Label = _hud.get_node("Status")
 	status.text = "integrity  %3d/%-3d  [%s]\narmor %-4.0f  def %-4.0f\nlvl %-3d    [%s]" % [
 		hp, maxhp, _bar(float(hp) / maxf(float(maxhp), 1.0), 16),
-		run._eff_armor(), run._eff_defense(), run.level,
+		run._eff_armor(ls), run._eff_defense(ls), run.level,
 		_bar(float(run.xp) / maxf(run.xp_needed, 1), 16)]
 	# Proportional, not absolute. A fixed 30 fires at 16.7% on a 180 bar.
 	status.add_theme_color_override("font_color",
@@ -292,16 +294,20 @@ func _refresh() -> void:
 
 	_hud.get_node("Tally").text = \
 		"salvage %d\nbotnet %d\nkills %d   flips %d" % [
-			run.salvage, run.botnet.count, run.kills, run.flips]
+			run.salvage, run.botnet.count, run.kills[ls], run.flips[ls]]
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())
 
-## One line per exploit. Shared with the run summary, so the two cannot drift.
+## One line per exploit of the LOCAL slot's build. Shared with the run summary,
+## so the two cannot drift. `resolved` is slot-strided, so each exploit's
+## compiled row is looked up by its global id.
 func _build_lines() -> Array:
 	var lines := []
-	for i in run.resolved.size():
-		var r: ResolvedExploit = run.resolved[i]
-		var ex: Exploit = run.loadout.exploits[i]
+	var ls: int = run.local_slot
+	var lo: Loadout = run.loadouts[ls]
+	for i in lo.exploits.size():
+		var r: ResolvedExploit = run.resolved[run._gid(ls, i)]
+		var ex: Exploit = lo.exploits[i]
 		var mods := []
 		for em in ex.equipped():
 			mods.append("%s%s" % [em.module.display_name,
@@ -434,7 +440,8 @@ func _on_fusion(matches: Array) -> void:
 ## panel that said otherwise would be lying about the only gate that matters.
 func recipe_lines() -> Array:
 	var unlocked := {}
-	for m in run._unlocked:
+	var lo: Loadout = run.loadouts[run.local_slot]
+	for m in run._unlocked[run.local_slot]:
 		unlocked[m.id] = true
 	var out := []
 	for r in RecipeTable.all():
@@ -443,11 +450,11 @@ func recipe_lines() -> Array:
 			continue
 		var marks := ""
 		for id in [r.vector_id, r.trigger_id, r.payload_id]:
-			var at: Array = run.loadout._slot_holding(id)
+			var at: Array = lo._slot_holding(id)
 			if at.is_empty():
 				marks += "[ ]"
 			else:
-				var em: EquippedModule = run.loadout.exploits[at[0]].at(at[1])
+				var em: EquippedModule = lo.exploits[at[0]].at(at[1])
 				marks += "[x]" if em.rank >= em.module.max_rank else "[-]"
 		out.append("%s  %-18s %s + %s + %s" % [marks, r.fused.display_name,
 			r.vector_id, r.trigger_id, r.payload_id])
@@ -508,8 +515,9 @@ func _row_button(m: Module, e: int, target) -> Button:
 	b.add_theme_font_size_override("font_size", 12)
 	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	var sl := Exploit.slot_index_of(int(m.slot))
-	var founded: bool = e < run.loadout.exploits.size()
-	var ex: Exploit = run.loadout.exploits[e] if founded else null
+	var lo: Loadout = run.loadouts[run.local_slot]
+	var founded: bool = e < lo.exploits.size()
+	var ex: Exploit = lo.exploits[e] if founded else null
 	var occupant: EquippedModule = ex.at(sl) if ex != null else null
 
 	var mark := "·"
@@ -657,8 +665,8 @@ func _on_end(won: bool, salvage: int) -> void:
 			SpawnDirector.CAMPAIGN_SUBNETS],
 		"  time in subnet %d:%02d" % [int(elapsed) / 60, int(elapsed) % 60],
 		"  level          %d" % run.level,
-		"  kills          %d" % run.kills,
-		"  flips          %d" % run.flips,
+		"  kills          %d" % run.kills[run.local_slot],
+		"  flips          %d" % run.flips[run.local_slot],
 		"  salvage        %s" % ("%d banked" % salvage if won else
 			"lost since the last clear"),
 		"",

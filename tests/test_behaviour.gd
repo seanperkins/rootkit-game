@@ -51,7 +51,7 @@ func chase_is_unchanged_and_state_resets() -> void:
 	r._clear_ai(i)
 	var v: Vector2 = r._behave(i, r.enemy_types[0], 1.0 / 60.0)
 	_check("chase heads at the player", v.normalized().is_equal_approx(
-		(r.player_pos - r.enemies.pos[i]).normalized()), true)
+		(r.player_pos[r.local_slot] - r.enemies.pos[i]).normalized()), true)
 	_check("at the type's speed",
 		is_equal_approx(v.length(), r.enemy_types[0].speed), true)
 
@@ -87,17 +87,17 @@ func charger_commits_to_its_dash() -> void:
 	var r := await _fresh_run()
 	var t := EnemyTable.EnemyType.new(&"t_charge", 0, Color.WHITE, 40.0, 80.0,
 		20.0, 10.0, 1, EnemyTable.Behaviour.CHARGER)
-	r.player_pos = Vector2.ZERO
+	r.player_pos[r.local_slot] = Vector2.ZERO
 	var i: int = r.enemies.spawn(Vector2(600, 0), Vector2.ZERO, 40.0, 12.0, 0)
 	r._spawn_enemy_state(i, 40.0)
 
 	var v: Vector2 = r._behave(i, t, 1.0 / 60.0)
 	_check("far off it approaches", r._ai_phase[i], r.CH_APPROACH)
 	_check("moving toward the player",
-		v.dot(r.player_pos - r.enemies.pos[i]) > 0.0, true)
+		v.dot(r.player_pos[r.local_slot] - r.enemies.pos[i]) > 0.0, true)
 
 	# Inside charge range: winds up, and stands still while it does.
-	r.enemies.pos[i] = r.player_pos + Vector2(200, 0)
+	r.enemies.pos[i] = r.player_pos[r.local_slot] + Vector2(200, 0)
 	v = r._behave(i, t, 1.0 / 60.0)
 	_check("in range it winds up", r._ai_phase[i], r.CH_WINDUP)
 	_check("and holds still to telegraph it", v, Vector2.ZERO)
@@ -110,7 +110,7 @@ func charger_commits_to_its_dash() -> void:
 
 	# THE POINT: the aim does not track the player mid-dash. A dash that follows
 	# you is undodgeable; one that commits is a timing puzzle.
-	r.player_pos += Vector2(0, 600)
+	r.player_pos[r.local_slot] += Vector2(0, 600)
 	v = r._behave(i, t, 1.0 / 60.0)
 	_check("the dash does not re-aim", r._ai_aim[i], locked)
 	_check("and travels along the locked aim",
@@ -133,19 +133,19 @@ func flanker_leads_the_player() -> void:
 	var r := await _fresh_run()
 	var t := EnemyTable.EnemyType.new(&"t_flank", 0, Color.WHITE, 12.0, 110.0,
 		12.0, 6.0, 1, EnemyTable.Behaviour.FLANKER)
-	r.player_pos = Vector2.ZERO
+	r.player_pos[r.local_slot] = Vector2.ZERO
 	var i: int = r.enemies.spawn(Vector2(0, -500), Vector2.ZERO, 12.0, 12.0, 0)
 	r._spawn_enemy_state(i, 12.0)
 
 	# Player running hard along +x: the flanker must steer ahead of them.
-	r.player_vel = Vector2(220, 0)
+	r.player_vel[r.local_slot] = Vector2(220, 0)
 	var v: Vector2 = r._behave(i, t, 1.0 / 60.0)
 	_check("it leads a moving player", v.x > 0.0, true)
 
 	# Standing still, it degenerates to a chase rather than orbiting forever.
-	r.player_vel = Vector2.ZERO
+	r.player_vel[r.local_slot] = Vector2.ZERO
 	var w: Vector2 = r._behave(i, t, 1.0 / 60.0)
-	var straight: Vector2 = (r.player_pos - r.enemies.pos[i]).normalized()
+	var straight: Vector2 = (r.player_pos[r.local_slot] - r.enemies.pos[i]).normalized()
 	_check("and closes on a still one", w.normalized().dot(straight) > 0.6, true)
 	_check("at its own speed", is_equal_approx(w.length(), t.speed), true)
 	r.free()
@@ -153,19 +153,19 @@ func flanker_leads_the_player() -> void:
 
 func player_velocity_is_tracked() -> void:
 	var r := await _fresh_run()
-	var before: Vector2 = r.player_pos
+	var before: Vector2 = r.player_pos[r.local_slot]
 	r.input_override = Vector2(1, 0)
 	# Through the seam, the way the game does it: input_override is consumed by
 	# _poll_local_input above the guard, and the step reads only its slot.
 	r._poll_local_input()
 	r._step2_integrate(1.0 / 60.0)
-	_check("moving right gives a positive x velocity", r.player_vel.x > 0.0, true)
+	_check("moving right gives a positive x velocity", r.player_vel[r.local_slot].x > 0.0, true)
 	_check("and it matches the step actually taken",
-		r.player_vel.is_equal_approx((r.player_pos - before) * 60.0), true)
+		r.player_vel[r.local_slot].is_equal_approx((r.player_pos[r.local_slot] - before) * 60.0), true)
 	r.input_override = Vector2.ZERO
 	r._poll_local_input()
 	r._step2_integrate(1.0 / 60.0)
-	_check("standing still gives zero", r.player_vel, Vector2.ZERO)
+	_check("standing still gives zero", r.player_vel[r.local_slot], Vector2.ZERO)
 	r.free()
 	finished["player_velocity_is_tracked"] = true
 
@@ -173,7 +173,7 @@ func support_heals_but_never_past_spawn() -> void:
 	var r := await _fresh_run()
 	var t := EnemyTable.EnemyType.new(&"t_supp", 0, Color.WHITE, 60.0, 40.0,
 		30.0, 2.0, 3, EnemyTable.Behaviour.SUPPORT)
-	r.player_pos = Vector2.ZERO
+	r.player_pos[r.local_slot] = Vector2.ZERO
 	var sp: int = r.enemies.spawn(Vector2(400, 0), Vector2.ZERO, 60.0, 12.0, 0)
 	r._spawn_enemy_state(sp, 60.0)
 	var hurt: int = r.enemies.spawn(Vector2(430, 0), Vector2.ZERO, 10.0, 12.0, 0)
@@ -191,10 +191,10 @@ func support_heals_but_never_past_spawn() -> void:
 		r.enemies.integrity[hurt], r._spawn_hp[hurt])
 
 	# It keeps its distance rather than closing.
-	r.enemies.pos[sp] = r.player_pos + Vector2(80, 0)
+	r.enemies.pos[sp] = r.player_pos[r.local_slot] + Vector2(80, 0)
 	var v: Vector2 = r._behave(sp, t, 1.0 / 60.0)
 	_check("too close, it backs away", v.x > 0.0, true)
-	r.enemies.pos[sp] = r.player_pos + Vector2(900, 0)
+	r.enemies.pos[sp] = r.player_pos[r.local_slot] + Vector2(900, 0)
 	v = r._behave(sp, t, 1.0 / 60.0)
 	_check("too far, it closes", v.x < 0.0, true)
 	r.free()
@@ -204,7 +204,7 @@ func ambusher_is_untouchable_while_under() -> void:
 	var r := await _fresh_run()
 	var t := EnemyTable.EnemyType.new(&"t_amb", 0, Color.WHITE, 30.0, 90.0,
 		20.0, 14.0, 2, EnemyTable.Behaviour.AMBUSHER)
-	r.player_pos = Vector2.ZERO
+	r.player_pos[r.local_slot] = Vector2.ZERO
 	var i: int = r.enemies.spawn(Vector2(300, 0), Vector2.ZERO, 30.0, 12.0, 0)
 	r._spawn_enemy_state(i, 30.0, EnemyTable.Behaviour.AMBUSHER)
 
@@ -239,7 +239,7 @@ func ranged_shoots_and_its_shots_bite() -> void:
 	var r := await _fresh_run()
 	var t := EnemyTable.EnemyType.new(&"t_rng", 0, Color.WHITE, 14.0, 55.0,
 		14.0, 4.0, 2, EnemyTable.Behaviour.RANGED)
-	r.player_pos = Vector2.ZERO
+	r.player_pos[r.local_slot] = Vector2.ZERO
 	var i: int = r.enemies.spawn(Vector2(420, 0), Vector2.ZERO, 14.0, 12.0, 0)
 	r._spawn_enemy_state(i, 14.0, EnemyTable.Behaviour.RANGED)
 
@@ -263,18 +263,18 @@ func ranged_shoots_and_its_shots_bite() -> void:
 	# this assertion about the cadence rather than about the hit.
 	while r.hostiles.count > 0:
 		r.hostiles.despawn(0)
-	var one: int = r.hostiles.spawn(r.player_pos, Vector2(1, 0), 1.0, 4.0, 0)
+	var one: int = r.hostiles.spawn(r.player_pos[r.local_slot], Vector2(1, 0), 1.0, 4.0, 0)
 	r._hostile_life[one] = 4.0
-	var hp: float = r.player_health
-	r.player_iframe = 0.0
+	var hp: float = r.player_health[r.local_slot]
+	r.player_iframe[r.local_slot] = 0.0
 	r._step6b_hostiles(1.0 / 60.0)
-	_check("a hostile shot hurts", r.player_health < hp, true)
+	_check("a hostile shot hurts", r.player_health[r.local_slot] < hp, true)
 	_check("and is spent", r.hostiles.count, 0)
 
 	# Terrain stops them, which is what makes walls cover.
 	while r.hostiles.count > 0:
 		r.hostiles.despawn(0)
-	r.player_pos = Vector2(4000, 4000)          # far away, so terrain is what kills it
+	r.player_pos[r.local_slot] = Vector2(4000, 4000)          # far away, so terrain is what kills it
 	var j: int = r.hostiles.spawn(Vector2(0, 0), Vector2(300, 0), 1.0, 4.0, 0)
 	r._hostile_life[j] = 4.0
 	var c: Vector2i = r.terrain.cell_xy(Vector2(6, 0))

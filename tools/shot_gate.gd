@@ -24,7 +24,7 @@ func _process(_d: float) -> bool:
 		run.collapse_left = run.COLLAPSE_SECONDS * 0.5
 		run.terrain.build_distance_field()
 		var g = run.terrain.gate()
-		run.player_pos = g.pos - g.dir * 300.0
+		run.player_pos[run.local_slot] = g.pos - g.dir * 300.0
 	if frames == 60:
 		root.get_texture().get_image().save_png("/tmp/rootkit_gate.png")
 		return true

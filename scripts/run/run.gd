@@ -191,10 +191,22 @@ const AMBUSH_SPEED := 2.0
 const FLANK_LEAD := 0.9
 const FLANK_TANGENT := 0.55
 
-## The player's actual velocity, derived from the step TAKEN rather than the
+# ------------------------------------------------------------ player slots ---
+#
+# Players are FOUR fixed parallel-array slots, not nodes and not scalars. Every
+# per-player fact below is an array sized SessionRules.MAX_PLAYERS and indexed by
+# slot; `local_slot` names the one this process drives, and presentation reads
+# that slot explicitly. Only slots named in the session roster become LIVE;
+# unused capacity is ABSENT and inert. A reader that wants "the player" must say
+# WHICH player — that constraint is what makes the simulation plural.
+
+enum SlotState { LIVE, DEAD, ABSENT }
+var slot_state: PackedByteArray
+
+## Each player's actual velocity, derived from the step TAKEN rather than the
 ## step requested — so it accounts for the arena clamp and for wall slides,
 ## which is exactly what a flanker needs to aim at.
-var player_vel := Vector2.ZERO
+var player_vel: PackedVector2Array
 
 ## Per-enemy AI memory. Sized MAX_ENEMIES and reset on every spawn, because
 ## Population.spawn recycles slots and a stale phase is a live bug — an enemy
@@ -265,43 +277,48 @@ var _fork_bomb_index := -1
 var _packet_filter_index := -1
 
 ## Set by the zone pass each tick and read by _eff_clock_speed, so a slow zone
-## affects the player without a second timer: standing in it IS the duration.
-var _zone_slow_player := false
+## affects a player without a second timer: standing in it IS the duration. Per
+## slot: 1 while standing in a slow zone.
+var _zone_slow_player: PackedByteArray
 
 ## An absorb pool granted in whole chunks when a shielding exploit fires.
 ##
 ## NOT integrity: it does not heal, it does not appear in the integrity ratio,
 ## and it is spent before armour and defence are ever consulted — a shield is
-## something in the way, not toughness.
-var player_shield := 0.0
+## something in the way, not toughness. Per slot.
+var player_shield: PackedFloat32Array
 
 ## ON_LOW_INTEGRITY fires on the CROSSING, not while below the line. Without the
 ## latch it fires every tick spent under 40%, which is a DPS cliff and, on a
-## defensive vector, an infinite shield.
-var _low_armed := true
+## defensive vector, an infinite shield. Per slot: 1 armed, 0 fired.
+var _low_armed: PackedByteArray
 var queue: HitQueue
-var loadout: Loadout
+## One Loadout per slot, null where the slot is ABSENT. Compiled into `resolved`
+## at slot-strided global ids by _recompile.
+var loadouts: Array = []
 var director: SpawnDirector
 
-var player_pos := Vector2.ZERO
-## The player's position at the END of the previous tick. Same contract as
+var player_pos: PackedVector2Array
+## Each player's position at the END of the previous tick. Same contract as
 ## Population.prev_pos — see there for why the render layer needs two states.
-var player_prev_pos := Vector2.ZERO
-## Where to DRAW the player this frame: player_prev_pos lerped toward
+var player_prev_pos: PackedVector2Array
+## Where to DRAW each player this frame: player_prev_pos lerped toward
 ## player_pos by the frame fraction. Recomputed once per _process and read by
 ## the camera and _draw, so the ship, the camera and the telegraphs aimed at it
 ## can never disagree about where it is.
-var player_render_pos := Vector2.ZERO
+var player_render_pos: PackedVector2Array
 ## Fraction through the current physics tick, clamped to [0,1]. 1.0 until the
 ## first _process, so anything that draws before one has run uses the newest
 ## simulated state rather than an empty past.
 var _alpha := 1.0
-## The merged base + meta player sheet. Seeded in _ready, because a declaration
-## initialiser is evaluated before _ready reads the save — a player with memory
-## ranks would otherwise start every run at the base 100.
-var _sheet: Dictionary = PlayerStats.BASE.duplicate()
-var player_health := 0.0
-var player_iframe := 0.0
+## The merged base + meta player sheet, one Dictionary per slot. Derived in
+## _ready from each roster row's counters, never from a declaration initialiser
+## — a player with memory ranks would otherwise start every run at the base 100.
+var _sheet: Array = []
+var player_health: PackedFloat32Array
+var player_iframe: PackedFloat32Array
+## Whether ANY slot is still LIVE. The world guard reads this; a later task turns
+## the no-LIVE case into a host-confirmed ending barrier.
 var alive := true
 var won := false
 var subnet := 1
@@ -335,15 +352,17 @@ var _spawned_before := 0
 ## Banking is INCREMENTAL now a run spans several subnets. SaveGame.bank()
 ## ACCUMULATES into the save, so handing it the running totals at every subnet
 ## clear would count subnet 01's kills three times over and hand out unlock
-## milestones nobody earned.
-var _banked := {&"salvage": 0, &"kills": 0, &"flips": 0}
+## milestones nobody earned. One primitive dictionary per slot; each process
+## persists only its local slot's delta.
+var _banked: Array = []
 
 var level := 1
 var xp := 0
 var xp_needed := _xp_for(1)
 var salvage := 0
-var kills := 0
-var flips := 0
+## Kills and flips are attributed PER SLOT; salvage, level and XP are shared.
+var kills: PackedInt32Array
+var flips: PackedInt32Array
 var pending_levels := 0
 var paused := false
 ## The PLAYER's pause, kept separate from `paused` on purpose. `paused` means
@@ -352,7 +371,7 @@ var paused := false
 ## would let a card decline release a pause it never took, and ui.gd's
 ## `not run.paused` force-hide would then strand a pending fusion.
 var user_paused := false
-var pickup_radius := 0.0
+var pickup_radius: PackedFloat32Array
 ## Presentation state. Pure, and deliberately not part of any simulation step.
 var feel := Feel.new()
 ## Player preference, applied to the composed shake offset. Zero is a supported
@@ -429,7 +448,13 @@ const DEPTH_BANDS := 192
 
 var thresholds: PackedFloat32Array
 var enemy_types: Array
+## Every slot's compiled exploits in ONE flat array of MAX_PLAYERS x MAX_EXPLOITS
+## entries, indexed by global id `gid = slot * GID_STRIDE + exploit_index`.
+## Entries are null where a slot has no exploit there. Projectile owners, hit
+## queue sources, and the per-exploit arrays below all carry gids, so an event's
+## owning build is one decode away and never confused between players.
 var resolved: Array = []
+const GID_STRIDE := Loadout.MAX_EXPLOITS
 var _fire_acc: PackedFloat32Array
 var _proj_owner: PackedInt32Array
 var _proj_pierce: PackedInt32Array
@@ -474,16 +499,16 @@ var _hostile_life: PackedFloat32Array
 
 var _pos_arrays: Array
 var _skips: Array
+## The module set each slot may draw cards from, derived from its counters.
 var _unlocked: Array = []
-## Headless tests drive the player through this instead of the keyboard.
+## Headless tests drive the local player through this instead of the keyboard.
 var input_override = null
-## One WORLD direction per player slot. Written once per tick by
-## _poll_local_input, above the guard; read by the simulation from nowhere
+## One WORLD direction per player slot. The local one is written once per tick
+## by _poll_local_input, above the guard; read by the simulation from nowhere
 ## else. This is the seam a networked peer drives: a remote player is a slot
 ## whose entry arrives in a packet instead of from the InputMap, and the tick
 ## cannot tell the difference — which is the whole point.
-const LOCAL_SLOT := 0
-var inputs := PackedVector2Array([Vector2.ZERO])
+var inputs: PackedVector2Array
 var _rng := RandomNumberGenerator.new()
 ## One card/offer stream per POSSIBLE player slot, seeded independently from the
 ## descriptor. A player's card shuffles and block-payout rolls draw from their
@@ -580,17 +605,21 @@ func _ready() -> void:
 	# The WHOLE campaign, plotted before the first frame: three arenas and the
 	# corridors between them on one grid. Generated from the player's start,
 	# because the spawn-safe margin is measured from wherever they actually are.
+	_allocate_slots()
 	var tseed: int = base + _SEED_TERRAIN
 	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, tseed)
-	terrain.generate(tseed, player_pos)
+	# Every slot starts at the same origin, so the spawn-safe margin is measured
+	# from where the party actually is.
+	terrain.generate(tseed, player_pos[local_slot])
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_counts = PackedInt32Array(); _counts.resize(4)
 	_pos_arrays = [null, null, null, null]
 	_skips = [null, null, null, null]
-	_fire_acc = PackedFloat32Array(); _fire_acc.resize(Loadout.MAX_EXPLOITS)
-	_fire_cd = PackedFloat32Array(); _fire_cd.resize(Loadout.MAX_EXPLOITS)
-	_ward_left = PackedFloat32Array(); _ward_left.resize(Loadout.MAX_EXPLOITS)
+	var gids := SessionRules.MAX_PLAYERS * GID_STRIDE
+	_fire_acc = PackedFloat32Array(); _fire_acc.resize(gids)
+	_fire_cd = PackedFloat32Array(); _fire_cd.resize(gids)
+	_ward_left = PackedFloat32Array(); _ward_left.resize(gids)
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
@@ -640,14 +669,7 @@ func _ready() -> void:
 	_botnet_ratio = PackedFloat32Array(); _botnet_ratio.resize(MAX_BOTNET)
 	_botnet_life = PackedFloat32Array(); _botnet_life.resize(MAX_BOTNET)
 
-	var table := ModuleTable.by_id()
-	loadout = Loadout.new()
-	loadout.start(table[&"packet"], table[&"interval"])
-	loadout.mult = PlayerStats.mults(SaveGame.multipliers())
-	_sheet = PlayerStats.sheet(SaveGame.player_sheet())
-	player_health = _sheet[&"integrity"]
-	pickup_radius = _sheet[&"pickup_radius"]
-	_unlocked = SaveGame.unlocked_modules()
+	_derive_roster()
 	_recompile()
 
 	_build_renderers()
@@ -682,74 +704,161 @@ func _ready() -> void:
 	add_child(ui)
 	ui.bind(self)
 
-func _eff_integrity() -> float:
-	return _sheet[&"integrity"]
+## Size every per-slot array for MAX_PLAYERS. Everything starts ABSENT and
+## empty; _derive_roster fills the slots the descriptor names.
+func _allocate_slots() -> void:
+	var n := SessionRules.MAX_PLAYERS
+	slot_state = PackedByteArray(); slot_state.resize(n)
+	slot_state.fill(SlotState.ABSENT)
+	player_pos = PackedVector2Array(); player_pos.resize(n)
+	player_prev_pos = PackedVector2Array(); player_prev_pos.resize(n)
+	player_render_pos = PackedVector2Array(); player_render_pos.resize(n)
+	player_vel = PackedVector2Array(); player_vel.resize(n)
+	player_health = PackedFloat32Array(); player_health.resize(n)
+	player_iframe = PackedFloat32Array(); player_iframe.resize(n)
+	player_shield = PackedFloat32Array(); player_shield.resize(n)
+	pickup_radius = PackedFloat32Array(); pickup_radius.resize(n)
+	kills = PackedInt32Array(); kills.resize(n)
+	flips = PackedInt32Array(); flips.resize(n)
+	_low_armed = PackedByteArray(); _low_armed.resize(n); _low_armed.fill(1)
+	_zone_slow_player = PackedByteArray(); _zone_slow_player.resize(n)
+	inputs = PackedVector2Array(); inputs.resize(n)
+	_banked = []; _banked.resize(n)
+	_sheet = []; _sheet.resize(n)
+	_unlocked = []; _unlocked.resize(n)
+	loadouts = []; loadouts.resize(n)
+	resolved = []; resolved.resize(n * GID_STRIDE)
+	for s in n:
+		_banked[s] = {&"salvage": 0, &"kills": 0, &"flips": 0}
+		_sheet[s] = PlayerStats.BASE.duplicate()
+		_unlocked[s] = []
 
-## Max over live wards, never a sum. A module id occupies one slot now, but a
-## single exploit can still carry ward_* on two modules at once — a TRIGGER and
-## a PAYLOAD both may — so summing would buy double magnitude at zero uptime
-## cost, which is the build the design explicitly rejects. Compiler.MAX_FOLD_KEYS
-## folds the same way for the same reason.
-func _ward_max(key: StringName) -> float:
+## Bring every roster slot to LIVE with its starting build, sheet and unlock set
+## derived from the counters the descriptor carries — the SAME derivation on
+## every peer, so no process reads another player's save and no two peers can
+## disagree about a starting build.
+func _derive_roster() -> void:
+	var table := ModuleTable.by_id()
+	for row in _session.descriptor.get("roster", []):
+		var s: int = int(row["slot"])
+		var counters: Dictionary = row["counters"]
+		slot_state[s] = SlotState.LIVE
+		var lo := Loadout.new()
+		lo.start(table[&"packet"], table[&"interval"])
+		lo.mult = PlayerStats.mults(SaveGame.multipliers_from(counters))
+		loadouts[s] = lo
+		_sheet[s] = PlayerStats.sheet(SaveGame.player_sheet_from(counters))
+		player_health[s] = _sheet[s][&"integrity"]
+		pickup_radius[s] = _sheet[s][&"pickup_radius"]
+		_unlocked[s] = SaveGame.unlocked_modules_from(counters)
+	alive = _any_live()
+
+func _any_live() -> bool:
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] == SlotState.LIVE:
+			return true
+	return false
+
+func _eff_integrity(slot: int) -> float:
+	return _sheet[slot][&"integrity"]
+
+## Max over the OWNING slot's live wards, never a sum. A module id occupies one
+## slot now, but a single exploit can still carry ward_* on two modules at once
+## — a TRIGGER and a PAYLOAD both may — so summing would buy double magnitude at
+## zero uptime cost, which is the build the design explicitly rejects.
+## Compiler.MAX_FOLD_KEYS folds the same way for the same reason. Folds stop at
+## the slot boundary: one player's ward never armours another.
+func _ward_max(slot: int, key: StringName) -> float:
 	var best := 0.0
-	for ei in mini(_ward_left.size(), resolved.size()):
-		if _ward_left[ei] > 0.0:
-			best = maxf(best, float(resolved[ei].get(key)))
+	for gid in _slot_exploits(slot):
+		if _ward_left[gid] > 0.0:
+			best = maxf(best, float(resolved[gid].get(key)))
 	return best
 
-func _eff_armor() -> float:
-	return _sheet[&"armor"] + _ward_max(&"ward_armor")
+func _eff_armor(slot: int) -> float:
+	return _sheet[slot][&"armor"] + _ward_max(slot, &"ward_armor")
 
-func _eff_defense() -> float:
-	return _sheet[&"defense"] + _ward_max(&"ward_defense")
+func _eff_defense(slot: int) -> float:
+	return _sheet[slot][&"defense"] + _ward_max(slot, &"ward_defense")
 
-func _eff_clock_speed() -> float:
-	var v: float = _sheet[&"clock_speed"] + _ward_max(&"ward_clock_speed")
+func _eff_clock_speed(slot: int) -> float:
+	var v: float = _sheet[slot][&"clock_speed"] + _ward_max(slot, &"ward_clock_speed")
 	# Applied last, so a slow zone cuts the total rather than the base and
 	# cannot be out-scaled by buying clock_speed in the shop.
-	if _zone_slow_player:
+	if _zone_slow_player[slot] != 0:
 		v *= Terrain.SLOW_FACTOR
 	return v
 
-func _mitigated(amount: float) -> float:
-	return PlayerStats.mitigate(amount, _eff_armor(), _eff_defense())
+func _mitigated(slot: int, amount: float) -> float:
+	return PlayerStats.mitigate(amount, _eff_armor(slot), _eff_defense(slot))
 
-func _recompile() -> void:
-	resolved = loadout.compile_all()
+## Compile one slot's loadout — or every manned slot when `slot` is -1 — into its
+## stride of `resolved`. Entries beyond the loadout's exploits are nulled so a
+## stale exploit can never outlive a card that replaced it.
+func _recompile(slot: int = -1) -> void:
+	for s in SessionRules.MAX_PLAYERS:
+		if slot >= 0 and s != slot:
+			continue
+		var out: Array = []
+		if loadouts[s] != null:
+			out = loadouts[s].compile_all()
+		for e in GID_STRIDE:
+			resolved[_gid(s, e)] = out[e] if e < out.size() else null
 	_rebuild_execute_table()
 	emit_signal("stats_changed")
 
-## Rebuilt with `resolved`, so the drain always reads the current build.
+## Rebuilt with `resolved`, so the drain always reads the current build. Indexed
+## by gid; an empty entry executes nothing.
 func _rebuild_execute_table() -> void:
 	_execute_by_exploit.resize(resolved.size())
 	for i in resolved.size():
-		_execute_by_exploit[i] = resolved[i].execute_below
+		var r: ResolvedExploit = resolved[i]
+		_execute_by_exploit[i] = r.execute_below if r != null else 0.0
 
 # ------------------------------------------------------- exploit ownership ---
 #
 # Every read that asks "which exploit owns this event, and whose build is it" —
-# lifesteal, the flip's botnet, and the ON_KILL/ON_FLIP attribution — goes
-# through these two helpers, so the plural cutover teaches the slot encoding to
-# ONE place. The load-bearing rule they enforce is that a NEGATIVE owner id
-# (the hit queue's -1 unowned / -2 unset sentinels) decodes to no owner, never
-# to slot zero: an unowned kill must credit nobody, not silently the first
-# player. Integer division of -1 by the per-slot stride truncates to 0 in
-# GDScript, which is exactly the trap.
+# lifesteal, the flip's botnet, projectile origins, and trigger attribution —
+# goes through these helpers, so the slot encoding lives in ONE place. The
+# load-bearing rule they enforce is that a NEGATIVE owner id (the hit queue's -1
+# unowned / -2 unset sentinels) decodes to no owner, never to slot zero: an
+# unowned kill must credit nobody, not silently the first player. Integer
+# division of -1 by the stride truncates to 0 in GDScript, which is exactly the
+# trap, so the sign is checked BEFORE any division.
 
-## The ResolvedExploit an owner id refers to, or null for a negative sentinel or
-## an out-of-range id.
+## The global id of exploit `exploit_index` on `slot`.
+func _gid(slot: int, exploit_index: int) -> int:
+	return slot * GID_STRIDE + exploit_index
+
+## The ResolvedExploit an owner id refers to, or null for a negative sentinel,
+## an out-of-range id, or an empty entry.
 func _resolved(gid: int) -> ResolvedExploit:
 	if gid < 0 or gid >= resolved.size():
 		return null
 	return resolved[gid]
 
-## (slot, exploit_index) for an owner id, or (-1, -1) when the id is negative or
-## out of range. Solo has one slot, so a valid id is (local_slot, id); the
-## plural cutover replaces this body with the real gid decode.
+## (slot, exploit_index) for an owner id, or (-1, -1) when the id is negative,
+## out of range, or names an empty entry.
 func _decode_exploit(gid: int) -> Vector2i:
-	if gid < 0 or gid >= resolved.size():
+	if gid < 0 or gid >= resolved.size() or resolved[gid] == null:
 		return Vector2i(-1, -1)
-	return Vector2i(local_slot, gid)
+	@warning_ignore("integer_division")
+	return Vector2i(gid / GID_STRIDE, gid % GID_STRIDE)
+
+## The slot that owns an id, or -1.
+func _owner_slot(gid: int) -> int:
+	return _decode_exploit(gid).x
+
+## The gids of every compiled exploit on a slot, in exploit order.
+func _slot_exploits(slot: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	if slot < 0 or slot >= SessionRules.MAX_PLAYERS:
+		return out
+	for e in GID_STRIDE:
+		var gid := _gid(slot, e)
+		if resolved[gid] != null:
+			out.append(gid)
+	return out
 
 # ---------------------------------------------------------------- the tick ---
 
@@ -817,8 +926,8 @@ func _physics_process(_dt: float) -> void:
 	# and nothing else, so flooding 2401 cells through a wave of daemons buys
 	# precisely nothing — and this is the whole of its cost, so gating it here
 	# takes the flow field out of the tick entirely for most of a subnet.
-	if boss_present() and _flow.needs_rebuild(terrain, player_pos):
-		_flow.rebuild(terrain, player_pos)
+	if boss_present() and _flow.needs_rebuild(terrain, player_pos[local_slot]):
+		_flow.rebuild(terrain, player_pos[local_slot])
 	_step4_steer()
 	_step5_fire(sdt)
 	_step6_detect(sdt)
@@ -877,11 +986,13 @@ func _process(_dt: float) -> void:
 	# when a frame runs long, and drawing past the newest simulated position is
 	# extrapolation — a guess that gets visibly retracted on the next tick.
 	_alpha = clampf(Engine.get_physics_interpolation_fraction(), 0.0, 1.0)
-	player_render_pos = player_prev_pos.lerp(player_pos, _alpha)
-	# The shake preference multiplies the composed offset, outside Feel and
-	# after the square — folded into trauma it would scale quadratically and a
-	# legal shake of 2.0 would give 4x.
-	_camera.global_position = to_iso(player_render_pos) \
+	for s in SessionRules.MAX_PLAYERS:
+		player_render_pos[s] = player_prev_pos[s].lerp(player_pos[s], _alpha)
+	# The camera follows the LOCAL slot, explicitly. The shake preference
+	# multiplies the composed offset, outside Feel and after the square — folded
+	# into trauma it would scale quadratically and a legal shake of 2.0 would
+	# give 4x.
+	_camera.global_position = to_iso(player_render_pos[local_slot]) \
 		+ feel.shake_offset() * _shake_pref
 	_update_renderers()
 	queue_redraw()
@@ -901,7 +1012,7 @@ func _process(_dt: float) -> void:
 ## side of the seam, not in the tick.
 func _poll_local_input() -> void:
 	if input_override != null:
-		inputs[LOCAL_SLOT] = (input_override as Vector2).normalized()
+		inputs[local_slot] = (input_override as Vector2).normalized()
 		return
 	# One call reads both axes, so an analog stick comes along for free — the
 	# InputMap carries the keyboard and the gamepad bindings together and
@@ -909,7 +1020,7 @@ func _poll_local_input() -> void:
 	var screen := Input.get_vector("move_left", "move_right",
 		"move_up", "move_down")
 	if screen.length_squared() == 0.0:
-		inputs[LOCAL_SLOT] = Vector2.ZERO
+		inputs[local_slot] = Vector2.ZERO
 		return
 	# Uniform SCREEN speed, not uniform world speed.
 	#
@@ -923,17 +1034,20 @@ func _poll_local_input() -> void:
 	# The trade is that world speed now varies with heading (fastest along
 	# the screen vertical, where the projection compresses most). That is the
 	# right way round for a game where every dodge is judged on screen.
-	inputs[LOCAL_SLOT] = from_iso(screen.normalized())
+	inputs[local_slot] = from_iso(screen.normalized())
 
 ## Copy every population's `pos` into its `prev_pos`. One memcpy each, not a
-## loop over ~2700 entities — see Population.snapshot.
+## loop over ~2700 entities — see Population.snapshot. The four player slots are
+## copied by element: packed arrays are passed by reference in Godot 4, so a
+## plain assignment would alias the two and the render past would vanish.
 func _snapshot_render_state() -> void:
 	enemies.snapshot()
 	projectiles.snapshot()
 	shards.snapshot()
 	botnet.snapshot()
 	hostiles.snapshot()
-	player_prev_pos = player_pos
+	for s in SessionRules.MAX_PLAYERS:
+		player_prev_pos[s] = player_pos[s]
 
 ## Where to DRAW entity `i` of population `p` this frame.
 func _rp(p: Population, i: int) -> Vector2:
@@ -959,7 +1073,7 @@ func _spawn_at(p: Vector2) -> Vector2:
 	return terrain.nearest_open(p.clamp(a.position, a.end))
 
 func _step1_spawn(dt: float) -> void:
-	for s in director.step(dt, player_pos, SPAWN_RING):
+	for s in director.step(dt, player_pos[local_slot], SPAWN_RING):
 		var ti: int = s[0]
 		s[1] = _spawn_at(s[1])
 		if ti == WORM_TYPE:
@@ -994,7 +1108,7 @@ func _step1_spawn(dt: float) -> void:
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(
-			_spawn_at(player_pos + Vector2(cos(a), sin(a)) * 420.0),
+			_spawn_at(player_pos[local_slot] + Vector2(cos(a), sin(a)) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		# The arena was just emptied for mechanical reasons; the side effect is
@@ -1026,8 +1140,8 @@ func threat() -> float:
 		# breathe out.
 		return 0.08
 	var pressure: float = clampf(float(enemies.count) / 130.0, 0.0, 1.0)
-	var hurt: float = 1.0 - clampf(player_health / maxf(_eff_integrity(), 1.0),
-		0.0, 1.0)
+	var hurt: float = 1.0 - clampf(player_health[local_slot]
+		/ maxf(_eff_integrity(local_slot), 1.0), 0.0, 1.0)
 	var t: float = maxf(pressure, hurt * 0.85)
 	if boss_present():
 		t = maxf(t, 0.78)
@@ -1084,7 +1198,7 @@ func _spawn_miniboss(type_index: int) -> void:
 	var t = enemy_types[type_index]
 	# Shared simulation randomness: the spawn angle is the world's, not a player's.
 	var a := _rng.randf() * TAU
-	var at := _spawn_at(player_pos + Vector2(cos(a), sin(a)) * 620.0)
+	var at := _spawn_at(player_pos[local_slot] + Vector2(cos(a), sin(a)) * 620.0)
 	var hp: float = t.integrity * _hp_mult()
 	var idx := enemies.spawn(at, Vector2.ZERO, hp, 26.0, type_index)
 	if idx < 0:
@@ -1128,18 +1242,23 @@ func _step2_integrate(dt: float) -> void:
 	# The simulation reads its slot and nothing else. Where the direction came
 	# from — keyboard, stick, a headless driver, a packet — was settled in
 	# _poll_local_input, above the guard, and is none of the tick's business.
-	var world_dir: Vector2 = inputs[LOCAL_SLOT]
-	var pos_before := player_pos
-	if world_dir.length_squared() > 0.0:
-		player_pos = terrain.slide(player_pos,
-			world_dir * _eff_clock_speed() * dt)
-	# Clamped to the GRID, not the arena: the corridor lies legitimately outside
-	# the arena rect, and the margin's solid cells are what actually stop you.
-	player_pos = player_pos.clamp(terrain.origin + Vector2(40, 40),
-		terrain.origin + terrain.size - Vector2(40, 40))
-	player_vel = (player_pos - pos_before) / maxf(dt, 0.0001)
-	if player_iframe > 0.0:
-		player_iframe -= dt
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] != SlotState.LIVE:
+			continue
+		var world_dir: Vector2 = inputs[s]
+		var pos_before := player_pos[s]
+		var p := pos_before
+		if world_dir.length_squared() > 0.0:
+			p = terrain.slide(p, world_dir * _eff_clock_speed(s) * dt)
+		# Clamped to the GRID, not the arena: the corridor lies legitimately
+		# outside the arena rect, and the margin's solid cells are what actually
+		# stop you.
+		p = p.clamp(terrain.origin + Vector2(40, 40),
+			terrain.origin + terrain.size - Vector2(40, 40))
+		player_pos[s] = p
+		player_vel[s] = (p - pos_before) / maxf(dt, 0.0001)
+		if player_iframe[s] > 0.0:
+			player_iframe[s] -= dt
 	for wi in _ward_left.size():
 		if _ward_left[wi] > 0.0:
 			_ward_left[wi] -= dt
@@ -1209,7 +1328,10 @@ func _step2_integrate(dt: float) -> void:
 				projectiles.state[i] = Population.DEAD
 				continue
 			_orbit_phase[i] += ORBIT_RATE * dt
-			projectiles.pos[i] = player_pos + Vector2(cos(_orbit_phase[i]),
+			# Re-anchored on the OWNING slot: an orbiter rides the player who
+			# fired it, never whoever happens to be slot zero.
+			var anchor := maxi(_owner_slot(_proj_owner[i]), 0)
+			projectiles.pos[i] = player_pos[anchor] + Vector2(cos(_orbit_phase[i]),
 				sin(_orbit_phase[i])) * 92.0
 			continue
 		# Mines sit still until something is close enough, then go off.
@@ -1223,18 +1345,19 @@ func _step2_integrate(dt: float) -> void:
 				# Owner into a local and guarded FIRST: the subscript is
 				# evaluated before the call, and `resolved` shrinks whenever a
 				# card recompiles, so an in-flight mine can outlive its index.
-				var mo := _proj_owner[i]
-				_detonate(i, resolved[mo].radius if mo >= 0 and mo < resolved.size() else 0.0)
+				var mo := _resolved(_proj_owner[i])
+				_detonate(i, mo.radius if mo != null else 0.0)
 			continue
 		var pe := _proj_owner[i]
-		if pe >= 0 and pe < resolved.size() and resolved[pe].homing > 0.0:
+		var pr := _resolved(pe)
+		if pr != null and pr.homing > 0.0:
 			var tj := _proj_target[i]
 			_proj_reacquire[i] = maxf(0.0, _proj_reacquire[i] - dt)
 			# Re-acquire when the bound target has died or its slot recycled.
 			if _proj_reacquire[i] <= 0.0 and (tj < 0 or tj >= enemies.count \
 					or enemies.generation[tj] != _proj_target_gen[i] \
 					or enemies.state[tj] != Population.ALIVE):
-				tj = _pick_target(HOMING_REACQUIRE, resolved[pe].targeting,
+				tj = _pick_target(HOMING_REACQUIRE, pr.targeting,
 					projectiles.pos[i])
 				_proj_target[i] = tj
 				_proj_target_gen[i] = enemies.generation[tj] if tj >= 0 else -1
@@ -1247,7 +1370,7 @@ func _step2_integrate(dt: float) -> void:
 				var want := (enemies.pos[tj] - projectiles.pos[i]).angle()
 				var have := projectiles.vel[i].angle()
 				var turn := clampf(wrapf(want - have, -PI, PI),
-					-resolved[pe].homing * dt, resolved[pe].homing * dt)
+					-pr.homing * dt, pr.homing * dt)
 				projectiles.vel[i] = projectiles.vel[i].rotated(turn)
 		projectiles.pos[i] += projectiles.vel[i] * dt
 		# Population stores no scalar speed, so the step is the velocity's
@@ -1267,11 +1390,11 @@ func _step2_integrate(dt: float) -> void:
 	# tick guard with the rest of it — called from _present() on the unscaled
 	# clock. Aging it here froze every effect the instant the run ended.
 	for i in shards.count:
-		var d := player_pos - shards.pos[i]
+		var d := player_pos[local_slot] - shards.pos[i]
 		# Magnet reach. Was 6x the pickup radius (288 px), which meant shards
 		# came to you from most of the screen and collection was never a
 		# positioning decision.
-		if d.length() < pickup_radius * 2.2:
+		if d.length() < pickup_radius[local_slot] * 2.2:
 			shards.pos[i] += d.normalized() * 300.0 * dt
 
 func _age_fx(dt: float) -> void:
@@ -1317,7 +1440,7 @@ func _step3_rebuild() -> void:
 ## GRID_WINDOW; the shape of this function is why that is a one-line change.
 func _party_window() -> Rect2:
 	var half := GRID_WINDOW * 0.5
-	var origin := ((player_pos - Vector2(half, half)) / CELL).floor() * CELL
+	var origin := ((player_pos[local_slot] - Vector2(half, half)) / CELL).floor() * CELL
 	var span := Vector2(GRID_WINDOW, GRID_WINDOW)
 	# Hold the window inside the terrain grid. Terrain bounds are cell-aligned and
 	# the span is a whole number of cells, so the clamp keeps the origin aligned;
@@ -1348,7 +1471,7 @@ func _step4_steer() -> void:
 			i += STEER_SLICES
 			continue
 		var here := enemies.pos[i]
-		if here.distance_squared_to(player_pos) > STEER_RANGE_SQ:
+		if here.distance_squared_to(player_pos[local_slot]) > STEER_RANGE_SQ:
 			enemies.force[i] = Vector2.ZERO
 			i += STEER_SLICES
 			continue
@@ -1362,7 +1485,7 @@ func _step4_steer() -> void:
 			var dl := d.length()
 			if dl > 0.001:
 				push += d / dl * (SEPARATION_RADIUS - dl)
-		enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos - here)
+		enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos[local_slot] - here)
 		i += STEER_SLICES
 
 ## Event triggers respond only when off cooldown. Returns false when the
@@ -1372,7 +1495,7 @@ func _step4_steer() -> void:
 func _fire_trigger(kind: int) -> void:
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
-		if not r.inert and r.trigger_kind == kind:
+		if r != null and not r.inert and r.trigger_kind == kind:
 			_try_event_fire(ei, r)
 
 ## Bounded for the same reason FIRE_BUDGET bounds the interval path: a stat that
@@ -1395,7 +1518,7 @@ func _step5_fire(dt: float) -> void:
 			_fire_cd[ei] -= dt
 	for ei in resolved.size():
 		var r: ResolvedExploit = resolved[ei]
-		if r.inert:
+		if r == null or r.inert:
 			continue
 		if r.trigger_kind != Module.TriggerKind.INTERVAL:
 			continue
@@ -1410,7 +1533,14 @@ func _step5_fire(dt: float) -> void:
 			fires += 1
 		_fire_acc[ei] = minf(_fire_acc[ei], r.cooldown * FIRE_BUDGET)
 
+## Emit one exploit's vector from its OWNING slot's position. `ei` is a gid; the
+## owner is decoded once here and every origin, telegraph, target scan and
+## shield below reads that slot — never whoever is slot zero.
 func _emit_vector(ei: int, r: ResolvedExploit) -> void:
+	var owner := _owner_slot(ei)
+	if owner < 0:
+		return
+	var at := player_pos[owner]
 	feel.emit(Synth.fire_id(r.vector_kind))
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	# Before the match, deliberately. BEAM and CHAIN return early when they have
@@ -1422,21 +1552,21 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	# A shielding exploit grants its pool on fire, capped rather than stacked:
 	# shield folds by MAX for the same reason.
 	if r.shield > 0.0:
-		player_shield = maxf(player_shield, r.shield)
+		player_shield[owner] = maxf(player_shield[owner], r.shield)
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
-			_fx_ring.append([player_pos, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
-			var n := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
+			_fx_ring.append([at, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
+			var n := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(n, _buf.size()):
 				_hit(ei, r, Grid.index_of(_buf[k]))
 		Module.VectorKind.BEAM:
-			var target := _pick_target(r.radius, r.targeting)
+			var target := _pick_target(r.radius, r.targeting, at)
 			if target < 0:
 				return
-			var dir := (enemies.pos[target] - player_pos).normalized()
-			_fx_line.append([player_pos, player_pos + dir * r.radius, FX_LIFE,
+			var dir := (enemies.pos[target] - at).normalized()
+			_fx_line.append([at, at + dir * r.radius, FX_LIFE,
 				Color(2.2, 1.4, 2.6)])
-			var n2 := grid.query_radius_into(player_pos + dir * r.radius * 0.5,
+			var n2 := grid.query_radius_into(at + dir * r.radius * 0.5,
 				r.radius * 0.5, _buf, Grid.M_ENEMY)
 			var struck := 0
 			for k in mini(n2, _buf.size()):
@@ -1447,30 +1577,30 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 		Module.VectorKind.CONE:
 			# A broadcast query filtered by ANGLE. Cheap, and it reads completely
 			# differently because it demands facing.
-			var ct := _pick_target(r.radius, r.targeting)
+			var ct := _pick_target(r.radius, r.targeting, at)
 			if ct < 0:
 				return
-			var cdir := (enemies.pos[ct] - player_pos).normalized()
-			_fx_line.append([player_pos, player_pos + cdir * r.radius, FX_LIFE,
+			var cdir := (enemies.pos[ct] - at).normalized()
+			_fx_line.append([at, at + cdir * r.radius, FX_LIFE,
 				Color(2.0, 1.6, 0.8)])
-			var cn := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
+			var cn := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(cn, _buf.size()):
 				var cj := Grid.index_of(_buf[k])
-				var to_e := enemies.pos[cj] - player_pos
+				var to_e := enemies.pos[cj] - at
 				if to_e.length_squared() < 0.01:
 					_hit(ei, r, cj)
 					continue
 				if absf(to_e.normalized().angle_to(cdir)) <= CONE_HALF_ANGLE:
 					_hit(ei, r, cj)
 		Module.VectorKind.PULSE:
-			_fx_ring.append([player_pos, r.radius, FX_LIFE * 1.6,
+			_fx_ring.append([at, r.radius, FX_LIFE * 1.6,
 				Color(0.9, 1.4, 2.2)])
-			var pn := grid.query_radius_into(player_pos, r.radius, _buf, Grid.M_ENEMY)
+			var pn := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(pn, _buf.size()):
 				var pj := Grid.index_of(_buf[k])
 				_hit(ei, r, pj)
 				if r.knockback > 0.0:
-					var away := enemies.pos[pj] - player_pos
+					var away := enemies.pos[pj] - at
 					if away.length_squared() > 0.01:
 						apply_knockback(pj, away.normalized() * r.knockback)
 		Module.VectorKind.MINE:
@@ -1478,14 +1608,15 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# no new population and inherit terrain collision for free.
 			var mines: int = maxi(int(r.split_count), 1)
 			for sm in mines:
-				var at := player_pos
+				var mat := at
 				if mines > 1:
-					# Through nearest_open: player_pos is always walkable, so a
-					# single mine never needed this, but a ring of three can put
-					# two of them inside a wall where nothing will ever trip them.
-					at = terrain.nearest_open(at + Vector2(MINE_SPREAD, 0.0).rotated(
+					# Through nearest_open: the owner's position is always
+					# walkable, so a single mine never needed this, but a ring of
+					# three can put two of them inside a wall where nothing will
+					# ever trip them.
+					mat = terrain.nearest_open(mat + Vector2(MINE_SPREAD, 0.0).rotated(
 						TAU * float(sm) / float(mines)))
-				var mi := projectiles.spawn(at, Vector2.ZERO, 1.0,
+				var mi := projectiles.spawn(mat, Vector2.ZERO, 1.0,
 					PROJECTILE_RADIUS, 0)
 				if mi < 0:
 					break
@@ -1503,7 +1634,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# rather than stacking a second one on top of it.
 			var count: int = maxi(int(r.orbit_count), 1)
 			for k in count:
-				var oi := projectiles.spawn(player_pos, Vector2.ZERO, 1.0,
+				var oi := projectiles.spawn(at, Vector2.ZERO, 1.0,
 					PROJECTILE_RADIUS, 0)
 				if oi < 0:
 					break
@@ -1518,11 +1649,11 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_orbit_phase[oi] = TAU * float(k) / float(count)
 				_orbit_left[oi] = r.cooldown
 		Module.VectorKind.CHAIN:
-			var t2 := _pick_target(r.radius, r.targeting)
+			var t2 := _pick_target(r.radius, r.targeting, at)
 			if t2 < 0:
 				return
 			_hit(ei, r, t2)
-			_fx_line.append([player_pos, enemies.pos[t2], FX_LIFE, Color(1.0, 2.2, 1.6)])
+			_fx_line.append([at, enemies.pos[t2], FX_LIFE, Color(1.0, 2.2, 1.6)])
 			var from := enemies.pos[t2]
 			var visited := [t2]
 			var hops := 0
@@ -1549,13 +1680,13 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# The viewport covers ~1113x626 world units at this zoom, so the
 			# corner is ~640 away. Targeting at 1400 let packets fire at enemies
 			# well off-screen — and made every shot walk the entire grid.
-			var t3 := _pick_target(VIEW_RANGE, r.targeting)
-			var dir2 := Vector2.RIGHT if t3 < 0 else (enemies.pos[t3] - player_pos).normalized()
+			var t3 := _pick_target(VIEW_RANGE, r.targeting, at)
+			var dir2 := Vector2.RIGHT if t3 < 0 else (enemies.pos[t3] - at).normalized()
 			var shots: int = maxi(int(r.split_count), 1)
 			for sp in shots:
 				# Centred on the aim: 1 shot is dead on, 3 is -spread/0/+spread.
 				var off := (float(sp) - float(shots - 1) * 0.5) * SPLIT_SPREAD
-				var pi := projectiles.spawn(player_pos,
+				var pi := projectiles.spawn(at,
 					dir2.rotated(off) * maxf(r.projectile_speed, 120.0),
 					1.0, PROJECTILE_RADIUS, 0)
 				if pi < 0:
@@ -1572,15 +1703,15 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				_mine_left[pi] = 0.0
 				_orbit_left[pi] = 0.0
 
-## `from` is where the shot came from. Defaults to the player, which is true for
-## broadcast, chain and beam; packets pass their own position, because a packet
-## that flew round behind something did not hit it from the front.
+## `from` is where the shot came from. Defaults to the OWNING player, which is
+## true for broadcast, chain and beam; packets pass their own position, because a
+## packet that flew round behind something did not hit it from the front.
 func _hit(ei: int, r: ResolvedExploit, target: int,
 		from: Vector2 = Vector2.INF) -> void:
 	if target < 0 or target >= enemies.count:
 		return
 	if from == Vector2.INF:
-		from = player_pos
+		from = player_pos[maxi(_owner_slot(ei), 0)]
 	queue.append(HitQueue.Kind.DAMAGE, ei, target, enemies.generation[target],
 		r.damage * _facing_scale(target, from))
 	if r.corruption > 0.0 and r.has_tag(&"corruption"):
@@ -1602,8 +1733,8 @@ func _hit(ei: int, r: ResolvedExploit, target: int,
 ## in r.radius and a packet in r.blast_radius.
 func _detonate(i: int, radius: float) -> void:
 	var ei := _proj_owner[i]
-	if ei >= 0 and ei < resolved.size() and radius > 0.0:
-		var r: ResolvedExploit = resolved[ei]
+	var r := _resolved(ei)
+	if r != null and radius > 0.0:
 		feel.add_trauma(0.15)
 		_fx_ring.append([projectiles.pos[i], radius, FX_LIFE * 1.5,
 			Color(2.2, 1.2, 0.5)])
@@ -1617,9 +1748,9 @@ func _detonate(i: int, radius: float) -> void:
 ## A projectile that STOPS — out of travel, into a wall, or out of pierce —
 ## detonates if it carries a blast, and simply dies otherwise.
 func _expire_projectile(i: int) -> void:
-	var ei := _proj_owner[i]
-	if ei >= 0 and ei < resolved.size() and resolved[ei].blast_radius > 0.0:
-		_detonate(i, resolved[ei].blast_radius)
+	var r := _resolved(_proj_owner[i])
+	if r != null and r.blast_radius > 0.0:
+		_detonate(i, r.blast_radius)
 		return
 	projectiles.state[i] = Population.DEAD
 
@@ -1646,13 +1777,11 @@ func _facing_scale(i: int, from: Vector2) -> float:
 ## exploit. Same scan, same cost — enemies.integrity is already in hand, so
 ## STRONGEST adds no work the distance sort did not do.
 ##
-## `from` is where the scan SCORES from. It defaults to the player, which is what
-## the four fire-path sites want; a homing projectile already in flight passes
-## its own position, or a shot behind the swarm would re-acquire across the arena.
-func _pick_target(within: float, mode: int = Module.Targeting.NEAREST,
-		from: Vector2 = Vector2.INF) -> int:
-	if from == Vector2.INF:
-		from = player_pos
+## `from` is where the scan SCORES from — the firing slot's position on the
+## fire paths, or a homing projectile's own position in flight, since a shot
+## behind the swarm would otherwise re-acquire across the arena. Required, so no
+## caller silently scans from "the player" when there are four.
+func _pick_target(within: float, mode: int, from: Vector2) -> int:
 	var n := grid.query_radius_into(from, within, _buf, Grid.M_ENEMY)
 	var best := -1
 	var score := INF
@@ -1685,8 +1814,9 @@ func _step6_detect(dt: float) -> void:
 			if j == _proj_last[i]:
 				continue
 			var ei := _proj_owner[i]
-			if ei < resolved.size():
-				_hit(ei, resolved[ei], j, projectiles.pos[i])
+			var pr := _resolved(ei)
+			if pr != null:
+				_hit(ei, pr, j, projectiles.pos[i])
 			_proj_last[i] = j
 			_proj_pierce[i] -= 1
 			if _proj_pierce[i] < 0:
@@ -1708,74 +1838,91 @@ func _step6_detect(dt: float) -> void:
 
 	# Player contact. Enemies are not physics bodies, so this is a grid query —
 	# an Area2D cannot overlap a packed array.
-	if player_iframe <= 0.0:
-		var n3 := grid.query_radius_into(player_pos, PLAYER_RADIUS + ENEMY_RADIUS,
+	var lp := player_pos[local_slot]
+	if player_iframe[local_slot] <= 0.0:
+		var n3 := grid.query_radius_into(lp, PLAYER_RADIUS + ENEMY_RADIUS,
 			_buf, Grid.M_ENEMY)
 		if n3 > 0:
 			var t = enemy_types[enemies.type_index[Grid.index_of(_buf[0])]]
-			_damage_player(t.contact_damage)
+			_damage_player(local_slot, t.contact_damage)
 
 	# Pickups.
-	var n4 := grid.query_radius_into(player_pos, pickup_radius, _buf, Grid.M_SHARD)
+	var n4 := grid.query_radius_into(lp, pickup_radius[local_slot], _buf,
+		Grid.M_SHARD)
 	for k in mini(n4, _buf.size()):
 		shards.state[Grid.index_of(_buf[k])] = Population.DEAD
 		_gain_xp(1)
 
-func _damage_player(amount: float) -> void:
+func _damage_player(slot: int, amount: float) -> void:
 	# Triggers BEFORE the subtraction, so an on_damage_taken ward is up for the
 	# hit that summoned it rather than the next one. ON_DAMAGE_TAKEN fires per
-	# damage instance the player actually takes — not from a loop over
-	# terminally-marked entities, which would fire it once per run, at game over.
+	# damage instance this player actually takes — not from a loop over
+	# terminally-marked entities, which would fire it once per run, at game over
+	# — and only from the HURT slot's own build.
 	#
 	# No recursion: the path is _try_event_fire -> _emit_vector -> _hit ->
 	# queue.append, and nothing re-enters here.
-	for ei in resolved.size():
+	for ei in _slot_exploits(slot):
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_DAMAGE_TAKEN:
 			_try_event_fire(ei, r)
 	# The shield is in the way, so it pays first and unmitigated: armour reducing
 	# a hit the shield was going to eat entirely would make the two multiply.
-	if player_shield > 0.0:
-		var eaten := minf(player_shield, amount)
-		player_shield -= eaten
+	if player_shield[slot] > 0.0:
+		var eaten := minf(player_shield[slot], amount)
+		player_shield[slot] -= eaten
 		amount -= eaten
 		if amount <= 0.0:
-			player_iframe = IFRAMES
+			player_iframe[slot] = IFRAMES
 			emit_signal("stats_changed")
 			return
-	player_health -= _mitigated(amount)
+	player_health[slot] -= _mitigated(slot, amount)
+	var cap := _eff_integrity(slot)
 	# Proportional, and the RATIO is clamped: a pulse or a hazard tick can
 	# exceed full integrity, and an unclamped ratio would put trauma past 1.0
-	# where MAX_OFFSET stops being a maximum.
-	feel.add_trauma(0.25 + 0.5 * clampf(amount / maxf(_eff_integrity(), 1.0),
-		0.0, 1.0))
-	feel.emit("hurt")
-	_vignette = 1.0
-	player_iframe = IFRAMES
-	if _low_armed and player_health < _eff_integrity() * LOW_INTEGRITY_FRACTION:
-		_low_armed = false
-		feel.emit("low_integrity")
-		_fire_trigger(Module.TriggerKind.ON_LOW_INTEGRITY)
-	elif player_health >= _eff_integrity() * LOW_INTEGRITY_FRACTION:
-		_low_armed = true
-	if player_health <= 0.0 and alive and not won:
-		_die()
+	# where MAX_OFFSET stops being a maximum. Feel is local presentation, so it
+	# reacts to the LOCAL slot's hurt.
+	if slot == local_slot:
+		feel.add_trauma(0.25 + 0.5 * clampf(amount / maxf(cap, 1.0), 0.0, 1.0))
+		feel.emit("hurt")
+		_vignette = 1.0
+	player_iframe[slot] = IFRAMES
+	if _low_armed[slot] != 0 and player_health[slot] < cap * LOW_INTEGRITY_FRACTION:
+		_low_armed[slot] = 0
+		if slot == local_slot:
+			feel.emit("low_integrity")
+		_fire_trigger_for(slot, Module.TriggerKind.ON_LOW_INTEGRITY)
+	elif player_health[slot] >= cap * LOW_INTEGRITY_FRACTION:
+		_low_armed[slot] = 1
+	if player_health[slot] <= 0.0 and slot_state[slot] == SlotState.LIVE and not won:
+		_die(slot)
 	emit_signal("stats_changed")
 
+## Fire every exploit on ONE slot's build whose trigger matches.
+func _fire_trigger_for(slot: int, kind: int) -> void:
+	for ei in _slot_exploits(slot):
+		var r: ResolvedExploit = resolved[ei]
+		if not r.inert and r.trigger_kind == kind:
+			_try_event_fire(ei, r)
+
 ## Extracted so the zone pass can reach it: a hazard kills exactly the way a
-## swarm does, and two copies of the banking rules would drift.
-func _die() -> void:
-	player_health = 0.0
-	alive = false
-	# Both of these only animate because _present() runs above the tick guard.
-	feel.add_trauma(0.7)
-	feel.emit("death")
-	_hitstop()
-	# Salvage is lost, but kills and flips still count toward unlocks —
-	# otherwise a losing run gives nothing and the meta has no reason to exist
-	# after a death, which is exactly what it is for.
-	_bank_progress(false)
-	emit_signal("run_ended", false, 0)
+## swarm does, and two copies of the banking rules would drift. Per SLOT: the
+## slot goes DEAD and banks; the run only ends when no slot is LIVE.
+func _die(slot: int) -> void:
+	player_health[slot] = 0.0
+	slot_state[slot] = SlotState.DEAD
+	if slot == local_slot:
+		# Both of these only animate because _present() runs above the tick guard.
+		feel.add_trauma(0.7)
+		feel.emit("death")
+		_hitstop()
+		# Salvage is lost, but kills and flips still count toward unlocks —
+		# otherwise a losing run gives nothing and the meta has no reason to
+		# exist after a death, which is exactly what it is for.
+		_bank_progress(false)
+	alive = _any_live()
+	if not alive:
+		emit_signal("run_ended", false, 0)
 
 ## The STRONGER slow wins, never the most recent. Letting the latest write win
 ## means walking out of a heavy slow into a light one cancels the heavy one, so
@@ -1868,7 +2015,7 @@ func _behave(i: int, t, dt: float) -> Vector2:
 	var sp: float = t.speed
 	if _slow_left[i] > 0.0:
 		sp *= _slow_factor[i]
-	var to_player := player_pos - enemies.pos[i]
+	var to_player := player_pos[local_slot] - enemies.pos[i]
 	match t.behaviour:
 		EnemyTable.Behaviour.CHARGER:
 			return _charge(i, sp, to_player, dt)
@@ -1928,8 +2075,8 @@ func _pulse(i: int, dt: float) -> void:
 		return
 	_ai_aim[i].x = PULSE_PERIOD
 	_fx_ring.append([enemies.pos[i], 700.0, FX_LIFE * 8.0, Color(2.2, 0.5, 0.4)])
-	if terrain.has_line_of_sight(enemies.pos[i], player_pos):
-		_damage_player(PULSE_DAMAGE)
+	if terrain.has_line_of_sight(enemies.pos[i], player_pos[local_slot]):
+		_damage_player(local_slot, PULSE_DAMAGE)
 
 ## Holds its distance and shoots, leading the player.
 func _ranged(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
@@ -1951,7 +2098,7 @@ func _ranged(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 
 func _fire_hostile(from: Vector2) -> void:
 	# Lead the player, so standing still is punished and moving is rewarded.
-	var lead := player_pos + player_vel * 0.35
+	var lead := player_pos[local_slot] + player_vel[local_slot] * 0.35
 	var dir := (lead - from).normalized()
 	var h := hostiles.spawn(from, dir * HOSTILE_SPEED, 1.0, HOSTILE_RADIUS, 0)
 	if h >= 0:
@@ -1964,9 +2111,9 @@ func _step6b_hostiles(dt: float) -> void:
 		hostiles.pos[i] += hostiles.vel[i] * dt
 		_hostile_life[i] -= dt
 		var gone := _hostile_life[i] <= 0.0 or terrain.is_solid(hostiles.pos[i])
-		if not gone and hostiles.pos[i].distance_to(player_pos) \
+		if not gone and hostiles.pos[i].distance_to(player_pos[local_slot]) \
 				< HOSTILE_RADIUS + PLAYER_RADIUS:
-			_damage_player(HOSTILE_DAMAGE)
+			_damage_player(local_slot, HOSTILE_DAMAGE)
 			gone = true
 		if gone:
 			hostiles.despawn(i)
@@ -2049,18 +2196,19 @@ func _ambush(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 ## stationary player the lead term vanishes and it degenerates to a chase, which
 ## is correct — there is no escape to cut off.
 func _flank(i: int, sp: float, to_player: Vector2) -> Vector2:
-	var lead := to_player + player_vel * FLANK_LEAD
+	var pv := player_vel[local_slot]
+	var lead := to_player + pv * FLANK_LEAD
 	if lead.length_squared() < 0.0001:
 		return to_player.normalized() * sp
 	var dir := lead.normalized()
 	# Tangential component scaled by how fast the player is ACTUALLY moving:
 	# circling a stationary target is just a worse chase.
-	var speed_frac := clampf(player_vel.length() / 220.0, 0.0, 1.0)
+	var speed_frac := clampf(pv.length() / 220.0, 0.0, 1.0)
 	var tangent := Vector2(-dir.y, dir.x)
 	# Arc the way the player is GOING. Either perpendicular is a valid tangent
 	# and the wrong one swings out behind them — which is a chase with extra
 	# steps, and at this magnitude it could even cancel the lead entirely.
-	if tangent.dot(player_vel) < 0.0:
+	if tangent.dot(pv) < 0.0:
 		tangent = -tangent
 	return (dir + tangent * FLANK_TANGENT * speed_frac).normalized() * sp
 
@@ -2075,20 +2223,21 @@ func apply_slow(i: int, factor: float, seconds: float) -> void:
 
 ## Zone effects, one array index per entity per tick.
 func _step2b_zones(dt: float) -> void:
-	_zone_slow_player = false
+	_zone_slow_player.fill(0)
 	terrain.step_temp_zones(dt)
-	var pz := terrain.zone_at(player_pos)
+	var s := local_slot
+	var pz := terrain.zone_at(player_pos[s])
 	if pz < 0:
-		pz = terrain.temp_zone_at(player_pos)
+		pz = terrain.temp_zone_at(player_pos[s])
 	if pz == Terrain.Kind.HAZARD:
 		# Deliberately NOT through the contact-damage path: iframes exist to stop
 		# a swarm chewing through you on touch, and a hazard you are standing in
 		# is not a contact event. Armour and defence still apply.
-		player_health -= _mitigated(Terrain.HAZARD_DPS * dt)
-		if player_health <= 0.0 and alive and not won:
-			_die()
+		player_health[s] -= _mitigated(s, Terrain.HAZARD_DPS * dt)
+		if player_health[s] <= 0.0 and slot_state[s] == SlotState.LIVE and not won:
+			_die(s)
 	elif pz == Terrain.Kind.SLOW:
-		_zone_slow_player = true
+		_zone_slow_player[s] = 1
 	for i in enemies.count:
 		if _slow_left[i] > 0.0:
 			_slow_left[i] -= dt
@@ -2132,9 +2281,8 @@ func _steps78_drain() -> void:
 				# information the HUD would need a health bar per enemy to show.
 				feel.emit(HIT_SOUNDS[_hit_weight[enemies.type_index[ht]]])
 				if _numbers_pref:
-					var ex := queue.hit_exploit[k]
-					var dmg: float = resolved[ex].damage if ex >= 0 \
-						and ex < resolved.size() else 0.0
+					var hr := _resolved(queue.hit_exploit[k])
+					var dmg: float = hr.damage if hr != null else 0.0
 					if dmg >= 1.0:
 						feel.add_number(enemies.pos[ht], "%d" % int(dmg),
 							Color(1.0, 1.9, 1.4))
@@ -2146,10 +2294,7 @@ func _steps78_drain() -> void:
 		# bootstrap. Fired once per pass, not once per hit, so a 300-enemy aura
 		# cannot turn one tick into N**8 events.
 		if queue.hit_count > hits_before:
-			for ei in resolved.size():
-				var r: ResolvedExploit = resolved[ei]
-				if not r.inert and r.trigger_kind == Module.TriggerKind.ON_HIT:
-					_try_event_fire(ei, r)
+			_fire_trigger(Module.TriggerKind.ON_HIT)
 
 		# Break only when nothing resolved AND nothing new is queued. Breaking on
 		# resolved_n alone discarded the events ON_HIT had just appended one line
@@ -2176,7 +2321,7 @@ func _steps78_drain() -> void:
 					_on_flip(i)
 
 func _on_death(i: int) -> void:
-	kills += 1
+	kills[local_slot] += 1
 	feel.emit("kill")
 	if enemies.type_index[i] == _fork_bomb_index \
 			and _split_gen[i] < SPLIT_GENERATIONS:
@@ -2224,24 +2369,28 @@ func _on_death(i: int) -> void:
 			_bank_progress(true)
 			emit_signal("run_ended", true, salvage)
 	_drop_shards(i)
-	for ei in resolved.size():
-		var r: ResolvedExploit = resolved[ei]
-		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_KILL:
-			_try_event_fire(ei, r)
-	var killer := _resolved(queue.killer_exploit[i])
+	_fire_trigger(Module.TriggerKind.ON_KILL)
+	# Lifesteal heals the OWNER of the killing exploit, decoded through the one
+	# helper so an unowned kill (-1) heals nobody rather than slot zero.
+	var killer_gid := queue.killer_exploit[i]
+	var killer := _resolved(killer_gid)
 	if killer != null and killer.lifesteal > 0.0:
-		player_health = minf(_eff_integrity(), player_health + killer.lifesteal)
+		var ks := _owner_slot(killer_gid)
+		player_health[ks] = minf(_eff_integrity(ks),
+			player_health[ks] + killer.lifesteal)
 
 ## A flipped enemy drops the same shards a killed one does, so a corruption
 ## build does not starve its own level-ups in proportion to how well it works.
 func _on_flip(i: int) -> void:
-	flips += 1
+	flips[local_slot] += 1
 	feel.emit("flip")
 	_fire_trigger(Module.TriggerKind.ON_FLIP)
 	_drop_shards(i)
+	# The botnet is ONE shared pool, so its cap sums over every slot's build.
 	var cap := BOTNET_BASE_CAP
 	for r in resolved:
-		cap += r.botnet_cap
+		if r != null:
+			cap += r.botnet_cap
 	if botnet.count >= mini(cap, MAX_BOTNET):
 		return
 	var src := _resolved(queue.flipper_exploit[i])
@@ -2288,13 +2437,13 @@ func _step9c_reapproach() -> void:
 			continue
 		if _worm_id[i] != 0 or _arriving[i] > 0.0:
 			continue
-		if player_pos.distance_to(enemies.pos[i]) < RECYCLE_RADIUS:
+		if player_pos[local_slot].distance_to(enemies.pos[i]) < RECYCLE_RADIUS:
 			continue
 		var a5 := _rng.randf() * TAU
 		# teleport, not a bare pos write: this is the ONE discontinuous move in
 		# the tick, and leaving prev_pos behind draws the straggler streaking the
 		# full width of the arena for exactly one frame.
-		enemies.teleport(i, _spawn_at(player_pos
+		enemies.teleport(i, _spawn_at(player_pos[local_slot]
 			+ Vector2(cos(a5), sin(a5)) * SPAWN_RING))
 		enemies.vel[i] = Vector2.ZERO
 		enemies.force[i] = Vector2.ZERO
@@ -2382,13 +2531,18 @@ func _refresh_thresholds() -> void:
 	for i in enemy_types.size():
 		thresholds[i] = enemy_types[i].corruption_threshold * f
 
+## Persist the LOCAL slot's delta and nothing else. Salvage is shared, so every
+## slot's bank sees the same pool; kills and flips are this slot's own. A remote
+## slot's progress is never written into this process's save.
 func _bank_progress(with_salvage: bool) -> void:
-	var s := (salvage - int(_banked[&"salvage"])) if with_salvage else 0
-	SaveGame.bank(s, kills - int(_banked[&"kills"]), flips - int(_banked[&"flips"]))
+	var ls := local_slot
+	var b: Dictionary = _banked[ls]
+	var s := (salvage - int(b[&"salvage"])) if with_salvage else 0
+	SaveGame.bank(s, kills[ls] - int(b[&"kills"]), flips[ls] - int(b[&"flips"]))
 	if with_salvage:
-		_banked[&"salvage"] = salvage
-	_banked[&"kills"] = kills
-	_banked[&"flips"] = flips
+		b[&"salvage"] = salvage
+	b[&"kills"] = kills[ls]
+	b[&"flips"] = flips[ls]
 
 ## Carried forward: the loadout, the level, the XP, and whatever integrity the
 ## last subnet left. Reset: the clock, the wave table, and every live entity.
@@ -2425,15 +2579,17 @@ func _step2d_collapse(dt: float) -> void:
 		_falling.append([terrain.origin + Vector2(float(cx), float(cy)) * CELL,
 			0.0])
 
-	var pc := terrain.cell_index(player_pos)
+	# The route is LOCAL presentation: it lights the way home for this screen.
+	var lp := player_pos[local_slot]
+	var pc := terrain.cell_index(lp)
 	if pc != _route_cell:
 		_route_cell = pc
-		_route = terrain.route_from(player_pos)
+		_route = terrain.route_from(lp)
 
 	# Lethal means lethal: no iframes, no mitigation. Armour does not help when
 	# the floor is gone.
-	if terrain.is_void(player_pos) and alive and not won:
-		_die()
+	if terrain.is_void(lp) and slot_state[local_slot] == SlotState.LIVE and not won:
+		_die(local_slot)
 	# Anything still out there goes with it.
 	for i in range(enemies.count - 1, -1, -1):
 		if terrain.is_void(enemies.pos[i]):
@@ -2455,15 +2611,18 @@ func _step2d_collapse(dt: float) -> void:
 ## block where it stands. Naming them here would read as a despawn-on-pause rule
 ## that never fires.
 func _step2e_blocks(dt: float) -> void:
-	if blocks.tick(dt, player_pos, phase == Phase.FIGHTING,
+	if blocks.tick(dt, player_pos[local_slot], phase == Phase.FIGHTING,
 			Callable(terrain, "nearest_open"), _block_rng):
 		_block_payout()
 
-## What a completed hold pays, in priority order.
+## What a completed hold pays, in priority order. The holder is the local slot
+## until the plurality census picks the nearest LIVE one.
 func _block_payout() -> void:
+	var holder := local_slot
+	var lo: Loadout = loadouts[holder]
 	var matches := []
-	for m in loadout.matched_recipes():
-		if loadout.can_fuse(m[0], m[1].fused):
+	for m in lo.matched_recipes():
+		if lo.can_fuse(m[0], m[1].fused):
 			matches.append(m)
 
 	# The offer is SIMULATION state, entered unconditionally. It used to depend on
@@ -2478,21 +2637,21 @@ func _block_payout() -> void:
 		emit_signal("fusion_offered", matches)
 		return
 
-	var seed_m := _targeted_module()
-	if seed_m != null and _card_rng[local_slot].randf() < TARGETED_ODDS:
+	var seed_m := _targeted_module(holder)
+	if seed_m != null and _card_rng[holder].randf() < TARGETED_ODDS:
 		pending_levels += 1
 		_offer_cards(CardMode.SEEDED, seed_m)
 		return
 
-	var roll: float = _card_rng[local_slot].randf()
+	var roll: float = _card_rng[holder].randf()
 	if roll < 0.40:
 		salvage += 150 * subnet          # subnet starts at 1
 		emit_signal("stats_changed")
 	elif roll < 0.70:
 		# player_health is the mutable pool; _eff_integrity() is the CAP it is
-		# measured against. There is no `integrity` member.
-		player_health = minf(_eff_integrity(),
-			player_health + _eff_integrity() * 0.25)
+		# measured against. There is no `integrity` member. Heals the HOLDER.
+		var cap := _eff_integrity(holder)
+		player_health[holder] = minf(cap, player_health[holder] + cap * 0.25)
 		emit_signal("stats_changed")
 	else:
 		pending_levels += 1
@@ -2504,8 +2663,8 @@ func choose_fusion(index: int) -> void:
 	# Loadout.fuse re-checks can_fuse for the same reason.
 	if index >= 0 and index < _pending_fusions.size():
 		var m = _pending_fusions[index]
-		loadout.fuse(m[0], m[1].fused)
-		_recompile()
+		loadouts[local_slot].fuse(m[0], m[1].fused)
+		_recompile(local_slot)
 	_pending_fusions = []
 	paused = false
 	emit_signal("stats_changed")
@@ -2523,25 +2682,26 @@ func decline_fusion() -> void:
 ## slot keeping a row inert. The near-miss search itself lives in RecipeTable —
 ## it is a question about recipes, and the arena has no business knowing a
 ## recipe's shape. This only filters by what is unlocked and placeable.
-func _targeted_module() -> Module:
+func _targeted_module(slot: int) -> Module:
 	var mods := ModuleTable.by_id()
+	var lo: Loadout = loadouts[slot]
 	var unlocked := {}
-	for m in _unlocked:
+	for m in _unlocked[slot]:
 		unlocked[m.id] = true
-	for ex in loadout.exploits:
+	for ex in lo.exploits:
 		var want := RecipeTable.near_miss(ex)
 		if want == &"" or not unlocked.has(want):
 			continue
 		var cand: Module = mods[want]
-		if not loadout.legal_targets(cand).is_empty():
+		if not lo.legal_targets(cand).is_empty():
 			return cand
 	# Nothing is one short: fall back to anything that un-inerts a row.
-	for ex in loadout.exploits:
+	for ex in lo.exploits:
 		if not ex.is_inert():
 			continue
 		var need := Module.Slot.VECTOR if ex.vector == null else Module.Slot.TRIGGER
-		for m in _unlocked:
-			if m.slot == need and not loadout.legal_targets(m).is_empty():
+		for m in _unlocked[slot]:
+			if m.slot == need and not lo.legal_targets(m).is_empty():
 				return m
 	return null
 
@@ -2563,7 +2723,7 @@ func _step2c_gate() -> void:
 	var g := terrain.gate()
 	if g == null or not g.open:
 		return
-	if (player_pos - g.end).dot(g.dir) <= 0.5:
+	if (player_pos[local_slot] - g.end).dot(g.dir) <= 0.5:
 		return
 	_advance_subnet()
 
@@ -2591,8 +2751,13 @@ func _advance_subnet() -> void:
 		projectiles.despawn(i)
 	for i in range(hostiles.count - 1, -1, -1):
 		hostiles.despawn(i)
-	player_health = minf(_eff_integrity(),
-		player_health + _eff_integrity() * SUBNET_CLEAR_HEAL)
+	# Every LIVE slot is healed by the clear — a teammate who limped through the
+	# gate is as cleared as the one who killed ICE.
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] != SlotState.LIVE:
+			continue
+		var cap := _eff_integrity(s)
+		player_health[s] = minf(cap, player_health[s] + cap * SUBNET_CLEAR_HEAL)
 	director.reset()
 	_refresh_thresholds()
 	# No teleport and no regeneration: the next arena was plotted before the
@@ -2642,19 +2807,20 @@ func _gain_xp(n: int) -> void:
 ## Fused modules are never in ModuleTable — they enter the pool only by being
 ## owned, and legal_targets then offers the single slot holding one, as a
 ## rank-up. That is how a fused weapon climbs 1->5 like anything else.
-func _card_pool() -> Array:
+func _card_pool(slot: int) -> Array:
+	var lo: Loadout = loadouts[slot]
 	var pool := []
 	var seen := {}
-	for m in _unlocked:
-		var targets := loadout.legal_targets(m)
+	for m in _unlocked[slot]:
+		var targets := lo.legal_targets(m)
 		if targets.is_empty():
 			continue          # nothing legal: not worth a card slot
 		seen[m.id] = true
 		pool.append([m, targets])
-	for ex in loadout.exploits:
+	for ex in lo.exploits:
 		if not ex.head_is_fused() or seen.has(ex.vector.module.id):
 			continue
-		var ft := loadout.legal_targets(ex.vector.module)
+		var ft := lo.legal_targets(ex.vector.module)
 		if ft.is_empty():
 			continue          # already at max rank
 		seen[ex.vector.module.id] = true
@@ -2664,7 +2830,7 @@ func _card_pool() -> Array:
 ## Multiple thresholds crossed in one tick queue; screens show in sequence.
 func _offer_cards(mode: int = CardMode.NORMAL, seed_module: Module = null) -> void:
 	paused = true
-	var pool := _card_pool()
+	var pool := _card_pool(local_slot)
 	if mode == CardMode.RANK_ONLY:
 		# Filter the TARGETS, not just the entries. Keeping a whole entry because
 		# it contains a rank-up leaves its EMPTY_SLOT and REPLACE buttons on the
@@ -2706,8 +2872,8 @@ func choose_card(m, target) -> void:
 	if m == null:
 		salvage += 50
 	else:
-		loadout.place_at(m, target.exploit, target.slot)
-		_recompile()
+		loadouts[local_slot].place_at(m, target.exploit, target.slot)
+		_recompile(local_slot)
 	pending_levels = maxi(0, pending_levels - 1)
 	paused = false
 	if pending_levels > 0:
@@ -2882,7 +3048,9 @@ func _depth_sort() -> void:
 		return
 	for b in DEPTH_BANDS + 1:
 		_band_count[b] = 0
-	var lo := player_pos.x + player_pos.y - 1800.0
+	# Banded around the LOCAL slot: draw order is a property of this screen.
+	var lp := player_pos[local_slot]
+	var lo := lp.x + lp.y - 1800.0
 	var span := 3600.0
 	for i in n:
 		var key := clampi(int((enemies.pos[i].x + enemies.pos[i].y - lo) / span * DEPTH_BANDS),
@@ -2942,7 +3110,7 @@ func _draw_chunk(at: Vector2, drop: float, fade: float) -> void:
 func _visible_world_rect() -> Rect2:
 	var vp := get_viewport_rect().size
 	var half := from_iso(vp * 0.6).abs() + from_iso(Vector2(vp.x, -vp.y) * 0.6).abs()
-	return Rect2(player_pos - half, half * 2.0)
+	return Rect2(player_pos[local_slot] - half, half * 2.0)
 
 ## Ground the collapse has already taken, as horizontal RUNS of cells, clipped
 ## to the view.
@@ -3191,7 +3359,7 @@ func _draw() -> void:
 			if frac2 > 0.0 and frac2 < 0.28:
 				var k3: float = 1.0 - frac2 / 0.28
 				var from2 := to_iso(_rp(enemies, i))
-				var to2 := to_iso(player_render_pos)
+				var to2 := to_iso(player_render_pos[local_slot])
 				draw_line(from2, from2.lerp(to2, 0.35 + 0.5 * k3),
 					Color(1.9, 0.5, 0.45, 0.30 + 0.45 * k3), 1.0 + k3)
 
@@ -3277,7 +3445,8 @@ func _draw() -> void:
 	# A disc at PLAYER_RADIUS, so what you see is exactly what collides. The
 	# arrow this replaced pointed somewhere — and the movement has no facing, so
 	# the direction it pointed was never the direction anything happened in.
-	var o := to_iso(player_render_pos)
-	var c := Color(0.9, 1.8, 1.3) if player_iframe <= 0.0 else Color(1.9, 0.8, 0.8)
+	var o := to_iso(player_render_pos[local_slot])
+	var c := Color(0.9, 1.8, 1.3) if player_iframe[local_slot] <= 0.0 \
+		else Color(1.9, 0.8, 0.8)
 	draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22))
 	draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, c, 2.0)

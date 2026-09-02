@@ -74,12 +74,12 @@ func _initialize() -> void:
 	# a fourth pass through _emit_vector would move the figure whether or not
 	# homing costs anything, and the point is attribution.
 	var t := ModuleTable.by_id()
-	run.loadout.exploits[0].vector.rank = 5
+	run.loadouts[run.local_slot].exploits[0].vector.rank = 5
 	var ex2 := Exploit.new()
 	ex2.place(t[&"broadcast"])
 	ex2.place(t[&"on_hit"])
 	ex2.vector.rank = 5
-	run.loadout.exploits.append(ex2)
+	run.loadouts[run.local_slot].exploits.append(ex2)
 
 	var homer := Module.make(&"perf_homer", "perf_homer()", Module.Slot.VECTOR,
 		{&"damage": 20.0, &"projectile_speed": 700.0, &"cooldown": 0.45,
@@ -89,7 +89,7 @@ func _initialize() -> void:
 	homer.targeting = Module.Targeting.STRONGEST
 	var ex3 := Exploit.new()
 	ex3.vector = EquippedModule.new(homer, 5)
-	run.loadout.exploits.append(ex3)
+	run.loadouts[run.local_slot].exploits.append(ex3)
 	run._recompile()
 
 	_fill()
@@ -97,7 +97,8 @@ func _initialize() -> void:
 	print("  %d enemies, %d projectiles, %d shards, %d botnet" % [
 		run.enemies.count, run.projectiles.count, run.shards.count, run.botnet.count])
 	print("  arena %.0fx%.0f, %.0f px cells, %d exploits" % [
-		run.ARENA_SIZE.x, run.ARENA_SIZE.y, run.CELL, run.resolved.size()])
+		run.ARENA_SIZE.x, run.ARENA_SIZE.y, run.CELL,
+		run._slot_exploits(run.local_slot).size()])
 
 	var cal := _calibrate()
 	var scale: float = cal / REFERENCE_CALIBRATION_MS
@@ -194,11 +195,11 @@ func _kite(g: Node2D) -> Vector2:
 	if g.phase == g.Phase.CLEARED:
 		var gate = g.terrain.gate()
 		if gate != null and gate.open:
-			return _around_walls(g, (gate.end - g.player_pos).normalized())
+			return _around_walls(g, (gate.end - g.player_pos[g.local_slot]).normalized())
 	var flee := Vector2.ZERO
 	var k := 0
 	for i in g.enemies.count:
-		var d: Vector2 = g.player_pos - g.enemies.pos[i]
+		var d: Vector2 = g.player_pos[g.local_slot] - g.enemies.pos[i]
 		var dl := d.length()
 		if dl < 190.0 and dl > 0.01:
 			flee += d / dl * (190.0 - dl)
@@ -206,7 +207,7 @@ func _kite(g: Node2D) -> Vector2:
 	var dir := flee.normalized() if k > 0 else Vector2.ZERO
 	# The CURRENT arena's centre, not the world origin: the campaign is three
 	# arenas laid out end to end now, and only the first is centred on zero.
-	var c: Vector2 = g.terrain.arena().get_center() - g.player_pos
+	var c: Vector2 = g.terrain.arena().get_center() - g.player_pos[g.local_slot]
 	if c.length() > 1100.0:
 		dir = (dir + c.normalized() * 1.6).normalized()
 	return _around_walls(g, dir)
@@ -223,13 +224,13 @@ func _around_walls(g: Node2D, dir: Vector2) -> Vector2:
 	if dir.length_squared() < 0.000001:
 		return dir
 	var ahead: float = Terrain.CELL * 2.0
-	if not g.terrain.is_solid(g.player_pos + dir * ahead):
+	if not g.terrain.is_solid(g.player_pos[g.local_slot] + dir * ahead):
 		return dir
 	var left := Vector2(-dir.y, dir.x)
-	if not g.terrain.is_solid(g.player_pos + left * ahead):
+	if not g.terrain.is_solid(g.player_pos[g.local_slot] + left * ahead):
 		return left
 	var right := -left
-	if not g.terrain.is_solid(g.player_pos + right * ahead):
+	if not g.terrain.is_solid(g.player_pos[g.local_slot] + right * ahead):
 		return right
 	return -dir
 
@@ -246,11 +247,11 @@ func _fill() -> void:
 	while run.enemies.count < run.MAX_ENEMIES:
 		var a := rng.randf() * TAU
 		var d := rng.randf_range(60.0, 620.0)
-		run.enemies.spawn(run.player_pos + Vector2(cos(a), sin(a)) * d,
+		run.enemies.spawn(run.player_pos[run.local_slot] + Vector2(cos(a), sin(a)) * d,
 			Vector2.ZERO, 999999.0, run.ENEMY_RADIUS, rng.randi_range(0, 2))
 	while run.projectiles.count < run.MAX_PROJECTILES:
 		var a2 := rng.randf() * TAU
-		var pi: int = run.projectiles.spawn(run.player_pos + Vector2(cos(a2), sin(a2)) * 200.0,
+		var pi: int = run.projectiles.spawn(run.player_pos[run.local_slot] + Vector2(cos(a2), sin(a2)) * 200.0,
 			Vector2(cos(a2), sin(a2)) * 300.0, 1.0, run.PROJECTILE_RADIUS, 0)
 		if pi >= 0:
 			run._proj_owner[pi] = 0
@@ -262,11 +263,11 @@ func _fill() -> void:
 			run._proj_dist_left[pi] = 99999.0
 	while run.shards.count < run.MAX_SHARDS:
 		var a3 := rng.randf() * TAU
-		run.shards.spawn(run.player_pos + Vector2(cos(a3), sin(a3)) * rng.randf_range(300.0, 900.0),
+		run.shards.spawn(run.player_pos[run.local_slot] + Vector2(cos(a3), sin(a3)) * rng.randf_range(300.0, 900.0),
 			Vector2.ZERO, 1.0, 4.0, 0)
 	while run.botnet.count < run.MAX_BOTNET:
 		var a4 := rng.randf() * TAU
-		var bi: int = run.botnet.spawn(run.player_pos + Vector2(cos(a4), sin(a4)) * 150.0,
+		var bi: int = run.botnet.spawn(run.player_pos[run.local_slot] + Vector2(cos(a4), sin(a4)) * 150.0,
 			Vector2.ZERO, 1.0, run.ENEMY_RADIUS, 0)
 		if bi >= 0:
 			run._botnet_ratio[bi] = 1.0

@@ -79,16 +79,16 @@ func threshold_steps_per_subnet_only() -> void:
 	finished["threshold_steps_per_subnet_only"] = true
 func advance_preserves_the_build() -> void:
 	var r := await _fresh_run()
-	r.loadout.place_at(ModuleTable.by_id()[&"corrupt"], 0, 2)
+	r.loadouts[r.local_slot].place_at(ModuleTable.by_id()[&"corrupt"], 0, 2)
 	r._recompile()
 	r.level = 7
 	r.xp = 3
-	var before: int = r.loadout.exploits[0].equipped().size()
+	var before: int = r.loadouts[r.local_slot].exploits[0].equipped().size()
 	r._advance_subnet()
 	_check("subnet incremented", r.subnet, 2)
-	_check("the loadout came with it", r.loadout.exploits[0].equipped().size(), before)
+	_check("the loadout came with it", r.loadouts[r.local_slot].exploits[0].equipped().size(), before)
 	_check("corrupt is still slotted",
-		r.loadout.exploits[0].payloads[0].module.id, &"corrupt")
+		r.loadouts[r.local_slot].exploits[0].payloads[0].module.id, &"corrupt")
 	_check("level carried", r.level, 7)
 	_check("xp carried", r.xp, 3)
 	_check("thresholds rescaled with the subnet",
@@ -106,20 +106,20 @@ func advance_clears_the_field() -> void:
 		r.enemies.spawn(Vector2(i * 30, 0), Vector2.ZERO, 10.0, 12.0, 0)
 	r.director.elapsed = 120.0
 	r.director.boss_spawned = true
-	var maxhp: float = r._eff_integrity()
-	r.player_health = maxhp * 0.25
+	var maxhp: float = r._eff_integrity(r.local_slot)
+	r.player_health[r.local_slot] = maxhp * 0.25
 
 	_walk_the_gate(r)
 	_check("live enemies cleared", r.enemies.count, 0)
 	_check("the clock restarted", r.director.elapsed, 0.0)
 	_check("the boss flag cleared", r.director.boss_spawned, false)
-	_check("partial heal applied", is_equal_approx(r.player_health,
+	_check("partial heal applied", is_equal_approx(r.player_health[r.local_slot],
 		maxhp * (0.25 + r.SUBNET_CLEAR_HEAL)), true)
 
 	# The heal tops out at the maximum rather than overshooting it.
-	r.player_health = maxhp
+	r.player_health[r.local_slot] = maxhp
 	_walk_the_gate(r)
-	_check("heal never exceeds max integrity", r.player_health, maxhp)
+	_check("heal never exceeds max integrity", r.player_health[r.local_slot], maxhp)
 	r.free()
 
 	finished["advance_clears_the_field"] = true
@@ -130,7 +130,7 @@ func _walk_the_gate(r: Node2D) -> void:
 	r.terrain.open_gate()
 	# One step: the corridor is part of the same map as both arenas, so the
 	# first pace onto the next arena's floor IS arriving on the next subnet.
-	r.player_pos = r.terrain.gate().end + r.terrain.gate().dir * 8.0
+	r.player_pos[r.local_slot] = r.terrain.gate().end + r.terrain.gate().dir * 8.0
 	r._physics_process(1.0 / 60.0)
 
 
@@ -139,12 +139,12 @@ func _walk_the_gate(r: Node2D) -> void:
 ## unlock milestones nobody earned.
 func banking_is_incremental() -> void:
 	var r := await _fresh_run()
-	r.kills = 100
-	r.flips = 10
+	r.kills[r.local_slot] = 100
+	r.flips[r.local_slot] = 10
 	r.salvage = 200
 	r._bank_progress(true)
 	_check("first bank writes the total", SaveGame.load_state()["kills"], 100)
-	r.kills = 175
+	r.kills[r.local_slot] = 175
 	r.salvage = 260
 	r._bank_progress(true)
 	_check("second bank writes only the delta", SaveGame.load_state()["kills"], 175)
@@ -153,7 +153,7 @@ func banking_is_incremental() -> void:
 
 	# A death after a mid-campaign clear keeps the banked salvage and still
 	# counts the kills since.
-	r.kills = 200
+	r.kills[r.local_slot] = 200
 	r._bank_progress(false)
 	_check("death banks kills but no salvage", SaveGame.load_state()["kills"], 200)
 	_check("banked salvage survives the death", SaveGame.load_state()["salvage"], 260)

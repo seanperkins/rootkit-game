@@ -35,9 +35,9 @@ func rate_limited() -> void:
 	var ex := Exploit.new()
 	ex.place(t[&"broadcast"])
 	ex.place(t[&"on_kill"])
-	run.loadout.exploits.append(ex)
+	run.loadouts[run.local_slot].exploits.append(ex)
 	run._recompile()
-	var idx: int = run.resolved.size() - 1
+	var idx: int = run._gid(run.local_slot, run.loadouts[run.local_slot].exploits.size() - 1)
 	var cd: float = run.resolved[idx].cooldown
 
 	var fires := 0
@@ -46,7 +46,7 @@ func rate_limited() -> void:
 		# keep the field saturated so kills happen constantly
 		while run.enemies.count < 40:
 			var a: float = TAU * run.enemies.count / 40.0
-			run.enemies.spawn(run.player_pos + Vector2(cos(a), sin(a)) * 55.0,
+			run.enemies.spawn(run.player_pos[run.local_slot] + Vector2(cos(a), sin(a)) * 55.0,
 				Vector2.ZERO, 1.0, run.ENEMY_RADIUS, 0)
 		run._physics_process(DT)
 		fires += run._trigger_fires.get(idx, 0)
@@ -78,14 +78,14 @@ func fires(trigger_id: StringName, label: String) -> void:
 	ex.place(t[&"broadcast"])
 	ex.place(t[trigger_id])
 	ex.place(t[&"buffer_overflow"])
-	run.loadout.exploits.append(ex)
+	run.loadouts[run.local_slot].exploits.append(ex)
 	run._recompile()
-	var idx: int = run.resolved.size() - 1
+	var idx: int = run._gid(run.local_slot, run.loadouts[run.local_slot].exploits.size() - 1)
 
 	# A ring of enemies inside the broadcast radius, plus fodder for on_kill.
 	for k in 12:
 		var a := TAU * k / 12.0
-		run.enemies.spawn(run.player_pos + Vector2(cos(a), sin(a)) * 60.0,
+		run.enemies.spawn(run.player_pos[run.local_slot] + Vector2(cos(a), sin(a)) * 60.0,
 			Vector2.ZERO, 40.0, run.ENEMY_RADIUS, 0)
 
 	var fired := 0

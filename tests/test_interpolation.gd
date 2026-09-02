@@ -125,11 +125,11 @@ func despawn_relocates_prev_pos() -> void:
 func a_reapproached_straggler_does_not_streak() -> void:
 	var r := await _bare_run()
 	r.phase = r.Phase.FIGHTING
-	var i: int = r.enemies.spawn(r.player_pos + Vector2(0, 40),
+	var i: int = r.enemies.spawn(r.player_pos[r.local_slot] + Vector2(0, 40),
 		Vector2.ZERO, 10.0, r.ENEMY_RADIUS, 0)
 	r._spawn_enemy_state(i, 10.0)
 	# Well past RECYCLE_RADIUS, so this tick's reapproach picks it up.
-	r.enemies.pos[i] = r.player_pos + Vector2(r.RECYCLE_RADIUS + 400.0, 0.0)
+	r.enemies.pos[i] = r.player_pos[r.local_slot] + Vector2(r.RECYCLE_RADIUS + 400.0, 0.0)
 	r.enemies.prev_pos[i] = r.enemies.pos[i]
 	var before: Vector2 = r.enemies.pos[i]
 	r._step9c_reapproach()
@@ -147,7 +147,7 @@ func a_paused_run_renders_static() -> void:
 	var r := await _bare_run()
 	r.phase = r.Phase.FIGHTING
 	r.input_override = Vector2(1, 0)
-	var i: int = r.enemies.spawn(r.player_pos + Vector2(300, 0),
+	var i: int = r.enemies.spawn(r.player_pos[r.local_slot] + Vector2(300, 0),
 		Vector2.ZERO, 10.0, r.ENEMY_RADIUS, 0)
 	r._spawn_enemy_state(i, 10.0)
 	for n in 4:
@@ -158,7 +158,7 @@ func a_paused_run_renders_static() -> void:
 	_check("paused: the enemy has no motion to interpolate",
 		r.enemies.prev_pos[i], r.enemies.pos[i])
 	_check("paused: the player has no motion to interpolate",
-		r.player_prev_pos, r.player_pos)
+		r.player_prev_pos[r.local_slot], r.player_pos[r.local_slot])
 	r.queue_free()
 	finished["a_paused_run_renders_static"] = true
 
@@ -171,11 +171,11 @@ func a_running_tick_leaves_something_to_interpolate() -> void:
 	r.input_override = Vector2(1, 0)
 	r._physics_process(DT)
 	r._physics_process(DT)
-	var same: bool = r.player_prev_pos == r.player_pos
+	var same: bool = r.player_prev_pos[r.local_slot] == r.player_pos[r.local_slot]
 	_check("a moving player has two distinct states", same, false)
 	_check("and the midpoint sits between them",
-		r.player_prev_pos.lerp(r.player_pos, 0.5).distance_to(r.player_pos)
-			< r.player_prev_pos.distance_to(r.player_pos), true)
+		r.player_prev_pos[r.local_slot].lerp(r.player_pos[r.local_slot], 0.5).distance_to(r.player_pos[r.local_slot])
+			< r.player_prev_pos[r.local_slot].distance_to(r.player_pos[r.local_slot]), true)
 	r.queue_free()
 	finished["a_running_tick_leaves_something_to_interpolate"] = true
 
@@ -187,18 +187,18 @@ func the_seam_between_ticks_is_continuous() -> void:
 	var r := await _bare_run()
 	r.phase = r.Phase.FIGHTING
 	r.input_override = Vector2(1, 0)
-	var i: int = r.enemies.spawn(r.player_pos + Vector2(400, 0),
+	var i: int = r.enemies.spawn(r.player_pos[r.local_slot] + Vector2(400, 0),
 		Vector2.ZERO, 10.0, r.ENEMY_RADIUS, 0)
 	r._spawn_enemy_state(i, 10.0)
 	r._physics_process(DT)
 	r._physics_process(DT)
 	var enemy_end: Vector2 = r.enemies.render_pos(i, 1.0)
-	var player_end: Vector2 = r.player_prev_pos.lerp(r.player_pos, 1.0)
+	var player_end: Vector2 = r.player_prev_pos[r.local_slot].lerp(r.player_pos[r.local_slot], 1.0)
 	r._physics_process(DT)
 	_check("enemy: end of tick N == start of tick N+1",
 		r.enemies.render_pos(i, 0.0), enemy_end)
 	_check("player: end of tick N == start of tick N+1",
-		r.player_prev_pos.lerp(r.player_pos, 0.0), player_end)
+		r.player_prev_pos[r.local_slot].lerp(r.player_pos[r.local_slot], 0.0), player_end)
 	r.queue_free()
 	finished["the_seam_between_ticks_is_continuous"] = true
 
@@ -223,11 +223,11 @@ func nothing_streaks_across_a_whole_run() -> void:
 	while t < MAX_TICKS and g.alive and not g.won:
 		g.input_override = _kite(g)
 		g._physics_process(DT)
-		if g.player_pos.distance_squared_to(g.player_prev_pos) > limit:
+		if g.player_pos[g.local_slot].distance_squared_to(g.player_prev_pos[g.local_slot]) > limit:
 			offences += 1
 			if first == "":
 				first = "player moved %.0f on tick %d" % [
-					g.player_pos.distance_to(g.player_prev_pos), t]
+					g.player_pos[g.local_slot].distance_to(g.player_prev_pos[g.local_slot]), t]
 		for name in pops:
 			var p: Population = pops[name]
 			for i in p.count:
@@ -251,17 +251,17 @@ func _kite(g: Node2D) -> Vector2:
 	if g.phase == g.Phase.CLEARED:
 		var gate = g.terrain.gate()
 		if gate != null and gate.open:
-			return _around_walls(g, (gate.end - g.player_pos).normalized())
+			return _around_walls(g, (gate.end - g.player_pos[g.local_slot]).normalized())
 	var flee := Vector2.ZERO
 	var k := 0
 	for i in g.enemies.count:
-		var d: Vector2 = g.player_pos - g.enemies.pos[i]
+		var d: Vector2 = g.player_pos[g.local_slot] - g.enemies.pos[i]
 		var dl := d.length()
 		if dl < 190.0 and dl > 0.01:
 			flee += d / dl * (190.0 - dl)
 			k += 1
 	var dir := flee.normalized() if k > 0 else Vector2.ZERO
-	var c: Vector2 = g.terrain.arena().get_center() - g.player_pos
+	var c: Vector2 = g.terrain.arena().get_center() - g.player_pos[g.local_slot]
 	if c.length() > 1100.0:
 		dir = (dir + c.normalized() * 1.6).normalized()
 	return _around_walls(g, dir)
@@ -270,12 +270,12 @@ func _around_walls(g: Node2D, dir: Vector2) -> Vector2:
 	if dir.length_squared() < 0.000001:
 		return dir
 	var ahead: float = Terrain.CELL * 2.0
-	if not g.terrain.is_solid(g.player_pos + dir * ahead):
+	if not g.terrain.is_solid(g.player_pos[g.local_slot] + dir * ahead):
 		return dir
 	var left := Vector2(-dir.y, dir.x)
-	if not g.terrain.is_solid(g.player_pos + left * ahead):
+	if not g.terrain.is_solid(g.player_pos[g.local_slot] + left * ahead):
 		return left
 	var right := -left
-	if not g.terrain.is_solid(g.player_pos + right * ahead):
+	if not g.terrain.is_solid(g.player_pos[g.local_slot] + right * ahead):
 		return right
 	return -dir

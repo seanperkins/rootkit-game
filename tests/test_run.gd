@@ -48,7 +48,7 @@ func _initialize() -> void:
 	print("  spawned %d (campaign), dropped %d" % [run.spawned_total(), run.director.dropped])
 	print("  reached subnet %d of %d" % [run.subnet, SpawnDirector.CAMPAIGN_SUBNETS])
 	print("  kills %d  flips %d  level %d  salvage %d" % [
-		run.kills, run.flips, run.level, run.salvage])
+		run.kills[run.local_slot], run.flips[run.local_slot], run.level, run.salvage])
 	print("  live: enemies %d  projectiles %d  shards %d  botnet %d" % [
 		run.enemies.count, run.projectiles.count, run.shards.count, run.botnet.count])
 	print("  card picks %d" % picks)
@@ -63,7 +63,7 @@ func _initialize() -> void:
 	var spawn_rate := float(run.spawned_total()) / maxf(mins, 1.0)
 	print("  spawn rate %.2f/s" % spawn_rate)
 	_check("the director is producing spawns", spawn_rate >= 1.0, true)
-	_check("damage landed (kills > 0)", run.kills > 0, true)
+	_check("damage landed (kills > 0)", run.kills[run.local_slot] > 0, true)
 	_check("player levelled up", run.level > 1, true)
 	_check("cards were offered", picks > 0, true)
 	_check("enemy pool within cap", run.enemies.count <= run.MAX_ENEMIES, true)
@@ -110,7 +110,7 @@ func _initialize() -> void:
 ## GROW across the advance — it just may not be replaced or emptied.
 func _build_signature() -> String:
 	var parts := []
-	for ex in run.loadout.exploits:
+	for ex in run.loadouts[run.local_slot].exploits:
 		for em in ex.equipped():
 			parts.append(String(em.module.id))
 	return "|".join(parts)
@@ -125,21 +125,21 @@ func _autopilot() -> Vector2:
 	if run.phase == run.Phase.CLEARED:
 		var gate = run.terrain.gate()
 		if gate != null and gate.open:
-			return _around_walls((gate.end - run.player_pos).normalized())
+			return _around_walls((gate.end - run.player_pos[run.local_slot]).normalized())
 	var flee := Vector2.ZERO
 	var n := 0
 	for i in run.enemies.count:
-		var d: Vector2 = run.player_pos - run.enemies.pos[i]
+		var d: Vector2 = run.player_pos[run.local_slot] - run.enemies.pos[i]
 		var dl := d.length()
 		if dl < 190.0 and dl > 0.01:
 			flee += d / dl * (190.0 - dl)
 			n += 1
 	var dir := flee.normalized() if n > 0 else Vector2.ZERO
 	if n == 0 and run.shards.count > 0:
-		dir = (run.shards.pos[0] - run.player_pos).normalized()
+		dir = (run.shards.pos[0] - run.player_pos[run.local_slot]).normalized()
 	# The CURRENT arena's centre, not the world origin: the campaign is three
 	# arenas laid out end to end now, and only the first is centred on zero.
-	var to_centre: Vector2 = run.terrain.arena().get_center() - run.player_pos
+	var to_centre: Vector2 = run.terrain.arena().get_center() - run.player_pos[run.local_slot]
 	if to_centre.length() > 1100.0:
 		dir = (dir + to_centre.normalized() * 1.6).normalized()
 	return _around_walls(dir)
@@ -157,13 +157,13 @@ func _around_walls(dir: Vector2) -> Vector2:
 	if dir.length_squared() < 0.000001:
 		return dir
 	var ahead: float = Terrain.CELL * 2.0
-	if not run.terrain.is_solid(run.player_pos + dir * ahead):
+	if not run.terrain.is_solid(run.player_pos[run.local_slot] + dir * ahead):
 		return dir
 	var left := Vector2(-dir.y, dir.x)
-	if not run.terrain.is_solid(run.player_pos + left * ahead):
+	if not run.terrain.is_solid(run.player_pos[run.local_slot] + left * ahead):
 		return left
 	var right := -left
-	if not run.terrain.is_solid(run.player_pos + right * ahead):
+	if not run.terrain.is_solid(run.player_pos[run.local_slot] + right * ahead):
 		return right
 	return -dir
 
@@ -193,7 +193,7 @@ func presentation_survives_death() -> void:
 	r._fx_ring.append([Vector2.ZERO, 100.0, 1.0, Color.WHITE])
 	var life_before: float = r._fx_ring[0][2]
 
-	r._damage_player(99999.0)
+	r._damage_player(r.local_slot, 99999.0)
 	_check("the player is dead", r.alive, false)
 	_check("and the hitstop engaged", r.hitstop_ticks,
 		SessionRules.HITSTOP_TICKS)

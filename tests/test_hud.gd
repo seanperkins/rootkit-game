@@ -87,7 +87,7 @@ func integrity_warns_proportionally() -> void:
 	var status: Label = ui._hud.get_node("Status")
 	_check("a healthy player reads normal",
 		status.get_theme_color("font_color"), ui.FG)
-	r.player_health = r._eff_integrity() * 0.2
+	r.player_health[r.local_slot] = r._eff_integrity(r.local_slot) * 0.2
 	ui._refresh()
 	_check("a hurt player reads as warning",
 		status.get_theme_color("font_color"), ui.WARN)
@@ -98,8 +98,8 @@ func integrity_warns_proportionally() -> void:
 func the_summary_reports_a_finished_run() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
-	r.kills = 42
-	r.flips = 7
+	r.kills[r.local_slot] = 42
+	r.flips[r.local_slot] = 7
 	ui._on_end(false, 0)
 	var t: String = ui._end.get_node("Text").text
 	_check("the end screen is up", ui._end.visible, true)
@@ -118,7 +118,7 @@ func the_summary_reports_a_finished_run() -> void:
 func the_summary_survives_a_short_build() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
-	r.loadout.exploits.clear()
+	r.loadouts[r.local_slot].exploits.clear()
 	r._recompile()
 	ui._on_end(true, 500)
 	var t: String = ui._end.get_node("Text").text

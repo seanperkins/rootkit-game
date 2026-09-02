@@ -73,16 +73,16 @@ func _arriving_at(r: Node2D, id: StringName, at: Vector2) -> int:
 
 func an_arrival_is_out_of_the_grid() -> void:
 	var r := await _bare_run()
-	var i := _arriving_at(r, &"kernel_panic", r.player_pos + Vector2(120, 0))
+	var i := _arriving_at(r, &"kernel_panic", r.player_pos[r.local_slot] + Vector2(120, 0))
 	r._step3_rebuild()
 	_check("the union marks it skipped", r._no_grid[i], 1)
 	# Nothing the player fires can find it.
 	_check("and it cannot be targeted",
-		r._pick_target(4000.0), -1)
+		r._pick_target(4000.0, Module.Targeting.NEAREST, r.player_pos[r.local_slot]), -1)
 	r._arriving[i] = 0.0
 	r._step3_rebuild()
 	_check("once live it is targetable again",
-		r._pick_target(4000.0), i)
+		r._pick_target(4000.0, Module.Targeting.NEAREST, r.player_pos[r.local_slot]), i)
 	# The union must be REBUILT, not OR-ed: an incremental union never clears.
 	_check("and the union cleared", r._no_grid[i], 0)
 	r.free()
@@ -93,7 +93,7 @@ func an_arrival_is_out_of_the_grid() -> void:
 ## ungated arrival would walk off its own telegraph.
 func an_arrival_does_not_move() -> void:
 	var r := await _bare_run()
-	var i := _arriving_at(r, &"ice", r.player_pos + Vector2(400, 0))
+	var i := _arriving_at(r, &"ice", r.player_pos[r.local_slot] + Vector2(400, 0))
 	var before: Vector2 = r.enemies.pos[i]
 	for k in 20:
 		r._physics_process(DT)
@@ -109,12 +109,12 @@ func an_arrival_does_not_move() -> void:
 ## _behave does. kernel_panic is both a mini-boss and the pulsing type.
 func a_pulse_arrival_cannot_touch_the_player() -> void:
 	var r := await _bare_run()
-	_arriving_at(r, &"kernel_panic", r.player_pos + Vector2(60, 0))
-	var hp: float = r.player_health
+	_arriving_at(r, &"kernel_panic", r.player_pos[r.local_slot] + Vector2(60, 0))
+	var hp: float = r.player_health[r.local_slot]
 	for k in 40:
 		r._physics_process(DT)
 	_check("the player is untouched through the entrance",
-		r.player_health, hp)
+		r.player_health[r.local_slot], hp)
 	_check("and no hostile shot was spawned", r.hostiles.count, 0)
 	r.free()
 	await process_frame
@@ -124,7 +124,7 @@ func a_pulse_arrival_cannot_touch_the_player() -> void:
 ## clean terrain this case passes regardless, so the tiles are planted first.
 func hazard_and_corruption_are_held_off() -> void:
 	var r := await _bare_run()
-	var at: Vector2 = r.player_pos + Vector2(200, 0)
+	var at: Vector2 = r.player_pos[r.local_slot] + Vector2(200, 0)
 	r.terrain.add_temp_zone(at, 90.0, Terrain.Kind.HAZARD, 99.0)
 	var i := _arriving_at(r, &"ice", at)
 	var hp: float = r.enemies.integrity[i]
@@ -143,7 +143,7 @@ func hazard_and_corruption_are_held_off() -> void:
 
 func it_becomes_live_when_the_timer_ends() -> void:
 	var r := await _bare_run()
-	var i := _arriving_at(r, &"kernel_panic", r.player_pos + Vector2(150, 0))
+	var i := _arriving_at(r, &"kernel_panic", r.player_pos[r.local_slot] + Vector2(150, 0))
 	var ticks := int(r.ARRIVAL_TOTAL / DT) + 4
 	for k in ticks:
 		r._physics_process(DT)
@@ -160,10 +160,10 @@ func it_becomes_live_when_the_timer_ends() -> void:
 ## goes invulnerable and invisible.
 func the_timer_survives_recycle_compaction() -> void:
 	var r := await _bare_run()
-	var grunt: int = r.enemies.spawn(r.player_pos + Vector2(80, 0),
+	var grunt: int = r.enemies.spawn(r.player_pos[r.local_slot] + Vector2(80, 0),
 		Vector2.ZERO, 10.0, 20.0, 0)
 	r._spawn_enemy_state(grunt, 10.0)
-	var boss := _arriving_at(r, &"kernel_panic", r.player_pos + Vector2(300, 0))
+	var boss := _arriving_at(r, &"kernel_panic", r.player_pos[r.local_slot] + Vector2(300, 0))
 	_check("the boss is at the tail", boss, r.enemies.count - 1)
 
 	# Kill the LOWER-indexed enemy so the tail compacts down over it.

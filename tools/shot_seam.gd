@@ -27,24 +27,24 @@ func _process(_d: float) -> bool:
 	var g = run.terrain.gate()
 	match frames:
 		20:
-			run.player_pos = Vector2.ZERO
+			run.player_pos[run.local_slot] = Vector2.ZERO
 		40:
 			_save("/tmp/seam_1_start.png")
 			# The near corner of the arena, where the lattice meets the wall.
 			var a: Rect2 = run.terrain.arena()
-			run.player_pos = a.end - Vector2(240, 240)
+			run.player_pos[run.local_slot] = a.end - Vector2(240, 240)
 		60:
 			_save("/tmp/seam_2_corner.png")
 			run.phase = run.Phase.CLEARED
 			run.collapse_left = run.COLLAPSE_SECONDS
 			run.terrain.open_gate()
 			run.terrain.build_distance_field()
-			run.player_pos = g.pos - g.dir * 260.0
+			run.player_pos[run.local_slot] = g.pos - g.dir * 260.0
 		80:
 			_save("/tmp/seam_3_gate.png")
 			# Standing in the doorway of the NEXT arena, looking back down the
 			# corridor: this is the join the whole rework is about.
-			run.player_pos = g.end + g.dir * 120.0
+			run.player_pos[run.local_slot] = g.end + g.dir * 120.0
 		100:
 			_save("/tmp/seam_4_arrival.png")
 			print("layout %s" % [run.terrain.arenas])

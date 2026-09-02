@@ -134,7 +134,7 @@ func the_payout_prefers_a_fusion() -> void:
 	# copy and the outer array would stay empty.
 	_offered = []
 	run.fusion_offered.connect(func(m): _offered = m)
-	run.loadout.exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
+	run.loadouts[run.local_slot].exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
 		_row(run, &"packet", &"interval", &"")]
 	run._recompile()
 	run._block_payout()
@@ -143,13 +143,13 @@ func the_payout_prefers_a_fusion() -> void:
 
 	run.choose_fusion(0)
 	_check("choosing it fuses the row",
-		run.loadout.exploits[0].vector.module.id, &"zero_day")
+		run.loadouts[run.local_slot].exploits[0].vector.module.id, &"zero_day")
 	_check("and unpauses", run.paused, false)
 
 	# One module short of frag_packet (packet + interval + fork_bomb): the
 	# targeted card is what makes an exact triple reachable at all.
 	_check("the targeted module completes the near-miss row",
-		run._targeted_module().id, &"fork_bomb")
+		run._targeted_module(run.local_slot).id, &"fork_bomb")
 	run.queue_free()
 	await process_frame
 
@@ -170,7 +170,7 @@ func the_payout_offers_fusion_without_a_listener() -> void:
 		run.fusion_offered.disconnect(c["callable"])
 	_check("no listener remains on the signal",
 		run.fusion_offered.get_connections().is_empty(), true)
-	run.loadout.exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
+	run.loadouts[run.local_slot].exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
 		_row(run, &"packet", &"interval", &"")]
 	run._recompile()
 	run._block_payout()

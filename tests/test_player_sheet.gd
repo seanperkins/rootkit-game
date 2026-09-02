@@ -41,8 +41,8 @@ func integrity_seeded() -> void:
 	root.add_child(run)
 	await process_frame
 	run.input_override = Vector2.ZERO
-	_check("memory r10 starts the run at 180", run.player_health, 180.0)
-	_check("effective max integrity is 180", run._eff_integrity(), 180.0)
+	_check("memory r10 starts the run at 180", run.player_health[run.local_slot], 180.0)
+	_check("effective max integrity is 180", run._eff_integrity(run.local_slot), 180.0)
 	run.queue_free()
 	await process_frame
 	_clear_buffs()
@@ -54,7 +54,7 @@ func pickup_radius_seeded() -> void:
 	root.add_child(run)
 	await process_frame
 	run.input_override = Vector2.ZERO
-	_check("bandwidth r10 gives pickup radius 90", run.pickup_radius, 90.0)
+	_check("bandwidth r10 gives pickup radius 90", run.pickup_radius[run.local_slot], 90.0)
 	run.queue_free()
 	await process_frame
 	_clear_buffs()
@@ -79,10 +79,10 @@ func _distance_travelled() -> float:
 	while run.enemies.count > 0:
 		run.enemies.despawn(run.enemies.count - 1)
 	run.input_override = Vector2.RIGHT
-	var start: Vector2 = run.player_pos
+	var start: Vector2 = run.player_pos[run.local_slot]
 	for tick in 60:
 		run._physics_process(DT)
-	var moved: float = run.player_pos.distance_to(start)
+	var moved: float = run.player_pos[run.local_slot].distance_to(start)
 	run.queue_free()
 	await process_frame
 	return moved

@@ -57,7 +57,7 @@ func _bare_run() -> Node2D:
 	# Silence the starting exploit. A PACKET with no target still spawns, aimed
 	# at Vector2.RIGHT, so a run left armed keeps replenishing the pool and any
 	# "how long did this projectile live" measurement never terminates.
-	run.loadout.exploits.clear()
+	run.loadouts[run.local_slot].exploits.clear()
 	run._recompile()
 	return run
 
@@ -82,7 +82,7 @@ func expires_at_travel_distance() -> void:
 	var r := Compiler.build(ex)
 	var expected_ticks: int = int(r.travel / r.projectile_speed / DT)
 
-	var pi: int = run.projectiles.spawn(run.player_pos,
+	var pi: int = run.projectiles.spawn(run.player_pos[run.local_slot],
 		Vector2.RIGHT * r.projectile_speed, 1.0, run.PROJECTILE_RADIUS, 0)
 	run._proj_owner[pi] = 0
 	run._proj_pierce[pi] = 0
@@ -105,14 +105,14 @@ func expires_at_travel_distance() -> void:
 ## player is no longer what kills it.
 func player_distance_no_longer_culls() -> void:
 	var run := await _bare_run()
-	var pi: int = run.projectiles.spawn(run.player_pos, Vector2.RIGHT * 420.0,
+	var pi: int = run.projectiles.spawn(run.player_pos[run.local_slot], Vector2.RIGHT * 420.0,
 		1.0, run.PROJECTILE_RADIUS, 0)
 	run._proj_owner[pi] = 0
 	run._proj_pierce[pi] = 0
 	run._proj_last[pi] = -1
 	run._proj_dist_left[pi] = 640.0
 
-	run.player_pos += Vector2(3000.0, 0.0)
+	run.player_pos[run.local_slot] += Vector2(3000.0, 0.0)
 	run._physics_process(DT)
 	_check("distance from the player no longer culls a projectile",
 		run.projectiles.count, 1)
@@ -124,7 +124,7 @@ func player_distance_no_longer_culls() -> void:
 ## on its expiry tick.
 func expired_projectile_lands_no_hit() -> void:
 	var run := await _bare_run()
-	var target: int = run.enemies.spawn(run.player_pos + Vector2(200.0, 0.0),
+	var target: int = run.enemies.spawn(run.player_pos[run.local_slot] + Vector2(200.0, 0.0),
 		Vector2.ZERO, 99999.0, run.ENEMY_RADIUS, 0)
 	var hp_before: float = run.enemies.integrity[target]
 
@@ -147,11 +147,11 @@ func expired_projectile_lands_no_hit() -> void:
 func swap_remove_carries_distance() -> void:
 	var run := await _bare_run()
 	# Zero velocity so no distance is consumed and the numbers stay exact.
-	var a: int = run.projectiles.spawn(run.player_pos, Vector2.ZERO, 1.0,
+	var a: int = run.projectiles.spawn(run.player_pos[run.local_slot], Vector2.ZERO, 1.0,
 		run.PROJECTILE_RADIUS, 0)
 	run._proj_owner[a] = 0; run._proj_pierce[a] = 0; run._proj_last[a] = -1
 	run._proj_dist_left[a] = 100.0
-	var b: int = run.projectiles.spawn(run.player_pos + Vector2(50.0, 0.0),
+	var b: int = run.projectiles.spawn(run.player_pos[run.local_slot] + Vector2(50.0, 0.0),
 		Vector2.ZERO, 1.0, run.PROJECTILE_RADIUS, 0)
 	run._proj_owner[b] = 1; run._proj_pierce[b] = 0; run._proj_last[b] = -1
 	run._proj_dist_left[b] = 900.0
