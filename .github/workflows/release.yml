@@ -1,0 +1,72 @@
+name: release
+
+# Windows and Linux builds for a version tag, attached to the GitHub Release
+# for that tag. The macOS build is signed and notarised locally by
+# tools/release_mac.sh; both sides create the release if it is missing and
+# upload with --clobber, so either can run first or again.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: "4.7"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and its export templates
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -sSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+          curl -sSL -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q templates.tpz -d templates
+          mv templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+          godot --version
+
+      - name: Stamp the version from the tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if grep -q '^config/version=' project.godot; then
+            sed -i "s|^config/version=.*|config/version=\"$VERSION\"|" project.godot
+          else
+            sed -i "s|^config/name=\"ROOTKIT\"|config/name=\"ROOTKIT\"\nconfig/version=\"$VERSION\"|" project.godot
+          fi
+          grep '^config/version=' project.godot
+
+      - name: Export
+        run: |
+          set -euo pipefail
+          mkdir -p build/windows build/linux
+          godot --headless --import || true
+          godot --headless --export-release windows build/windows/ROOTKIT.exe
+          godot --headless --export-release linux build/linux/ROOTKIT.x86_64
+          ls -la build/windows build/linux
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          (cd build/windows && zip -qr "../ROOTKIT-$TAG-windows.zip" .)
+          (cd build/linux && zip -qr "../ROOTKIT-$TAG-linux.zip" .)
+          ls -la build/*.zip
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "ROOTKIT $TAG" --generate-notes
+          gh release upload "$TAG" "build/ROOTKIT-$TAG-windows.zip" "build/ROOTKIT-$TAG-linux.zip" --clobber

@@ -1,6 +1,8 @@
 .godot/
-export_presets.cfg
 *.import
+
+# Release exports — tools/release_mac.sh and the release workflow write here
+build/
 .tmp/
 
 # Built manual — regenerate with tools/build_manual.py

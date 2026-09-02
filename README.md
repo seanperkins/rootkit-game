@@ -50,6 +50,20 @@ Arenas, corridors and the grid itself all snap to the lattice the ground is
 drawn on, so the tiles run edge to edge instead of stopping part way through one
 at the arena wall.
 
+## Install a release
+
+Grab the zip for your platform from the
+[Releases page](https://github.com/seanperkins/rootkit-game/releases) and unzip it.
+
+- **macOS**: `ROOTKIT.app`, signed and notarised — double-click.
+- **Windows**: `ROOTKIT.exe` plus its `.pck` next to it. The build is not
+  signed, so SmartScreen asks once: *More info → Run anyway*.
+- **Linux**: `ROOTKIT.x86_64` plus its `.pck`; `chmod +x` it if needed.
+
+Releases are cut from a version tag. Windows and Linux come from
+`.github/workflows/release.yml`; the Mac build is signed here with
+`tools/release_mac.sh <tag>`. Both attach to the same release.
+
 ## Triggers
 
 A trigger is paid on the axis its FREQUENCY suits. `interval` sits at cadence
