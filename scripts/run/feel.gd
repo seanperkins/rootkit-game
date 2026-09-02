@@ -8,24 +8,15 @@ class_name Feel extends RefCounted
 ## beyond RefCounted. That is what lets a suite assert the numbers that decide
 ## whether this feels good without standing up a viewport.
 ##
-## In particular this class NEVER writes `Engine.time_scale`. It reports the
-## scale it wants and run.gd applies it. A RefCounted that touched an engine
-## singleton would not be pure, and the split is load-bearing for testing: the
-## deadline arithmetic is assertable here, but only a test driving run.gd can
-## catch a time scale left stranded at 0.05 — which is the failure that actually
-## bricks the process.
+## The hitstop no longer lives here. It became a fixed tick count on run.gd,
+## above the world-step guard, so a freeze costs the same whole ticks on every
+## peer instead of a wall-clock interval and a process-global time scale.
 
 ## Peak camera displacement, in world units, at trauma 1.0.
 const MAX_OFFSET := 26.0
 
 ## Trauma per second of decay. A hit reads for roughly half a second.
 const TRAUMA_DECAY := 1.6
-
-## How far time slows during a hitstop, and for how long in WALL-CLOCK ms.
-## Wall clock rather than dt, because `Engine.time_scale` scales the delta the
-## engine hands us: a dt-fed 60ms timer would run 20x long at this scale.
-const HITSTOP_SCALE := 0.05
-const HITSTOP_MS := 60
 
 ## Live damage numbers. Hard cap, oldest evicted: a working build at the enemy
 ## cap produces thousands of these a second, which costs more than the rest of
@@ -35,9 +26,6 @@ const NUMBER_LIFE := 0.75
 const NUMBER_RISE := 42.0
 
 var trauma := 0.0
-
-## Absolute Time.get_ticks_msec() value, or 0 when no hitstop is live.
-var hitstop_until_ms := 0
 
 ## [pos, text, colour, life] rows, oldest first.
 var numbers: Array = []
@@ -84,20 +72,6 @@ func shake_offset() -> Vector2:
 		return Vector2.ZERO
 	return _sample_noise() * (MAX_OFFSET * trauma * trauma)
 
-func start_hitstop(now_ms: int, ms: int = HITSTOP_MS) -> void:
-	hitstop_until_ms = now_ms + ms
-
-func time_scale() -> float:
-	return HITSTOP_SCALE if hitstop_until_ms > 0 else 1.0
-
-## True when this call ENDED a hitstop, so the caller knows to write the engine
-## back to 1.0 exactly once.
-func release_hitstop(now_ms: int) -> bool:
-	if hitstop_until_ms > 0 and now_ms >= hitstop_until_ms:
-		hitstop_until_ms = 0
-		return true
-	return false
-
 func add_number(pos: Vector2, text: String, colour: Color) -> void:
 	numbers.append([pos, text, colour, NUMBER_LIFE])
 	# Evict rather than refuse: the most recent hits are the ones the player is
@@ -113,9 +87,9 @@ func drain_sfx() -> PackedStringArray:
 	sfx = PackedStringArray()
 	return out
 
-## Fed an UNSCALED delta by run.gd's presentation half. Everything here is
-## presentation, so none of it may run on the simulation clock — during a
-## hitstop that clock is 20x slow, and after death it has stopped entirely.
+## Fed the frame delta by run.gd's presentation half, which runs above the
+## world-step guard every frame. Everything here is presentation, so it keeps
+## aging while the world is frozen by a hitstop, paused, or ended.
 func step(dt: float) -> void:
 	trauma = maxf(0.0, trauma - TRAUMA_DECAY * dt)
 	var i := 0

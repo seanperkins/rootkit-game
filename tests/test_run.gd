@@ -90,8 +90,6 @@ func _initialize() -> void:
 		_check("the build survived the subnet advance",
 			_build_signature().begins_with(build_at_first_clear), true)
 
-	# Freed here so the presentation case below gets a clean process-global
-	# Engine.time_scale rather than whatever the campaign left behind.
 	run.free()
 	await process_frame
 	await presentation_survives_death()
@@ -178,14 +176,14 @@ func _flipped_left() -> int:
 			n += 1
 	return n
 
-## The presentation half runs ABOVE the tick guard, so a dead run still animates
-## and — critically — still releases the hitstop. All three hitstop triggers set
-## one of `alive`/`won`/`paused` on the frame they fire, so a release driven from
-## below the guard would never run and Engine.time_scale would stay at 0.05 for
-## the rest of the PROCESS: the end screen, the shell, and every later run.
+## The presentation half runs ABOVE the tick guard, so a dead run still animates.
+## Death arms a hitstop, which is now a fixed tick count above the guard rather
+## than a wall-clock engine scale — so the world freezes for exactly
+## HITSTOP_TICKS while effects keep aging, and there is no process-global state
+## left stranded for the end screen, the shell, or a later run to inherit.
 ##
-## test_feel asserts the deadline arithmetic on a bare Feel. It cannot catch
-## this: Feel never writes the engine. Only driving the real death path can.
+## test_feel asserts trauma and the number pool on a bare Feel. Only driving the
+## real death path can catch the hitstop's effect on the tick.
 func presentation_survives_death() -> void:
 	var r: Node2D = load("res://scenes/run.tscn").instantiate()
 	root.add_child(r)
@@ -197,27 +195,20 @@ func presentation_survives_death() -> void:
 
 	r._damage_player(99999.0)
 	_check("the player is dead", r.alive, false)
-	_check("and the hitstop engaged", Engine.time_scale, Feel.HITSTOP_SCALE)
+	_check("and the hitstop engaged", r.hitstop_ticks,
+		SessionRules.HITSTOP_TICKS)
 
-	# The tick returns early now, but presentation does not.
+	# The tick returns early now — dead, and frozen by the hitstop — but
+	# presentation does not.
 	r._physics_process(DT)
 	_check("effects still age after death", r._fx_ring[0][2] < life_before, true)
+	_check("the hitstop drained one tick", r.hitstop_ticks,
+		SessionRules.HITSTOP_TICKS - 1)
 	_check("the camera position is finite",
 		r._camera.global_position.is_finite(), true)
 
-	# Wall clock, so wait it out rather than stepping frames.
-	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < Feel.HITSTOP_MS + 20:
-		pass
-	r._physics_process(DT)
-	_check("and the hitstop released", Engine.time_scale, 1.0)
-
-	# Teardown restores unconditionally: anything still live at exit has nothing
-	# left to clear it.
-	r._hitstop()
 	r.free()
 	await process_frame
-	_check("teardown restores the time scale", Engine.time_scale, 1.0)
 	finished_presentation = true
 
 var finished_presentation := false

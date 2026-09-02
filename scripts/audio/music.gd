@@ -123,9 +123,10 @@ func _play(stream: AudioStreamWAV, pitch: float = 1.0) -> void:
 func _process(dt: float) -> void:
 	if run == null:
 		return
-	# Unscaled, so a hitstop does not drag the tempo. Music that stuttered with
-	# every boss kill would draw attention to the effect rather than sell it.
-	var udt: float = minf(dt / maxf(Engine.time_scale, 0.0001), 0.1)
+	# The frame delta, clamped. The hitstop no longer touches a process-global
+	# time scale — it freezes the world for whole ticks while presentation clocks
+	# like this one keep running — so there is nothing to divide back out.
+	var udt: float = minf(dt, 0.1)
 
 	_threat = lerpf(_threat, run.threat(), minf(udt * 1.5, 1.0))
 

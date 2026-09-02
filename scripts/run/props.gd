@@ -63,9 +63,10 @@ var target: Node2D
 var _falling: Dictionary = {}
 
 func _process(d: float) -> void:
-	# Unscaled, like every other presentation clock here: a hitstop should not
-	# hold a collapsing wall in mid-air.
-	var udt: float = minf(d / maxf(Engine.time_scale, 0.0001), 0.1)
+	# The frame delta, clamped. The hitstop freezes the world for whole ticks now
+	# rather than scaling a process-global clock, so a collapsing wall keeps
+	# falling at display rate with nothing to divide back out.
+	var udt: float = minf(d, 0.1)
 	# A new subnet clears `voided`, and rect indices belong to the arena that
 	# was collapsing — carrying fall timers across would drop walls the player
 	# has not reached yet.

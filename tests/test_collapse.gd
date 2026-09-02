@@ -124,6 +124,7 @@ func voided_ground_kills() -> void:
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
 		48.0, EnemyTable.ICE)
 	r._on_death(i)
+	r.hitstop_ticks = 0  # drop the boss-kill hitstop; this case drives CLEARED mechanics directly
 	_check("the clock starts on the boss kill", r.collapse_left > 0.0, true)
 	# Stand as far from the gate as the field goes, then run the clock out.
 	var far := -1
@@ -148,6 +149,7 @@ func the_route_home_is_lit() -> void:
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
 		48.0, EnemyTable.ICE)
 	r._on_death(i)
+	r.hitstop_ticks = 0  # drop the boss-kill hitstop; this case drives CLEARED mechanics directly
 	r._physics_process(1.0 / 60.0)
 
 	_check("a route exists to draw", r._route.size() > 0, true)
@@ -181,6 +183,7 @@ func the_void_is_drawn_as_merged_runs() -> void:
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
 		48.0, EnemyTable.ICE)
 	r._on_death(i)
+	r.hitstop_ticks = 0  # drop the boss-kill hitstop; this case drives CLEARED mechanics directly
 	var all := Rect2(r.terrain.origin, r.terrain.size)
 	_check("an intact arena has no void to draw", r._void_runs(all).size(), 0)
 

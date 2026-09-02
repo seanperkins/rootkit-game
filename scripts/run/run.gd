@@ -370,6 +370,12 @@ var _vignette := 0.0
 ## frame, a scene load or an OS suspend would expire every live effect in one
 ## step.
 const MAX_PRESENT_DT := 0.1
+## Ticks of world-freeze still owed to the current hitstop. Decremented above the
+## world-step guard; while nonzero the tick runs presentation and input intake
+## but steps no simulation. Part of the deterministic tick — no wall clock, no
+## process-global time scale — so every peer freezes for the same ticks on the
+## same events.
+var hitstop_ticks := 0
 var _steer_phase := 0
 ## Diagnostic only: how many times each exploit's vector was emitted this tick.
 var _trigger_fires := {}
@@ -657,7 +663,7 @@ func _rebuild_execute_table() -> void:
 
 # ---------------------------------------------------------------- the tick ---
 
-func _physics_process(dt: float) -> void:
+func _physics_process(_dt: float) -> void:
 	# Open the render layer's PAST before anything can move.
 	#
 	# Above the guard for the same reason _present is: a paused or ended run
@@ -678,9 +684,17 @@ func _physics_process(dt: float) -> void:
 	# opens. That is right for simulation and wrong for presentation: the death
 	# shake would render zero frames, the effects would freeze mid-decay, and —
 	# worst — the hitstop would never be released, because all three of its
-	# triggers set one of these three flags on the frame they fire. Engine
-	# .time_scale is process-global, so that leak survives back to the shell.
-	_present(dt)
+	# triggers set one of these three flags on the frame they fire.
+	_present(_dt)
+
+	# The hitstop is part of the deterministic tick: it freezes the world for a
+	# fixed number of ticks rather than slowing a process-global clock. Above the
+	# world-step guard so the freeze is faithful even when a trigger also set a
+	# guard flag on the same frame, and so presentation and input intake above
+	# still run through it. A dead or paused run stays frozen by its own flag.
+	if hitstop_ticks > 0:
+		hitstop_ticks -= 1
+		return
 
 	if paused or user_paused or not alive or won:
 		return
@@ -697,13 +711,17 @@ func _physics_process(dt: float) -> void:
 
 	# The director steps in FIGHTING and nowhere else: a cleared subnet stops
 	# producing, and the corridor never produces at all.
+	# Every step ages by the FIXED tick, never the frame delta. The delta the
+	# engine handed us drives presentation above; the world runs on one constant
+	# so two peers stepping at different frame rates evolve identically.
+	var sdt := SessionRules.TICK_DT
 	if phase == Phase.FIGHTING:
-		_step1_spawn(dt)
-	_step2_integrate(dt)
+		_step1_spawn(sdt)
+	_step2_integrate(sdt)
 	_step2c_gate()
-	_step2d_collapse(dt)
-	_step2e_blocks(dt)
-	_step2b_zones(dt)
+	_step2d_collapse(sdt)
+	_step2e_blocks(sdt)
+	_step2b_zones(sdt)
 	_step3_rebuild()
 	# Only while something reads it. _approach_dir consults the field for bosses
 	# and nothing else, so flooding 2401 cells through a wave of daemons buys
@@ -712,9 +730,9 @@ func _physics_process(dt: float) -> void:
 	if boss_present() and _flow.needs_rebuild(terrain, player_pos):
 		_flow.rebuild(terrain, player_pos)
 	_step4_steer()
-	_step5_fire(dt)
-	_step6_detect(dt)
-	_step6b_hostiles(dt)
+	_step5_fire(sdt)
+	_step6_detect(sdt)
+	_step6b_hostiles(sdt)
 	_steps78_drain()
 	_step9_recycle()
 	_step9c_reapproach()
@@ -725,29 +743,16 @@ func _physics_process(dt: float) -> void:
 	# _process reads a consistent order however many frames it draws from it.
 	_depth_sort()
 
-## The presentation half of the tick, run above the guard on a clock
-## Engine.time_scale cannot shrink.
+## The presentation half of the tick, run above the guard every frame — the
+## world may be frozen by a hitstop, dead, or paused; presentation is not.
 ##
-## Time.get_ticks_msec rather than the engine delta: at a hitstop's 0.05 the
-## physics RATE is unchanged (measured, Godot 4.7) but each delta is 1/1200s, so
-## a dt-fed 60ms deadline would take 1.2s of wall clock to expire.
-func _present(dt: float) -> void:
-	# Two different clocks, for two different jobs.
-	#
-	# AGING runs on unscaled FRAME time — the engine delta divided back out by
-	# the scale that shrank it. Frame-coherent, so a headless suite stepping
-	# _physics_process thousands of times a second ages effects at the same rate
-	# a player would; a wall-clock delta there would be ~0 per tick and let
-	# _fx_line grow without bound for the whole campaign.
-	#
-	# The HITSTOP DEADLINE runs on the wall clock, because a real-time pause is
-	# the entire point of it and frame time is what the pause distorts.
-	#
-	# Both are immune to Engine.time_scale, which was the requirement.
-	var udt := minf(dt / maxf(Engine.time_scale, 0.0001), MAX_PRESENT_DT)
-
-	if feel.release_hitstop(Time.get_ticks_msec()):
-		Engine.time_scale = 1.0
+## Ages on the FRAME delta, clamped to MAX_PRESENT_DT. Nothing here reads a wall
+## clock or an engine time scale any more: the hitstop is now a tick count above
+## the guard, so during one the world simply does not step while these effects
+## keep aging at their normal rate. The clamp keeps a first frame, a scene load,
+## or an OS suspend from expiring every live effect in one huge step.
+func _present(_dt: float) -> void:
+	var udt := minf(_dt, MAX_PRESENT_DT)
 
 	feel.step(udt)
 	_age_fx(udt)
@@ -844,18 +849,13 @@ func _snapshot_render_state() -> void:
 func _rp(p: Population, i: int) -> Vector2:
 	return p.prev_pos[i].lerp(p.pos[i], _alpha)
 
-## Belt and braces, and UNCONDITIONAL. The release above lives in a tick that
-## goes away with the scene, so anything still live at teardown has nothing left
-## to clear it — quitting during the 60ms hitstop a death just started would
-## otherwise leave the whole process at 0.05.
-func _exit_tree() -> void:
-	Engine.time_scale = 1.0
-
-## Set a hitstop and drop the engine scale to match. Rare events only: at the
-## enemy cap a per-kill hitstop is a permanent stutter, not emphasis.
+## Owe the tick a fixed number of world-frozen ticks. Rare events only: at the
+## enemy cap a per-kill hitstop is a permanent stutter, not emphasis. Overlapping
+## hitstops take the MAX rather than summing, so a death during a miniboss beat
+## does not stack into a long freeze. No engine clock — the tick above the guard
+## spends these ticks, and every peer spends the same ones on the same events.
 func _hitstop() -> void:
-	feel.start_hitstop(Time.get_ticks_msec())
-	Engine.time_scale = feel.time_scale()
+	hitstop_ticks = maxi(hitstop_ticks, SessionRules.HITSTOP_TICKS)
 
 ## Open ground inside the CURRENT arena.
 ##

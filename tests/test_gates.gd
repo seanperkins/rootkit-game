@@ -42,6 +42,9 @@ func _kill_ice(r: Node2D) -> void:
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
 		48.0, EnemyTable.ICE)
 	r._on_death(i)
+	# The boss kill arms a hitstop that freezes the world for a few ticks. These
+	# cases step the tick directly to assert gate-walking mechanics, so drain it.
+	r.hitstop_ticks = 0
 
 func ice_opens_the_gate() -> void:
 	var r := await _fresh_run()

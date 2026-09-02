@@ -1,17 +1,17 @@
 extends SceneTree
 
-## The pure half of the feel layer: trauma, the hitstop deadline, and the damage
-## number pool. Everything here runs without a viewport, which is the point of
-## keeping Feel a RefCounted.
+## The pure half of the feel layer: trauma, the damage number pool, and the sfx
+## drain. Everything here runs without a viewport, which is the point of keeping
+## Feel a RefCounted.
 ##
-## What this suite CANNOT catch is a stranded Engine.time_scale — Feel never
-## writes it. That lives in test_run, driving the real death path.
+## The hitstop no longer lives here — it is a fixed tick count on run.gd. Its
+## behaviour is asserted in test_determinism_rules against the real tick.
 
 var failures := 0
 var finished := {}
 
 const CASES := ["trauma_saturates", "offset_is_bounded", "squaring_is_gentle",
-	"trauma_decays_to_zero", "hitstop_releases_once", "numbers_cap_and_prune",
+	"trauma_decays_to_zero", "numbers_cap_and_prune",
 	"sfx_drains_once"]
 
 func _initialize() -> void:
@@ -20,7 +20,6 @@ func _initialize() -> void:
 	offset_is_bounded()
 	squaring_is_gentle()
 	trauma_decays_to_zero()
-	hitstop_releases_once()
 	numbers_cap_and_prune()
 	sfx_drains_once()
 	print("")
@@ -88,20 +87,6 @@ func trauma_decays_to_zero() -> void:
 	_check("trauma reaches exactly zero", f.trauma, 0.0)
 	_check("and a zero-trauma offset is zero", f.shake_offset(), Vector2.ZERO)
 	finished["trauma_decays_to_zero"] = true
-
-## Wall-clock deadline, and the release reports itself exactly once so the caller
-## writes the engine back a single time.
-func hitstop_releases_once() -> void:
-	var f := Feel.new()
-	_check("no hitstop means full speed", f.time_scale(), 1.0)
-	f.start_hitstop(1000, 60)
-	_check("a live hitstop reports the slow scale", f.time_scale(),
-		Feel.HITSTOP_SCALE)
-	_check("it does not release early", f.release_hitstop(1059), false)
-	_check("it releases at the deadline", f.release_hitstop(1060), true)
-	_check("and only once", f.release_hitstop(1200), false)
-	_check("back to full speed", f.time_scale(), 1.0)
-	finished["hitstop_releases_once"] = true
 
 func numbers_cap_and_prune() -> void:
 	var f := Feel.new()
