@@ -210,6 +210,14 @@ var slot_state: PackedByteArray
 ## which is exactly what a flanker needs to aim at.
 var player_vel: PackedVector2Array
 
+## Where each slot faces, in WORLD space: the last non-zero applied movement,
+## held while it stands still. Forward vectors fire along it. Simulation
+## state — hashed and snapshotted — derived from records alone, so every peer
+## holds the same value. The local player's facing lags the stick by the
+## lockstep delay on purpose: a tick that led the simulation would point where
+## the wedge does not fire.
+var player_facing: PackedVector2Array
+
 ## Per-enemy AI memory. Sized MAX_ENEMIES and reset on every spawn, because
 ## Population.spawn recycles slots and a stale phase is a live bug — an enemy
 ## that inherits a mid-dash timer commits to a dash it never wound up for.
@@ -845,6 +853,9 @@ func _park(slot: int) -> void:
 func _return(slot: int, t: int) -> void:
 	if slot_state[slot] != SlotState.ABSENT:
 		return
+	# A return faces right, whether it comes back LIVE or DEAD, so a slot
+	# revived later never carries the facing it parked with.
+	player_facing[slot] = Vector2.RIGHT
 	var h := _parked_health[slot]
 	_parked_health[slot] = -1.0
 	if h > 0.0:
@@ -1439,6 +1450,8 @@ func _allocate_slots() -> void:
 	player_prev_pos = PackedVector2Array(); player_prev_pos.resize(n)
 	player_render_pos = PackedVector2Array(); player_render_pos.resize(n)
 	player_vel = PackedVector2Array(); player_vel.resize(n)
+	player_facing = PackedVector2Array(); player_facing.resize(n)
+	player_facing.fill(Vector2.RIGHT)
 	player_health = PackedFloat32Array(); player_health.resize(n)
 	player_iframe = PackedFloat32Array(); player_iframe.resize(n)
 	player_shield = PackedFloat32Array(); player_shield.resize(n)
@@ -2226,6 +2239,8 @@ func _step2_integrate(dt: float) -> void:
 		if slot_state[s] != SlotState.LIVE:
 			continue
 		var world_dir: Vector2 = inputs[s]
+		if world_dir.length_squared() > 0.0:
+			player_facing[s] = world_dir.normalized()
 		var pos_before := player_pos[s]
 		var p := pos_before
 		if world_dir.length_squared() > 0.0:
@@ -4966,8 +4981,9 @@ func _build_manifest() -> void:
 	f.append(["run", "@worms", SH | VARLEN, "", ["_worm_trail", "_worm_cursor"]])
 	f.append(["run", "_next_worm_id", SH, "", []])
 	for prop in ["slot_state", "player_pos", "player_prev_pos", "player_vel",
-			"player_health", "player_iframe", "player_shield", "_parked_health",
-			"_low_armed", "_zone_slow_player", "kills", "flips", "inputs", "_offer_seq"]:
+			"player_facing", "player_health", "player_iframe", "player_shield",
+			"_parked_health", "_low_armed", "_zone_slow_player", "kills", "flips",
+			"inputs", "_offer_seq"]:
 		f.append(["run", prop, SH, "", []])
 	f.append(["run", "@loadouts", SH, "", ["loadouts"]])
 	f.append(["run", "@offers", SH | VARLEN, "", ["_offer_open", "_offer_queue"]])
