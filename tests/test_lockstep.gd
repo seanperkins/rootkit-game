@@ -11,7 +11,8 @@ const CASES := ["live_readiness", "dead_records_ignored", "absent_records_empty"
 	"primed_ticks_ready", "immutable_resubmission", "wrap_recycles_cells",
 	"exclusive_ring_bound", "records_stored_verbatim",
 	"checksum_agreement_and_desync", "snapshot_window_merge",
-	"the_record_carries_an_aim_on_the_wire"]
+	"the_record_carries_an_aim_on_the_wire", "the_aim_rides_the_record",
+	"a_window_carries_aims"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lockstep ring\n")
@@ -26,6 +27,8 @@ func _initialize() -> void:
 	checksum_agreement_and_desync()
 	snapshot_window_merge()
 	the_record_carries_an_aim_on_the_wire()
+	the_aim_rides_the_record()
+	a_window_carries_aims()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -246,3 +249,49 @@ func the_record_carries_an_aim_on_the_wire() -> void:
 	_check_true("the relay decodes", not rl.is_empty())
 	_check("a relay record is seven fields with the aim last", rl["records"][0], [1, 5, Vector2.RIGHT, -1, -1, -1, aim])
 	finished["the_record_carries_an_aim_on_the_wire"] = true
+
+func _out5() -> Array:
+	var o := _out()
+	var a := PackedVector2Array(); a.resize(SessionRules.MAX_PLAYERS)
+	o.append(a)
+	return o
+
+## The aim rides the record: stored verbatim, delivered by take into a fifth
+## buffer, zero for a slot with no record, and invisible to a four-buffer take.
+func the_aim_rides_the_record() -> void:
+	var ls := Lockstep.new(2, 0)
+	ls.submit(0, 0, Vector2.RIGHT, -1, -1, -1, Vector2(0.0, -1.0))
+	ls.submit(1, 0, Vector2.LEFT, -1, -1, -1)
+	var o := _out5()
+	_check_true("take with five buffers", ls.take(0, o[0], o[1], o[2], o[3], o[4]))
+	_check("slot zero's aim is delivered", o[4][0], Vector2(0.0, -1.0))
+	_check("an omitted aim is zero", o[4][1], Vector2.ZERO)
+	ls.submit(0, 1, Vector2.RIGHT, -1, -1, -1, Vector2(1.0, 0.0))
+	ls.submit(1, 1, Vector2.LEFT, -1, -1, -1)
+	var four := _out()
+	_check_true("a four-buffer take still works", ls.take(1, four[0], four[1], four[2], four[3]))
+	finished["the_aim_rides_the_record"] = true
+
+## A recovery window carries aims and refuses one whose aims do not line up.
+func a_window_carries_aims() -> void:
+	var src := Lockstep.new(2, 2)
+	src.submit(0, 1, Vector2.RIGHT, -1, -1, -1, Vector2(0.0, 1.0))
+	src.submit(1, 1, Vector2.LEFT, -1, -1, -1, Vector2(-1.0, 0.0))
+	var snap: Dictionary = src.snapshot_window(0)
+	_check("the window names aims", snap.has("aims"), true)
+	var dst := Lockstep.new(2, 2)
+	_check_true("the window merges", dst.merge_window(snap, 0))
+	dst.submit(0, 0, Vector2.ZERO, -1, -1, -1)
+	dst.submit(1, 0, Vector2.ZERO, -1, -1, -1)
+	var o := _out5()
+	dst.take(0, o[0], o[1], o[2], o[3], o[4])
+	_check_true("tick one takes from the merged window", dst.take(1, o[0], o[1], o[2], o[3], o[4]))
+	_check("with slot zero's aim", o[4][0], Vector2(0.0, 1.0))
+	_check("and slot one's", o[4][1], Vector2(-1.0, 0.0))
+	var bad: Dictionary = src.snapshot_window(0).duplicate()
+	bad["aims"] = PackedVector2Array()
+	_check("a window with the wrong number of aims is refused", Lockstep.new(2, 2).merge_window(bad, 0), false)
+	var missing: Dictionary = src.snapshot_window(0).duplicate()
+	missing.erase("aims")
+	_check("a window with no aims is refused", Lockstep.new(2, 2).merge_window(missing, 0), false)
+	finished["a_window_carries_aims"] = true

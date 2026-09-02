@@ -33,6 +33,9 @@ var _players: int = 1
 # One ring cell per tick, holding all slots. Flat arrays indexed by
 # cell * MAX_PLAYERS + slot: allocation-free, cache-coherent.
 var _moves: PackedVector2Array
+## The aim beside each move: a unit facing intent, or zero for "follow the
+## movement". Stored verbatim like the move; the run sanitises on apply.
+var _aims: PackedVector2Array
 var _cards: PackedInt32Array
 var _targets: PackedInt32Array
 var _offers: PackedInt32Array
@@ -50,6 +53,7 @@ func _init(players: int = 1, delay_value: int = 0) -> void:
 	delay = maxi(0, delay_value)
 	var cells := RING * SessionRules.MAX_PLAYERS
 	_moves = PackedVector2Array(); _moves.resize(cells)
+	_aims = PackedVector2Array(); _aims.resize(cells)
 	_cards = PackedInt32Array(); _cards.resize(cells)
 	_targets = PackedInt32Array(); _targets.resize(cells)
 	_offers = PackedInt32Array(); _offers.resize(cells)
@@ -99,7 +103,7 @@ func _valid_slot(slot: int) -> bool:
 ## is dropped. The record's field VALUES are stored verbatim — sanitation is the
 ## application's job, not the ring's.
 func submit(slot: int, tick: int, move: Vector2, card: int, target: int,
-		offer: int) -> bool:
+		offer: int, aim: Vector2 = Vector2.ZERO) -> bool:
 	if not _valid_slot(slot):
 		return false
 	if (_present_mask & (1 << slot)) == 0:
@@ -115,6 +119,7 @@ func submit(slot: int, tick: int, move: Vector2, card: int, target: int,
 		return false                    # immutable: the record already stands
 	var idx := cell * SessionRules.MAX_PLAYERS + slot
 	_moves[idx] = move
+	_aims[idx] = aim
 	_cards[idx] = card
 	_targets[idx] = target
 	_offers[idx] = offer
@@ -160,8 +165,11 @@ func missing(tick: int) -> PackedInt32Array:
 ## false without touching executed if T is not the next tick or is not ready. The
 ## consumed cell is left tagged so the retained-report window and recovery can
 ## still read it; it recycles naturally when tick T + RING reuses it.
+## `out_aims` is optional: it is written only when it is at least MAX_PLAYERS
+## long, so a four-buffer caller that has no use for the aim is unchanged.
 func take(tick: int, out_moves: PackedVector2Array, out_cards: PackedInt32Array,
-		out_targets: PackedInt32Array, out_offers: PackedInt32Array) -> bool:
+		out_targets: PackedInt32Array, out_offers: PackedInt32Array,
+		out_aims: PackedVector2Array = PackedVector2Array()) -> bool:
 	if tick != executed:
 		return false
 	if not ready(tick):
@@ -169,6 +177,7 @@ func take(tick: int, out_moves: PackedVector2Array, out_cards: PackedInt32Array,
 	var cell := tick & _MASK
 	var tagged := _tick_tag[cell] == tick
 	var have := _have[cell] if tagged else 0
+	var want_aims := out_aims.size() >= SessionRules.MAX_PLAYERS
 	for slot in SessionRules.MAX_PLAYERS:
 		if tagged and (have & (1 << slot)) != 0:
 			var idx := cell * SessionRules.MAX_PLAYERS + slot
@@ -176,11 +185,15 @@ func take(tick: int, out_moves: PackedVector2Array, out_cards: PackedInt32Array,
 			out_cards[slot] = _cards[idx]
 			out_targets[slot] = _targets[idx]
 			out_offers[slot] = _offers[idx]
+			if want_aims:
+				out_aims[slot] = _aims[idx]
 		else:
 			out_moves[slot] = Vector2.ZERO
 			out_cards[slot] = -1
 			out_targets[slot] = -1
 			out_offers[slot] = -1
+			if want_aims:
+				out_aims[slot] = Vector2.ZERO
 	executed = tick + 1
 	return true
 
@@ -197,6 +210,7 @@ func prime(first: int, last: int) -> void:
 		for slot in SessionRules.MAX_PLAYERS:
 			var idx := cell * SessionRules.MAX_PLAYERS + slot
 			_moves[idx] = Vector2.ZERO
+			_aims[idx] = Vector2.ZERO
 			_cards[idx] = -1
 			_targets[idx] = -1
 			_offers[idx] = -1
@@ -224,6 +238,7 @@ func prime_slot(slot: int, first: int, last: int) -> void:
 			_have[cell] = 0
 		var idx := cell * SessionRules.MAX_PLAYERS + slot
 		_moves[idx] = Vector2.ZERO
+		_aims[idx] = Vector2.ZERO
 		_cards[idx] = -1
 		_targets[idx] = -1
 		_offers[idx] = -1
@@ -286,6 +301,7 @@ func snapshot_window(after_tick: int) -> Dictionary:
 	var ticks := PackedInt32Array()
 	var slots := PackedInt32Array()
 	var moves := PackedVector2Array()
+	var aims := PackedVector2Array()
 	var cards := PackedInt32Array()
 	var targets := PackedInt32Array()
 	var offers := PackedInt32Array()
@@ -300,11 +316,12 @@ func snapshot_window(after_tick: int) -> Dictionary:
 			ticks.append(t)
 			slots.append(slot)
 			moves.append(_moves[idx])
+			aims.append(_aims[idx])
 			cards.append(_cards[idx])
 			targets.append(_targets[idx])
 			offers.append(_offers[idx])
 	return {"after": after_tick, "delay": delay, "ticks": ticks, "slots": slots,
-		"moves": moves, "cards": cards, "targets": targets, "offers": offers}
+		"moves": moves, "aims": aims, "cards": cards, "targets": targets, "offers": offers}
 
 ## Merge a snapshot window into the ring WITHOUT overwriting any record already
 ## present — a cell whose record arrived on channel 0 while the snapshot was in
@@ -317,12 +334,14 @@ func merge_window(raw, after_tick: int) -> bool:
 	var raw_ticks = raw.get("ticks", null)
 	var raw_slots = raw.get("slots", null)
 	var raw_moves = raw.get("moves", null)
+	var raw_aims = raw.get("aims", null)
 	var raw_cards = raw.get("cards", null)
 	var raw_targets = raw.get("targets", null)
 	var raw_offers = raw.get("offers", null)
 	if typeof(raw_ticks) != TYPE_PACKED_INT32_ARRAY \
 			or typeof(raw_slots) != TYPE_PACKED_INT32_ARRAY \
 			or typeof(raw_moves) != TYPE_PACKED_VECTOR2_ARRAY \
+			or typeof(raw_aims) != TYPE_PACKED_VECTOR2_ARRAY \
 			or typeof(raw_cards) != TYPE_PACKED_INT32_ARRAY \
 			or typeof(raw_targets) != TYPE_PACKED_INT32_ARRAY \
 			or typeof(raw_offers) != TYPE_PACKED_INT32_ARRAY:
@@ -330,11 +349,12 @@ func merge_window(raw, after_tick: int) -> bool:
 	var ticks: PackedInt32Array = raw_ticks
 	var slots: PackedInt32Array = raw_slots
 	var moves: PackedVector2Array = raw_moves
+	var aims: PackedVector2Array = raw_aims
 	var cards: PackedInt32Array = raw_cards
 	var targets: PackedInt32Array = raw_targets
 	var offers: PackedInt32Array = raw_offers
 	var n: int = ticks.size()
-	if slots.size() != n or moves.size() != n or cards.size() != n \
+	if slots.size() != n or moves.size() != n or aims.size() != n or cards.size() != n \
 			or targets.size() != n or offers.size() != n:
 		return false
 	for k in n:
@@ -354,6 +374,7 @@ func merge_window(raw, after_tick: int) -> bool:
 			continue                    # keep the record already delivered
 		var idx := cell * SessionRules.MAX_PLAYERS + slot
 		_moves[idx] = moves[k]
+		_aims[idx] = aims[k]
 		_cards[idx] = cards[k]
 		_targets[idx] = targets[k]
 		_offers[idx] = offers[k]

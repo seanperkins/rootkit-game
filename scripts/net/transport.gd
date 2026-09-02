@@ -329,7 +329,7 @@ const HELD_MAX := Lockstep.RING * SessionRules.MAX_PLAYERS
 func _accept_record(slot: int, tick: int, move: Vector2, card: int, target: int,
 		offer: int, aim: Vector2 = Vector2.ZERO) -> void:
 	if session.lockstep != null:
-		session.lockstep.submit(slot, tick, move, card, target, offer)
+		session.lockstep.submit(slot, tick, move, card, target, offer, aim)
 	if boundary >= 0 and tick > boundary and _held.size() < HELD_MAX:
 		_held.append([slot, tick, move, card, target, offer, aim])
 
@@ -345,7 +345,7 @@ func release_boundary() -> void:
 	boundary = -1
 	if session.lockstep != null:
 		for r in _held:
-			session.lockstep.submit(int(r[0]), int(r[1]), r[2], int(r[3]), int(r[4]), int(r[5]))
+			session.lockstep.submit(int(r[0]), int(r[1]), r[2], int(r[3]), int(r[4]), int(r[5]), r[6])
 	_held.clear()
 
 func held_count() -> int:
