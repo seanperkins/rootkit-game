@@ -71,7 +71,7 @@ func _ui(r: Node2D) -> CanvasLayer:
 ## Open the level-up overlay the way a level-up does.
 func _offer(r: Node2D) -> CanvasLayer:
 	r.pending_levels += 1
-	r._offer_cards()
+	r._offer_cards(r.local_slot)
 	return _ui(r)
 
 ## physical_keycode, not keycode: ui.gd matches ACTIONS now, and the InputMap
@@ -351,7 +351,7 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
 		_row(r, &"packet", &"interval", &"")]
 	r._recompile()
-	r._block_payout()
+	r._block_payout(r.local_slot)
 	await process_frame
 
 	var buttons: Array = ui.fusion_buttons()
@@ -376,7 +376,7 @@ func escape_declines_a_fusion() -> void:
 		_row(r, &"packet", &"interval", &"")]
 	r._recompile()
 	var before: int = r.salvage
-	r._block_payout()
+	r._block_payout(r.local_slot)
 	await process_frame
 
 	_key(ui, KEY_ESCAPE)

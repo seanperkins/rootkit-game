@@ -137,7 +137,7 @@ func the_payout_prefers_a_fusion() -> void:
 	run.loadouts[run.local_slot].exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
 		_row(run, &"packet", &"interval", &"")]
 	run._recompile()
-	run._block_payout()
+	run._block_payout(run.local_slot)
 	_check("a matching row is offered as a fusion", _offered.size(), 1)
 	_check("and the run is paused for the choice", run.paused, true)
 
@@ -173,7 +173,7 @@ func the_payout_offers_fusion_without_a_listener() -> void:
 	run.loadouts[run.local_slot].exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
 		_row(run, &"packet", &"interval", &"")]
 	run._recompile()
-	run._block_payout()
+	run._block_payout(run.local_slot)
 	_check("the fusion enters simulation state with no listener",
 		run._pending_fusions.size(), 1)
 	_check("and the run pauses for it regardless", run.paused, true)

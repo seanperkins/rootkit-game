@@ -134,7 +134,7 @@ func _initialize() -> void:
 
 	# The gate itself: a real winning run, which is the load that actually exists.
 	print("")
-	print("  GATE (a full run, autopiloted):")
+	print("  GATE (a full run, autopiloted, four slots at the full leash):")
 	var live := await _real_run()
 	var p95 := _pct(live, 0.95)
 	print("    mean   %7.3f ms" % _mean(live))
@@ -157,14 +157,35 @@ func _initialize() -> void:
 		print("  Escape hatch: port grid.gd and population.gd to C#.")
 		quit(1)
 
-## Plays an actual subnet and returns its per-tick times. The stress block above
-## measures a ceiling; this measures the game. Review rightly killed the previous
-## gate for modelling a lighter tick than shipped — the correction is to measure
-## the real one, not to invent a heavier one.
-func _real_run() -> PackedFloat64Array:
+## The party the gate plays: four slots, three of them pinned at offsets from
+## the autopiloted slot zero that hold the LIVE bounding box at the full 4000
+## leash on both axes — the 7200 grid window, four flow fields rebuilding as
+## the party crosses cells, four builds firing. This is the worst case the
+## design leashes the party TO, so it is the load the budget is judged on.
+const PARTY_OFFSETS := [Vector2.ZERO, Vector2(4000.0, 0.0),
+	Vector2(0.0, 4000.0), Vector2(4000.0, 4000.0)]
+
+## A run configured with a four-slot session, this process at slot zero.
+func _party_run() -> Node2D:
+	var rows := []
+	for s in SessionRules.MAX_PLAYERS:
+		rows.append({"slot": s, "name": "p%d" % s,
+			"counters": SaveGame.session_counters()})
+	var desc := NetworkSession.validate_descriptor({
+		"protocol": SessionRules.PROTOCOL, "session_id": 1, "seed": 20260830,
+		"delay": 0, "choice_timeout": 0, "roster": rows})
 	var g: Node2D = load("res://scenes/run.tscn").instantiate()
+	g.configure_session(NetworkSession.create(desc, 0, NetworkSession.Role.HOST))
 	root.add_child(g)
 	await process_frame
+	return g
+
+## Plays an actual subnet with a four-slot party and returns its per-tick times.
+## The stress block above measures a ceiling; this measures the game. Review
+## rightly killed the previous gate for modelling a lighter tick than shipped —
+## the correction is to measure the real one, not to invent a heavier one.
+func _real_run() -> PackedFloat64Array:
+	var g: Node2D = await _party_run()
 	g.level_up_offered.connect(func(c): g.choose_card(c[0][0], Loadout.best_target(c[0][1])))
 	# Without a handler _block_payout refuses to offer a fusion at all (it
 	# would pause with nobody to unpause it); with one, an autopiloted run
@@ -174,6 +195,14 @@ func _real_run() -> PackedFloat64Array:
 	var t := 0
 	while t < 24000 and g.alive and not g.won:
 		g.input_override = _kite(g)
+		# Hold the party at the full leash for the whole run, and keep the pinned
+		# slots alive: a teammate that dies shrinks the window and lightens the
+		# tick, and a gate that gets easier as the fixture takes damage is not
+		# measuring the worst case it claims to.
+		for s in range(1, SessionRules.MAX_PLAYERS):
+			g.player_pos[s] = g.player_pos[0] + PARTY_OFFSETS[s]
+			g.player_health[s] = g._eff_integrity(s)
+			g.slot_state[s] = g.SlotState.LIVE
 		var t0 := Time.get_ticks_usec()
 		g._physics_process(DT)
 		g._update_renderers()      # see the stress loop — moved, not removed

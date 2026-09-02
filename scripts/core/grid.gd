@@ -131,8 +131,11 @@ func rebuild(pos_arrays: Array, counts: PackedInt32Array,
 		skips: Array = []) -> void:
 	var npops := counts.size()
 
-	for c in _ncells:
-		_cursor[c] = 0
+	# Native fill over the whole backing store, not a GDScript loop over the live
+	# cells: at the 50,625-cell party window the interpreted loop alone cost
+	# about a millisecond a tick, and fill() clears the same memory in a few
+	# microseconds. The prefix sum below still walks only the live cells.
+	_cursor.fill(0)
 
 	# Pass 1 — count per cell.
 	for p in npops:

@@ -44,6 +44,19 @@ static func hp_mult(subnet: int, elapsed: float) -> float:
 	var within := 1.0 + HP_OVER_SUBNET * clampf(elapsed / SUBNET_SECONDS, 0.0, 1.0)
 	return pow(HP_PER_SUBNET, maxi(subnet, 1) - 1) * within
 
+## A THIRD axis for co-op: extra integrity per extra player. Spawn RATE scales
+## linearly with the party (four players face four times the bodies), but four
+## builds also deal roughly four times the damage, so rate alone leaves time-to-
+## kill per enemy unchanged and the party one-shots everything together. Half
+## an enemy's integrity per extra player keeps a full party's time-to-kill
+## around 2.5x solo's — pressure that reads as a harder fight rather than the
+## same fight with more targets. Reads the IMMUTABLE roster size: a death or a
+## park never lowers it, so a party cannot shed difficulty by losing a member.
+const HP_PER_EXTRA_PLAYER := 0.50
+
+static func party_hp_mult(players: int) -> float:
+	return 1.0 + HP_PER_EXTRA_PLAYER * float(maxi(players, 1) - 1)
+
 ## Corruption thresholds step per SUBNET only, never with elapsed. They are held
 ## per TYPE in one array shared by every live enemy, so a continuous ramp would
 ## retroactively move the goalposts on an enemy already half-corrupted.
@@ -52,6 +65,9 @@ static func threshold_mult(subnet: int) -> float:
 
 var waves: Array = []
 var elapsed: float = 0.0
+## Spawn-rate multiplier: the party size, set once by the run from the immutable
+## roster. Four players face four times the bodies.
+var rate_mult: float = 1.0
 var _milli: Array = []
 var rng := RandomNumberGenerator.new()
 
@@ -149,7 +165,7 @@ func step(dt: float, origin: Vector2, radius: float) -> Array:
 		# rounded per-tick increment: rounding each tick made the count depend on
 		# the tick rate (1382 spawns at 60 Hz against 1383 at 10 Hz).
 		var active: float = minf(elapsed, w.t1) - w.t0
-		var due := int(floor(w.rate * active))
+		var due := int(floor(w.rate * rate_mult * active))
 		while _milli[i] < due:
 			_milli[i] += 1
 			out.append([w.type_index, _place(w.formation, origin, radius)])

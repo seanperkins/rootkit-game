@@ -98,7 +98,7 @@ func a_joypad_can_drive_the_overlay() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
 	r.pending_levels += 1
-	r._offer_cards()
+	r._offer_cards(r.local_slot)
 	await process_frame
 	_check("the overlay is up", ui._overlay.visible, true)
 	var before: String = ui.highlighted().text
@@ -135,7 +135,7 @@ func a_card_decline_does_not_release_a_player_pause() -> void:
 	var r := await _fresh_run()
 	r.user_paused = true
 	r.pending_levels += 1
-	r._offer_cards()
+	r._offer_cards(r.local_slot)
 	_check("the offer set the modal flag", r.paused, true)
 	r.decline_card()
 	_check("the decline cleared the modal flag", r.paused, false)
@@ -150,7 +150,7 @@ func cancel_routes_by_screen() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
 	r.pending_levels += 1
-	r._offer_cards()
+	r._offer_cards(r.local_slot)
 	await process_frame
 
 	ui._toggle_recipes()

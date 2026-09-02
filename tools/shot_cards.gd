@@ -39,7 +39,7 @@ func _process(_d: float) -> bool:
 			if c is CanvasLayer and c.has_method("bind"):
 				ui = c
 		run.pending_levels += 1
-		run._offer_cards()
+		run._offer_cards(run.local_slot)
 	if frames == 40:
 		root.get_texture().get_image().save_png("/tmp/cards_1_start.png")
 		_act("move_right")
