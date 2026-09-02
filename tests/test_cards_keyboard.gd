@@ -355,8 +355,8 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 	# TWO rows, both maxed. can_fuse refuses zero_day (ON_KILL) unless an
 	# INTERVAL trigger survives elsewhere, and refuses any row not at max rank —
 	# either way this would assert against an empty screen.
-	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
-		_row(r, &"packet", &"interval", &"")]
+	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"packet", &"on_kill", &"bitmask")),
+		_row(r, &"broadcast", &"interval", &"")]
 	r._recompile()
 	r._block_payout(r.local_slot)
 	await process_frame
@@ -383,8 +383,8 @@ func the_fusion_screen_takes_the_keyboard() -> void:
 func escape_declines_a_fusion() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
-	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"snipe", &"on_kill", &"bitmask")),
-		_row(r, &"packet", &"interval", &"")]
+	r.loadouts[r.local_slot].exploits = [_maxed(_row(r, &"packet", &"on_kill", &"bitmask")),
+		_row(r, &"broadcast", &"interval", &"")]
 	r._recompile()
 	var before: int = r.salvage
 	r._block_payout(r.local_slot)

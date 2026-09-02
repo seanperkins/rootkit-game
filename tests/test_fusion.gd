@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Fusion: the fused head, the recipes, and the mechanics they run on.
 
-const EXPECTED_CHECKS := 60
+const EXPECTED_CHECKS := 61
 
 var failures := 0
 var checks := 0
@@ -30,6 +30,7 @@ func _initialize() -> void:
 	a_fused_module_is_drawable_only_once_held()
 	fusion_demands_three_finished_modules()
 	fusing_is_never_a_downgrade()
+	near_miss_walks_table_order()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -263,23 +264,30 @@ func the_recipes_are_present_and_valid() -> void:
 	var vs := {}; var ts := {}; var ps := {}
 	for r in rs:
 		vs[r.vector_id] = true; ts[r.trigger_id] = true; ps[r.payload_id] = true
-	_check("every trigger has a fusion path", ts.size(), 7)
-	_check("every payload has one too", ps.size(), 14)
-	_check("every vector has one too", vs.size(), 14)
+	var want_v := {}; var want_t := {}; var want_p := {}
+	for m in ModuleTable.all():
+		match m.slot:
+			Module.Slot.VECTOR: want_v[m.id] = true
+			Module.Slot.TRIGGER: want_t[m.id] = true
+			Module.Slot.PAYLOAD: want_p[m.id] = true
+	_check("every trigger has a fusion path", ts.keys().size() == want_t.size() and ts.keys().all(func(k): return want_t.has(k)), true)
+	_check("every payload has one too", ps.keys().size() == want_p.size() and ps.keys().all(func(k): return want_p.has(k)), true)
+	_check("every vector has one too", vs.keys().size() == want_v.size() and vs.keys().all(func(k): return want_v.has(k)), true)
 
 func an_exact_triple_matches_and_one_module_off_does_not() -> void:
 	var ex := Exploit.new()
-	ex.place(T[&"snipe"]); ex.place(T[&"on_kill"]); ex.place(T[&"bitmask"])
+	ex.place(T[&"packet"]); ex.place(T[&"on_kill"]); ex.place(T[&"bitmask"])
 	var r: RecipeTable.Recipe = RecipeTable.match_exploit(ex)
 	_check("the triple matches", r != null and r.fused.id == &"zero_day", true)
 
+	# No recipe names packet + on_kill + overclock.
 	var off := Exploit.new()
-	off.place(T[&"packet"]); off.place(T[&"on_kill"]); off.place(T[&"bitmask"])
+	off.place(T[&"packet"]); off.place(T[&"on_kill"]); off.place(T[&"overclock"])
 	_check("one module off matches nothing",
 		RecipeTable.match_exploit(off), null)
 
 	var partial := Exploit.new()
-	partial.place(T[&"snipe"]); partial.place(T[&"on_kill"])
+	partial.place(T[&"packet"]); partial.place(T[&"on_kill"])
 	_check("and an incomplete row matches nothing",
 		RecipeTable.match_exploit(partial), null)
 
@@ -289,8 +297,8 @@ func an_exact_triple_matches_and_one_module_off_does_not() -> void:
 ## interval cannot fuse into something that fires on a condition.
 func fusing_frees_the_ids_and_keeps_the_metronome() -> void:
 	var lo := Loadout.new()
-	lo.exploits = [_maxed(_mk(&"snipe", &"on_kill", [&"bitmask"])),
-		_mk(&"packet", &"interval", [])]
+	lo.exploits = [_maxed(_mk(&"packet", &"on_kill", [&"bitmask"])),
+		_mk(&"broadcast", &"interval", [])]
 
 	var matches: Array = lo.matched_recipes()
 	_check("the row matches one recipe", matches.size(), 1)
@@ -308,8 +316,13 @@ func fusing_frees_the_ids_and_keeps_the_metronome() -> void:
 	_check("and its payload slot is open", lo.exploits[0].at(2), null)
 	# Placeable SOMEWHERE — on_kill's home is a not-yet-created row, since row 1
 	# holds the last interval and is protected from replacement.
-	_check("snipe is placeable again",
-		lo.legal_targets(T[&"snipe"]).is_empty(), false)
+	# Into an EMPTY slot, not merely somewhere: with broadcast on the keep row
+	# a rank-up target would be a vacuous pass.
+	var empty_home := false
+	for tgt in lo.legal_targets(T[&"packet"]):
+		if tgt.action == Loadout.Rule.EMPTY_SLOT:
+			empty_home = true
+	_check("packet is placeable again, into an empty slot", empty_home, true)
 	_check("on_kill is placeable again",
 		lo.legal_targets(T[&"on_kill"]).is_empty(), false)
 	_check("bitmask is placeable again",
@@ -419,3 +432,10 @@ func fusing_is_never_a_downgrade() -> void:
 	# And ranking it is worth doing: the payoff is the five ranks, not the fuse.
 	_check("a maxed fused module beats its triple several times over",
 		best_gain > 3.0, true)
+
+## near_miss returns the FIRST single-miss recipe in table order, so the
+## table's order is load-bearing; pin it.
+func near_miss_walks_table_order() -> void:
+	var ex := Exploit.new()
+	ex.place(T[&"broadcast"]); ex.place(T[&"interval"])
+	_check("broadcast + interval misses pulse_train first", RecipeTable.near_miss(ex), &"overclock")

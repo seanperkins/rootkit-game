@@ -211,13 +211,13 @@ func fusion_rides_the_same_record() -> void:
 	var r: Node2D = await _run(1)
 	var mods := ModuleTable.by_id()
 	var ex := Exploit.new()
-	ex.place(mods[&"snipe"]); ex.place(mods[&"on_kill"]); ex.place(mods[&"bitmask"])
+	ex.place(mods[&"packet"]); ex.place(mods[&"on_kill"]); ex.place(mods[&"bitmask"])
 	for em in ex.equipped():
 		em.rank = em.module.max_rank          # fusion needs all three maxed
 	# A second row keeps an INTERVAL trigger in the build: fusing the only one
 	# away is refused, exactly as the loadout rules say.
 	var keep := Exploit.new()
-	keep.place(mods[&"packet"]); keep.place(mods[&"interval"])
+	keep.place(mods[&"broadcast"]); keep.place(mods[&"interval"])
 	r.loadouts[0].exploits = [ex, keep]
 	r._recompile()
 	r._block_payout(0)
