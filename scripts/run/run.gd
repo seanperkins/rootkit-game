@@ -496,6 +496,8 @@ var _trigger_fires := {}
 ## as a MAX across exploits, never a sum, because the same module is legal in
 ## several slots and summing would buy magnitude at no uptime cost.
 var _ward_left: PackedFloat32Array
+## Seconds until this exploit may grant its shield pool again; 0 means now.
+var _shield_left: PackedFloat32Array
 var _fire_cd: PackedFloat32Array
 ## Transient shot visuals. BROADCAST, BEAM and CHAIN resolve straight through
 ## the hit queue and drew nothing at all — you saw enemies die with no sign of
@@ -1354,6 +1356,7 @@ func _ready() -> void:
 	_fire_acc = PackedFloat32Array(); _fire_acc.resize(gids)
 	_fire_cd = PackedFloat32Array(); _fire_cd.resize(gids)
 	_ward_left = PackedFloat32Array(); _ward_left.resize(gids)
+	_shield_left = PackedFloat32Array(); _shield_left.resize(gids)
 	_proj_owner = PackedInt32Array(); _proj_owner.resize(MAX_PROJECTILES)
 	_proj_pierce = PackedInt32Array(); _proj_pierce.resize(MAX_PROJECTILES)
 	_proj_last = PackedInt32Array(); _proj_last.resize(MAX_PROJECTILES)
@@ -2284,6 +2287,9 @@ func _step2_integrate(dt: float) -> void:
 	for wi in _ward_left.size():
 		if _ward_left[wi] > 0.0 and _is_live(_owner_slot(wi)):
 			_ward_left[wi] -= dt
+	for si in _shield_left.size():
+		if _shield_left[si] > 0.0 and _is_live(_owner_slot(si)):
+			_shield_left[si] -= dt
 
 	# Heads and ordinary enemies move first so the trail is current before the
 	# segments sample it this same tick.
@@ -2635,10 +2641,13 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	# fire along facing whether or not anything is there.)
 	if r.ward_duration > 0.0:
 		_ward_left[ei] = r.ward_duration
-	# A shielding exploit grants its pool on fire, capped rather than stacked:
-	# shield folds by MAX for the same reason.
-	if r.shield > 0.0:
+	# A shielding exploit grants its pool on fire, capped rather than stacked
+	# (shield folds by MAX). A pool with a rearm grants only when the rearm has
+	# elapsed: it keeps a payload's shield off the host vector's cadence.
+	if r.shield > 0.0 and (r.shield_rearm <= 0.0 or _shield_left[ei] <= 0.0):
 		player_shield[owner] = maxf(player_shield[owner], r.shield)
+		if r.shield_rearm > 0.0:
+			_shield_left[ei] = r.shield_rearm
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
 			_fx_ring.append([at, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
@@ -5035,7 +5044,7 @@ func _build_manifest() -> void:
 	f.append(["run", "@offers", SH | VARLEN, "", ["_offer_open", "_offer_queue"]])
 	f.append(["run", "@banked", SH, "", ["_banked"]])
 	f.append(["run", "@trigger_fires", SH | VARLEN, "", ["_trigger_fires"]])
-	for prop in ["_fire_acc", "_fire_cd", "_ward_left"]:
+	for prop in ["_fire_acc", "_fire_cd", "_ward_left", "_shield_left"]:
 		f.append(["run", prop, SH, "", []])
 	# --- run scalars -----------------------------------------------------------
 	for prop in ["tick", "level", "xp", "xp_needed", "pending_levels", "paused",

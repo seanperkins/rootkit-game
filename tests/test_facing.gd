@@ -14,7 +14,9 @@ const CASES := ["facing_follows_the_applied_record_and_holds",
 	"packet_flies_along_facing", "a_homing_packet_still_binds",
 	"beam_hits_its_capsule_only", "spike_hits_its_wedge_only",
 	"beam_radius_floor_holds_in_the_tables",
-	"mines_drop_behind_on_open_ground", "mines_avoid_a_wall"]
+	"mines_drop_behind_on_open_ground", "mines_avoid_a_wall",
+	"the_checksum_payload_rearms_not_refires",
+	"redundancy_grants_every_fire_unless_it_carries_checksum"]
 
 func _initialize() -> void:
 	print("ROOTKIT — facing\n")
@@ -31,6 +33,8 @@ func _initialize() -> void:
 	beam_radius_floor_holds_in_the_tables()
 	await mines_drop_behind_on_open_ground()
 	await mines_avoid_a_wall()
+	await the_checksum_payload_rearms_not_refires()
+	await redundancy_grants_every_fire_unless_it_carries_checksum()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -270,3 +274,47 @@ func mines_avoid_a_wall() -> void:
 		_check("every mine lands on open ground", r.terrain.is_solid(q), false)
 	r.free(); await process_frame
 	finished["mines_avoid_a_wall"] = true
+
+func _fire_n(r: Node2D, gid: int, n: int) -> void:
+	for _i in n:
+		r.queue.begin_tick()
+		r._emit_vector(gid, r.resolved[gid])
+
+func the_checksum_payload_rearms_not_refires() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"packet", [&"checksum"])
+	_fire_n(r, gid, 1)
+	_check("the first fire grants the pool", r.player_shield[r.local_slot], 26.0)
+	r.player_shield[r.local_slot] = 5.0          # spent under damage
+	_fire_n(r, gid, 3)
+	_check("further fires inside the rearm grant nothing", r.player_shield[r.local_slot], 5.0)
+	r._shield_left[gid] = 0.0                    # the rearm elapsed
+	_fire_n(r, gid, 1)
+	_check("after the rearm it refills", r.player_shield[r.local_slot], 26.0)
+	r.loadouts[r.local_slot].exploits[0].payloads[0].rank = 5
+	r._recompile()
+	_check("rank scales the pool", r.resolved[gid].shield, 130.0)
+	_check("but not the rearm", r.resolved[gid].shield_rearm, 2.6)
+	r.free(); await process_frame
+	finished["the_checksum_payload_rearms_not_refires"] = true
+
+func redundancy_grants_every_fire_unless_it_carries_checksum() -> void:
+	var r := await _fresh_run()
+	var rec: RecipeTable.Recipe = null
+	for x in RecipeTable.all():
+		if x.fused.id == &"redundancy":
+			rec = x
+	var gid := _with(r, &"", [], rec.fused)
+	_fire_n(r, gid, 1)
+	r.player_shield[r.local_slot] = 5.0
+	_fire_n(r, gid, 1)
+	_check("a bare redundancy row refills on every fire", r.player_shield[r.local_slot], 60.0)
+	var t := ModuleTable.by_id()
+	r.loadouts[r.local_slot].exploits[0].place(t[&"checksum"])
+	r._recompile()
+	_fire_n(r, gid, 1)
+	r.player_shield[r.local_slot] = 5.0
+	_fire_n(r, gid, 1)
+	_check("with checksum on it, the row refills on the rearm instead", r.player_shield[r.local_slot], 5.0)
+	r.free(); await process_frame
+	finished["redundancy_grants_every_fire_unless_it_carries_checksum"] = true
