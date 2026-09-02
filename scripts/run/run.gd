@@ -4449,10 +4449,11 @@ func _build_environment() -> void:
 	add_child(props)
 	props.set("target", self)
 
-## Only enemies need per-frame colour (the corruption lerp) and per-frame glyph
-## (type varies by slot). Projectiles, shards and botnet nodes are one colour and
-## one glyph for the life of the pool, and MultiMesh instance buffers persist —
-## so those are written once here instead of ~4000 setter calls every frame.
+## Only enemies and projectiles need per-frame colour and glyph (the
+## corruption lerp; a slot that is a packet, a mine or an orbiter). Shards and
+## botnet nodes are one colour and one glyph for the life of the pool, and
+## MultiMesh instance buffers persist — so those are written once here instead
+## of ~4000 setter calls every frame.
 func _prime_constant_instances(node: MultiMeshInstance2D, glyph: float, c: Color) -> void:
 	var mm := node.multimesh
 	for i in mm.instance_count:
@@ -4469,7 +4470,6 @@ func _build_renderers() -> void:
 	_mm_botnet = _make_mm(26.0, 2)
 	_mm_botnet.multimesh.instance_count = MAX_BOTNET
 
-	_prime_constant_instances(_mm_proj, 4.0, Color(1.1, 1.7, 1.4))
 	_prime_constant_instances(_mm_shard, 5.0, Color(0.5, 1.3, 1.7))
 	_prime_constant_instances(_mm_botnet, 3.0, Color(1.6, 0.5, 1.6))
 
@@ -4521,9 +4521,25 @@ func _update_renderers() -> void:
 		mm.set_instance_custom_data(n, Color(float(t.glyph), 0.0, 0.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
+	# Glyph and colour per frame: spawn happens inside the tick, which may not
+	# touch a renderer node, and slots recycle, so a once-only stamp would need
+	# per-instance memory. Bounded by MAX_PROJECTILES. A mine pulses, because
+	# a mine you forgot you placed is a mine that kills you when the collapse
+	# pushes you back over it.
+	var beat := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.006)
 	for i in projectiles.count:
 		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
 			to_iso(_rp(projectiles, i))))
+		var glyph := 14.0
+		var col := Color(1.1, 1.7, 1.4)
+		if _mine_left[i] > 0.0:
+			glyph = 4.0
+			col = Color(2.0, 1.1, 0.4).lerp(Color(2.2, 1.3, 0.5), beat)
+		elif _orbit_left[i] > 0.0:
+			glyph = 15.0
+			col = Color(0.7, 2.0, 1.5)
+		mm.set_instance_custom_data(i, Color(glyph, 0.0, 0.0, 0.0))
+		mm.set_instance_color(i, col)
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
 	for i in shards.count:
@@ -4986,8 +5002,8 @@ func _draw() -> void:
 	# steer.
 	#
 	# A disc at PLAYER_RADIUS, so what you see is exactly what collides. The
-	# arrow this replaced pointed somewhere — and the movement has no facing, so
-	# the direction it pointed was never the direction anything happened in.
+	# facing tick on the rim shows where forward weapons fire — facing follows
+	# the last non-zero movement.
 	# Every LIVE slot is drawn, a teammate in its own hue under a name tag; an
 	# ABSENT slot sits dimmed where it parked; a DEAD one is gone.
 	var pf := ThemeDB.fallback_font
@@ -4998,6 +5014,9 @@ func _draw() -> void:
 		var a: float = e[2]
 		draw_circle(o, PLAYER_RADIUS, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22, a))
 		draw_arc(o, PLAYER_RADIUS, 0.0, TAU, 28, Color(c.r, c.g, c.b, a), 2.0)
+		var tip := to_iso(player_render_pos[ps] + player_facing[ps] * (PLAYER_RADIUS + 9.0))
+		var rim := to_iso(player_render_pos[ps] + player_facing[ps] * PLAYER_RADIUS)
+		draw_line(rim, tip, Color(c.r, c.g, c.b, a), 2.0)
 		var tag: String = e[3]
 		if tag != "":
 			draw_string(pf, o + Vector2(0.0, -PLAYER_RADIUS - 6.0), tag,

@@ -39,7 +39,7 @@ void fragment() {
 		float h = max(abs(p.x) * 0.866 + abs(p.y) * 0.5, abs(p.y));
 		a = max(ring(h, 0.40, 0.09), ring(h, 0.22, 0.07));
 	} else if (g == 4) {
-		// packet — a plus
+		// mine — a plus (the projectile pool's mines; packets are g == 14)
 		float v = (1.0 - smoothstep(0.10, 0.19, abs(p.x))) * step(abs(p.y), 0.42);
 		float hh = (1.0 - smoothstep(0.10, 0.19, abs(p.y))) * step(abs(p.x), 0.42);
 		a = max(v, hh);
@@ -63,7 +63,7 @@ void fragment() {
 		float ang = atan(p.y, p.x) / 6.2832 + 0.5;
 		a = br * step(0.34, abs(fract(ang * 4.0) - 0.5) * 2.0);
 	} else if (g == 9) {
-		// probe — a boxed sight, distinct from the packet plus
+		// probe — a boxed sight, distinct from the mine plus and the packet dot
 		a = max(ring(max(abs(p.x), abs(p.y)), 0.31, 0.09),
 			1.0 - smoothstep(0.05, 0.11, length(p)));
 	} else if (g == 10) {
@@ -82,6 +82,12 @@ void fragment() {
 		float ang2 = atan(p.y, p.x);
 		float spikes = 0.30 + 0.10 * cos(ang2 * 8.0);
 		a = ring(length(p), spikes, 0.11);
+	} else if (g == 14) {
+		// packet — a period
+		a = 1.0 - smoothstep(0.14, 0.22, length(p));
+	} else if (g == 15) {
+		// orbiter — a small ring
+		a = ring(length(p), 0.26, 0.09);
 	} else {
 		// data shard — solid pip
 		a = 1.0 - smoothstep(0.22, 0.34, length(p));
