@@ -159,12 +159,13 @@ func _session_id() -> int:
 
 ## This peer's own record for a tick. A client sends it to the host; the host
 ## stages it for its next relay and needs no packet.
-func send_input(tick: int, move: Vector2, card: int, target: int, offer: int) -> void:
+func send_input(tick: int, move: Vector2, card: int, target: int, offer: int,
+		aim: Vector2 = Vector2.ZERO) -> void:
 	if is_host:
-		_relay_records.append([session.local_slot, tick, move, card, target, offer])
+		_relay_records.append([session.local_slot, tick, move, card, target, offer, aim])
 		return
 	_put(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
-		Protocol.encode_input(_session_id(), tick, move, card, target, offer))
+		Protocol.encode_input(_session_id(), tick, move, card, target, offer, aim))
 
 ## This peer's periodic checksum. Unreliable: a lost one is replaced by the
 ## next, and a stale one is refused by the retained window on arrival. The host
@@ -261,10 +262,10 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 				_refuse(from)
 				return
 			var slot := int(slot_of_peer[from])
-			_accept_record(slot, tick, rec["move"], rec["card"], rec["target"], rec["offer"])
+			_accept_record(slot, tick, rec["move"], rec["card"], rec["target"], rec["offer"], rec["aim"])
 			if is_host:
 				_relay_records.append([slot, tick, rec["move"], rec["card"],
-					rec["target"], rec["offer"]])
+					rec["target"], rec["offer"], rec["aim"]])
 		Protocol.Message.RELAY:
 			if channel != CH_INPUT or is_host or from != HOST_PEER:
 				_refuse(from)
@@ -276,7 +277,7 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 			relays_received += 1
 			for r in relay["records"]:
 				if Protocol.valid_tick(Protocol.Message.INPUT, int(r[1]), ctx):
-					_accept_record(int(r[0]), int(r[1]), r[2], int(r[3]), int(r[4]), int(r[5]))
+					_accept_record(int(r[0]), int(r[1]), r[2], int(r[3]), int(r[4]), int(r[5]), r[6])
 			for c in relay["checksums"]:
 				if Protocol.valid_tick(Protocol.Message.CHECKSUM, int(c[1]), ctx) \
 						and session.lockstep != null:
@@ -326,11 +327,11 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 const HELD_MAX := Lockstep.RING * SessionRules.MAX_PLAYERS
 
 func _accept_record(slot: int, tick: int, move: Vector2, card: int, target: int,
-		offer: int) -> void:
+		offer: int, aim: Vector2 = Vector2.ZERO) -> void:
 	if session.lockstep != null:
 		session.lockstep.submit(slot, tick, move, card, target, offer)
 	if boundary >= 0 and tick > boundary and _held.size() < HELD_MAX:
-		_held.append([slot, tick, move, card, target, offer])
+		_held.append([slot, tick, move, card, target, offer, aim])
 
 ## Announce a restore boundary: records past it are retained as they arrive.
 func arm_boundary(tick: int) -> void:

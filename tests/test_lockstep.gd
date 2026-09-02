@@ -10,7 +10,8 @@ var finished := {}
 const CASES := ["live_readiness", "dead_records_ignored", "absent_records_empty",
 	"primed_ticks_ready", "immutable_resubmission", "wrap_recycles_cells",
 	"exclusive_ring_bound", "records_stored_verbatim",
-	"checksum_agreement_and_desync", "snapshot_window_merge"]
+	"checksum_agreement_and_desync", "snapshot_window_merge",
+	"the_record_carries_an_aim_on_the_wire"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lockstep ring\n")
@@ -24,6 +25,7 @@ func _initialize() -> void:
 	records_stored_verbatim()
 	checksum_agreement_and_desync()
 	snapshot_window_merge()
+	the_record_carries_an_aim_on_the_wire()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -223,3 +225,24 @@ func snapshot_window_merge() -> void:
 
 	_check("a malformed window is refused", dst.merge_window("nope", 0), false)
 	finished["snapshot_window_merge"] = true
+
+## The wire record carries the aim beside the move, in both the INPUT body
+## and a RELAY record, verbatim.
+func the_record_carries_an_aim_on_the_wire() -> void:
+	var ctx := {"session_id": 77}
+	var aim := Vector2(0.6, -0.8)
+	var bytes := Protocol.encode_input(77, 5, Vector2.ONE, 1, 2, 3, aim)
+	var env := Protocol.decode_envelope(bytes, ctx)
+	_check_true("the envelope decodes", not env.is_empty())
+	var rec: Dictionary = Protocol.decode_input(env["body"])
+	_check("the body is INPUT_BODY long", (env["body"] as PackedByteArray).size(), Protocol.INPUT_BODY)
+	_check("the aim comes back verbatim", rec.get("aim", null), aim)
+	_check("and so does the move", rec.get("move", null), Vector2.ONE)
+	var plain := Protocol.encode_input(77, 5, Vector2.ONE, 1, 2, 3)
+	var plain_rec: Dictionary = Protocol.decode_input(Protocol.decode_envelope(plain, ctx)["body"])
+	_check("an omitted aim is zero", plain_rec.get("aim", null), Vector2.ZERO)
+	var relay := Protocol.encode_relay(77, 6, [[1, 5, Vector2.RIGHT, -1, -1, -1, aim]], [])
+	var rl: Dictionary = Protocol.decode_relay(Protocol.decode_envelope(relay, ctx)["body"])
+	_check_true("the relay decodes", not rl.is_empty())
+	_check("a relay record is seven fields with the aim last", rl["records"][0], [1, 5, Vector2.RIGHT, -1, -1, -1, aim])
+	finished["the_record_carries_an_aim_on_the_wire"] = true

@@ -54,7 +54,7 @@ only; DEAD records are stored and ignored; ABSENT slots are not stored.
 
 14-byte little-endian envelope: `u8 proto, u8 kind, i32 session, i32 tick,
 i32 body_len`. Body per kind: INPUT 20 bytes (2×f32 + 3×i32); RELAY `u8 n`
-records of 25 bytes + `u8 m` checksums of 13; CHECKSUM i64; SNAPSHOT raw
+records of 33 bytes + `u8 m` checksums of 13; CHECKSUM i64; SNAPSHOT raw
 bytes; control kinds `var_to_bytes` of a primitive Dictionary, decoded with
 `bytes_to_var` (never `_with_objects`), bounded by `CONTROL_MAX`,
 shape-checked per kind — unknown fields dropped, bad values refuse the body.

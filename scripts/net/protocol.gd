@@ -24,8 +24,8 @@ enum Message { HELLO, WELCOME, START, INPUT, RELAY, CHECKSUM, RESYNC, SNAPSHOT,
 	ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END }
 
 const ENVELOPE := 14
-const INPUT_BODY := 20
-const RELAY_RECORD := 25          # slot u8 + tick i32 + INPUT_BODY
+const INPUT_BODY := 28            # move f32 x2, aim f32 x2, card, target, offer i32
+const RELAY_RECORD := 33          # slot u8 + tick i32 + INPUT_BODY
 const RELAY_CHECKSUM := 13        # slot u8 + tick i32 + hash i64
 const RELAY_MAX_RECORDS := 255
 
@@ -99,16 +99,18 @@ static func valid_tick(kind: int, tick: int, context: Dictionary) -> bool:
 # ---------------------------------------------------------------- input ---
 
 static func encode_input(session_id: int, tick: int, move: Vector2, card: int,
-		target: int, offer: int) -> PackedByteArray:
+		target: int, offer: int, aim: Vector2 = Vector2.ZERO) -> PackedByteArray:
 	var b := StreamPeerBuffer.new()
 	b.big_endian = false
-	_put_record(b, move, card, target, offer)
+	_put_record(b, move, card, target, offer, aim)
 	return encode(Message.INPUT, session_id, tick, b.data_array)
 
 static func _put_record(b: StreamPeerBuffer, move: Vector2, card: int, target: int,
-		offer: int) -> void:
+		offer: int, aim: Vector2) -> void:
 	b.put_float(move.x)
 	b.put_float(move.y)
+	b.put_float(aim.x)
+	b.put_float(aim.y)
 	b.put_32(card)
 	b.put_32(target)
 	b.put_32(offer)
@@ -116,8 +118,10 @@ static func _put_record(b: StreamPeerBuffer, move: Vector2, card: int, target: i
 static func _get_record(b: StreamPeerBuffer) -> Dictionary:
 	var x := b.get_float()
 	var y := b.get_float()
-	return {"move": Vector2(x, y), "card": b.get_32(), "target": b.get_32(),
-		"offer": b.get_32()}
+	var ax := b.get_float()
+	var ay := b.get_float()
+	return {"move": Vector2(x, y), "aim": Vector2(ax, ay), "card": b.get_32(),
+		"target": b.get_32(), "offer": b.get_32()}
 
 ## The record in an INPUT body, or {} for a wrong-sized body. Field VALUES are
 ## returned verbatim — sanitation is the run's job at application.
@@ -131,7 +135,7 @@ static func decode_input(body: PackedByteArray) -> Dictionary:
 
 # ---------------------------------------------------------------- relay ---
 
-## records: Array of [slot, tick, move, card, target, offer];
+## records: Array of [slot, tick, move, card, target, offer, aim];
 ## checksums: Array of [slot, tick, hash].
 static func encode_relay(session_id: int, tick: int, records: Array,
 		checksums: Array) -> PackedByteArray:
@@ -143,7 +147,7 @@ static func encode_relay(session_id: int, tick: int, records: Array,
 		var r: Array = records[k]
 		b.put_u8(int(r[0]))
 		b.put_32(int(r[1]))
-		_put_record(b, r[2], int(r[3]), int(r[4]), int(r[5]))
+		_put_record(b, r[2], int(r[3]), int(r[4]), int(r[5]), r[6] if r.size() > 6 else Vector2.ZERO)
 	var m := mini(checksums.size(), RELAY_MAX_RECORDS)
 	b.put_u8(m)
 	for k in m:
@@ -171,7 +175,7 @@ static func decode_relay(body: PackedByteArray) -> Dictionary:
 		var rec := _get_record(b)
 		if slot >= SessionRules.MAX_PLAYERS:
 			return {}
-		records.append([slot, tick, rec["move"], rec["card"], rec["target"], rec["offer"]])
+		records.append([slot, tick, rec["move"], rec["card"], rec["target"], rec["offer"], rec["aim"]])
 	var m := b.get_u8()
 	if body.size() != 1 + n * RELAY_RECORD + 1 + m * RELAY_CHECKSUM:
 		return {}
