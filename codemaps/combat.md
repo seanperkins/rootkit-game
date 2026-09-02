@@ -108,6 +108,7 @@ enum Kind { WALL, HAZARD, SLOW, CORRUPTION }
 CELL 32.0   TILE CELL*3   MARGIN TILE*4
 CORRIDOR_LENGTH TILE*12   CORRIDOR_HALF_CELLS 3   GATE_RADIUS 48.0
 HAZARD_DPS 12.0   SLOW_FACTOR 0.6   CORRUPTION_PER_SEC 8.0
+ZONE_FLIP_BUDGET 6   ZONE_RECHARGE 40.0   # per corruption rect; run holds _zone_flips/_zone_recharge (SH)
 DENSITY_BASE 0.03   DENSITY_PER_SUBNET 0.0   REACHABLE_FLOOR 0.70
 PLACE_ATTEMPTS 4000   ZONES_MIN 2   ZONES_MAX 4   WALL_MARGIN 260.0
 MAX_TEMP_ZONES 24
@@ -129,7 +130,8 @@ dist_from_gate max_dist voided _collapse_order _collapse_idx`.
 | layout | `plan(arena_size, count, seed)` (static, axis-aligned links, never the reverse of the last), `_init`, `arena()`, `arena_cells(i)`, `enter_next()` |
 | generation | `generate(seed, player_start)`, `_place_gates`, `_place_walls`, `_place_zones`, `_cut_corridor`, `_clear_cells`, `density_for(subnet)` |
 | connectivity | `_fill_unreachable` (fills sealed regions rather than carving), `_reach`, `reachable_fraction`, `_carve_to` |
-| queries | `cell_xy`, `cell_index`, `in_bounds`, `is_solid`, `zone_at`, `gate_blocks`, `has_line_of_sight`, `nearest_open` |
+| queries | `cell_xy`, `cell_index`, `in_bounds`, `is_solid`, `zone_at`, `zone_rect_at`, `gate_blocks`, `has_line_of_sight`, `nearest_open` |
+| zones | `paint_zone(rect, kind) -> rect index` (generation and suites; bakes `zone` and `zone_rect` per cell) |
 | movement | `slide(from, delta)`, `avoid(at, heading)` (`LOOK_AHEAD 46`, `AVOID_FORCE 90`) |
 | gate | `gate()`, `has_gate()`, `open_gate()`, `_rebuild_blocks`, `gate_open_flags()` / `set_gate_open_flags()` (snapshot) |
 | collapse | `build_distance_field()`, `_build_collapse_order()` (farthest from the gate first), `collapse_to(threshold)`, `is_void(p)`, `route_from(p, limit=400)`; corridor phase `corridor_collapse_len`, `CORRIDOR_COLLAPSE_TICKS 600`, `_clear_collapse_state`, `restore_collapse(idx)` (snapshot) |

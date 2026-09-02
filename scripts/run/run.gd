@@ -366,6 +366,17 @@ var _packet_filter_index := -1
 ## affects a player without a second timer: standing in it IS the duration. Per
 ## slot: 1 while standing in a slow zone.
 var _zone_slow_player: PackedByteArray
+## Per terrain zone rect (terrain.rects order): flips a corruption zone has
+## made since it last recharged, and the seconds left of its dormancy (0 =
+## charged). Simulation state: hashed and snapshotted. Sized by
+## _allocate_zone_state after the terrain is generated — every peer plots the
+## same terrain from the seed — and again by any suite that paints a zone.
+var _zone_flips: PackedInt32Array
+var _zone_recharge: PackedFloat32Array
+
+func _allocate_zone_state() -> void:
+	_zone_flips = PackedInt32Array(); _zone_flips.resize(terrain.rects.size())
+	_zone_recharge = PackedFloat32Array(); _zone_recharge.resize(terrain.rects.size())
 
 ## An absorb pool granted in whole chunks when a shielding exploit fires.
 ##
@@ -1354,6 +1365,7 @@ func _ready() -> void:
 	# Every slot starts at the same origin, so the spawn-safe margin is measured
 	# from where the party actually is.
 	terrain.generate(tseed, player_pos[local_slot])
+	_allocate_zone_state()
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
 	_beam_hits = PackedInt32Array(); _beam_hits.resize(_buf.size())
@@ -2299,6 +2311,12 @@ func _step2_integrate(dt: float) -> void:
 	for si in _shield_left.size():
 		if _shield_left[si] > 0.0 and _is_live(_owner_slot(si)):
 			_shield_left[si] -= dt
+	for zi in _zone_recharge.size():
+		if _zone_recharge[zi] > 0.0:
+			_zone_recharge[zi] -= dt
+			if _zone_recharge[zi] <= 0.0:
+				_zone_recharge[zi] = 0.0
+				_zone_flips[zi] = 0
 
 	# Heads and ordinary enemies move first so the trail is current before the
 	# segments sample it this same tick.
@@ -3408,6 +3426,7 @@ func _step2b_zones(dt: float) -> void:
 	var zw: int = terrain.w
 	var zh: int = terrain.h
 	var zone: PackedByteArray = terrain.zone
+	var zrect: PackedInt32Array = terrain.zone_rect
 	var zinv := 1.0 / Terrain.CELL
 	for i in enemies.count:
 		if _slow_left[i] > 0.0:
@@ -3434,6 +3453,13 @@ func _step2b_zones(dt: float) -> void:
 			Terrain.Kind.SLOW:
 				apply_slow(i, Terrain.SLOW_FACTOR, 0.5)
 			Terrain.Kind.CORRUPTION:
+				# A dormant zone (its flip budget spent) corrupts nothing until
+				# it has recharged. The budget gates the CORRUPTION, not an
+				# adjudication already made: a group crossing the threshold on
+				# the same tick all flip, and the zone goes dormant after.
+				var zr := zrect[zy * zw + zx]
+				if zr >= 0 and zr < _zone_recharge.size() and _zone_recharge[zr] > 0.0:
+					continue
 				queue.append(HitQueue.Kind.CORRUPTION, -1, i,
 					enemies.generation[i], Terrain.CORRUPTION_PER_SEC * dt)
 
@@ -3579,6 +3605,14 @@ func _on_flip(i: int) -> void:
 	if fs >= 0:
 		flips[fs] += 1
 		_fire_trigger_for(fs, Module.TriggerKind.ON_FLIP)
+	elif queue.flipper_exploit[i] == -1:
+		# An environmental flip charges the corruption zone the enemy stands
+		# in; at the budget the zone goes dormant for ZONE_RECHARGE.
+		var zr := terrain.zone_rect_at(enemies.pos[i])
+		if zr >= 0 and zr < _zone_flips.size():
+			_zone_flips[zr] += 1
+			if _zone_flips[zr] >= Terrain.ZONE_FLIP_BUDGET:
+				_zone_recharge[zr] = Terrain.ZONE_RECHARGE
 	feel.emit("flip")
 	_drop_shards(i)
 	if botnet.count >= mini(_botnet_cap(), MAX_BOTNET):
@@ -4734,7 +4768,8 @@ func _draw() -> void:
 	# Zones stay FLAT. They are conditions of the floor, not objects on it, and
 	# giving them height would say you can stand behind one. Walls are objects
 	# and are drawn by the Props layer, above every entity.
-	for entry in terrain.rects:
+	for zi in terrain.rects.size():
+		var entry: Array = terrain.rects[zi]
 		var tr: Rect2 = entry[0]
 		var kind: int = entry[1]
 		if kind == Terrain.Kind.WALL or not view.intersects(tr):
@@ -4748,7 +4783,11 @@ func _draw() -> void:
 			Terrain.Kind.SLOW:
 				draw_colored_polygon(quad, Color(0.40, 0.60, 1.0, 0.13))
 			Terrain.Kind.CORRUPTION:
-				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.15))
+				# A dormant zone fades, brightening as it recharges.
+				var charge := 1.0
+				if zi < _zone_recharge.size() and _zone_recharge[zi] > 0.0:
+					charge = 1.0 - _zone_recharge[zi] / Terrain.ZONE_RECHARGE
+				draw_colored_polygon(quad, Color(0.85, 0.35, 1.0, 0.04 + 0.11 * charge))
 
 	# The walkway's FLOOR. Its rails and the gate's posts stand up, so they are
 	# the Props layer's; this is the ground between them.
@@ -5108,7 +5147,8 @@ func _build_manifest() -> void:
 	f.append(["run", "@offers", SH | VARLEN, "", ["_offer_open", "_offer_queue"]])
 	f.append(["run", "@banked", SH, "", ["_banked"]])
 	f.append(["run", "@trigger_fires", SH | VARLEN, "", ["_trigger_fires"]])
-	for prop in ["_fire_acc", "_fire_cd", "_ward_left", "_shield_left"]:
+	for prop in ["_fire_acc", "_fire_cd", "_ward_left", "_shield_left",
+			"_zone_flips", "_zone_recharge"]:
 		f.append(["run", prop, SH, "", []])
 	# --- run scalars -----------------------------------------------------------
 	for prop in ["tick", "level", "xp", "xp_needed", "pending_levels", "paused",
@@ -5207,7 +5247,8 @@ func _build_manifest() -> void:
 		"terrain": {
 			"origin": "immutable: Terrain.plan from the seed", "size": "immutable",
 			"w": "immutable", "h": "immutable", "solid": "immutable: generate from the seed",
-			"zone": "immutable", "rects": "immutable", "arenas": "immutable",
+			"zone": "immutable", "zone_rect": "immutable", "rects": "immutable",
+			"arenas": "immutable",
 			"gates": "immutable layout; open flags carried by @gate_open",
 			"_blocks": "derived from gate state: set_gate_open_flags rebuilds",
 			"dist_from_gate": "derived: restore_collapse when CLEARED",

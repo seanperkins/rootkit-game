@@ -34,6 +34,11 @@ const TILE := CELL * 3.0
 const HAZARD_DPS := 12.0
 const SLOW_FACTOR := 0.6
 const CORRUPTION_PER_SEC := 8.0
+## A corruption zone converts this many enemies, then lies dormant while it
+## recharges. Leading a swarm across one still works; leading the whole match
+## across one does not. The tally and the timer are run state (per rect).
+const ZONE_FLIP_BUDGET := 6
+const ZONE_RECHARGE := 40.0
 
 ## The rock border around the whole map. Small on purpose: it is only there to
 ## stop the player walking off the plotted world, and the corridors no longer
@@ -78,6 +83,7 @@ var h: int
 var solid: PackedByteArray
 ## Kind + 1, so that zero means "no zone" and the array can start zeroed.
 var zone: PackedByteArray
+var zone_rect: PackedInt32Array   # per cell: index into rects, or -1
 var rects: Array = []          # [Rect2, Kind] pairs, for generation and drawing
 
 ## Every subnet's arena, in walk order.
@@ -164,6 +170,9 @@ func _init(arena_size: Vector2, count: int = 1, layout_seed: int = 0) -> void:
 	solid.resize(w * h)
 	zone = PackedByteArray()
 	zone.resize(w * h)
+	zone_rect = PackedInt32Array()
+	zone_rect.resize(w * h)
+	zone_rect.fill(-1)
 
 # ------------------------------------------------------------- the current ---
 
@@ -324,6 +333,7 @@ func generate(seed_value: int, player_start: Vector2) -> void:
 	# part of generation that scaled with the whole map rather than the ground.
 	solid.fill(1)
 	zone.fill(0)
+	zone_rect.fill(-1)
 	for i in arenas.size():
 		_clear_cells(arena_cells(i))
 
@@ -474,18 +484,38 @@ func _place_zones(rng_seed: int, index: int, entry: Vector2) -> void:
 		if r.grow(WALL_MARGIN).has_point(entry):
 			continue
 		var kind: int = ZONE_KINDS[rng.randi_range(0, ZONE_KINDS.size() - 1)]
-		var wrote := false
-		for y in range(cy, cy + rh):
-			for x in range(cx, cx + rw):
-				var i := y * w + x
-				# Open cells only. Painting a zone under rock produces an effect
-				# nothing can ever stand in.
-				if solid[i] == 0:
-					zone[i] = kind + 1
-					wrote = true
-		if wrote:
-			rects.append([r, kind])
+		if paint_zone(r, kind) >= 0:
 			made += 1
+
+## Paint a zone over the OPEN cells of a cell-aligned rect and register it in
+## `rects`. Returns the rect's index, or -1 when every cell was rock: a zone
+## under rock is an effect nothing can ever stand in. Generation and the
+## suites both go through here, so every painted cell knows its rect.
+func paint_zone(r: Rect2, kind: int) -> int:
+	var c0 := cell_xy(r.position)
+	var c1 := cell_xy(r.end - Vector2.ONE)
+	var index := rects.size()
+	var wrote := false
+	for y in range(c0.y, c1.y + 1):
+		for x in range(c0.x, c1.x + 1):
+			if not in_bounds(Vector2i(x, y)):
+				continue
+			var i := y * w + x
+			if solid[i] == 0:
+				zone[i] = kind + 1
+				zone_rect[i] = index
+				wrote = true
+	if not wrote:
+		return -1
+	rects.append([r, kind])
+	return index
+
+## The zone rect a world point stands in, or -1.
+func zone_rect_at(p: Vector2) -> int:
+	var c := cell_xy(p)
+	if not in_bounds(c):
+		return -1
+	return zone_rect[c.y * w + c.x]
 
 ## Open ground from the arena's edge to the next arena's edge, walled by the
 ## solid margin either side. This is the whole of "no teleport": the corridor is

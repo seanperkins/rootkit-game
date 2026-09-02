@@ -6,7 +6,8 @@ extends SceneTree
 var failures := 0
 var finished := {}
 
-const CASES := ["projectiles_die_on_walls", "hazard_zones_hurt", "slow_zones_slow", "advancing_moves_the_player_on_not_the_ground"]
+const CASES := ["projectiles_die_on_walls", "hazard_zones_hurt", "slow_zones_slow", "advancing_moves_the_player_on_not_the_ground",
+	"corruption_zones_have_a_flip_budget"]
 
 func _initialize() -> void:
 	print("ROOTKIT — terrain in the run\n")
@@ -14,6 +15,7 @@ func _initialize() -> void:
 	await hazard_zones_hurt()
 	await slow_zones_slow()
 	await advancing_moves_the_player_on_not_the_ground()
+	await corruption_zones_have_a_flip_budget()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -158,3 +160,47 @@ func advancing_moves_the_player_on_not_the_ground() -> void:
 		walls[0] == walls[1] and walls[1] == walls[2], false)
 	r.free()
 	finished["advancing_moves_the_player_on_not_the_ground"] = true
+
+## A corruption zone converts ZONE_FLIP_BUDGET enemies, then lies dormant
+## until ZONE_RECHARGE has passed; a swarm led across it all match is not a
+## build.
+func corruption_zones_have_a_flip_budget() -> void:
+	var r := await _fresh_run()
+	r.input_override = Vector2.ZERO
+	var t: Terrain = r.terrain
+	t.solid.fill(0)
+	var at: Vector2 = r.player_pos[r.local_slot] + Vector2(600.0, 0.0)
+	var zi: int = t.paint_zone(Rect2(at - Vector2(112.0, 112.0), Vector2(224.0, 224.0)), Terrain.Kind.CORRUPTION)
+	_check("painting a zone registers a rect", zi >= 0, true)
+	r._allocate_zone_state()          # a painted rect is a new rect
+	_check("the run tracks one budget per rect", r._zone_flips.size(), t.rects.size())
+	# Staggered starting corruption so they cross the threshold on different
+	# ticks: the budget gates the zone's corruption, not an adjudication already
+	# made, so a group crossing on the same tick would all flip together.
+	for k in Terrain.ZONE_FLIP_BUDGET + 1:
+		var e: int = r.enemies.spawn(at + Vector2(float(k) * 14.0 - 42.0, 0.0), Vector2.ZERO, 10.0, r.ENEMY_RADIUS, 0)
+		r.enemies.corruption[e] = float(Terrain.ZONE_FLIP_BUDGET - k)
+	# The zone step, the drain and the recycle: a FLIPPED enemy left in the
+	# pool would be re-adjudicated every tick, which step 9 prevents in the
+	# real tick by moving it into the botnet.
+	var dt := 1.0 / 60.0
+	for tick in 240:
+		r.queue.begin_tick()
+		r._step2b_zones(dt)
+		r._steps78_drain()
+		r._step9_recycle()
+	_check("a zone flips its budget and no more", r.botnet.count, Terrain.ZONE_FLIP_BUDGET)
+	_check("the tally says so", r._zone_flips[zi], Terrain.ZONE_FLIP_BUDGET)
+	_check("and then goes dormant", r._zone_recharge[zi] > 0.0, true)
+	_check("the last enemy is still an enemy", r.enemies.count, 1)
+	r._zone_recharge[zi] = 0.001
+	r._step2_integrate(dt)
+	_check("the recharge clears the tally", r._zone_flips[zi], 0)
+	for tick in 240:
+		r.queue.begin_tick()
+		r._step2b_zones(dt)
+		r._steps78_drain()
+		r._step9_recycle()
+	_check("a recharged zone flips again", r.botnet.count, Terrain.ZONE_FLIP_BUDGET + 1)
+	r.free()
+	finished["corruption_zones_have_a_flip_budget"] = true
