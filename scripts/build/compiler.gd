@@ -45,7 +45,7 @@ const MAX_FOLD_KEYS := [
 	&"lifesteal",
 	# The slow and the shield join on the same argument: they are magnitudes
 	# bought once, and summing them across slots buys uptime for free.
-	&"slow_amount", &"slow_duration", &"shield",
+	&"slow_amount", &"slow_duration", &"shield", &"shield_rearm",
 	# A fraction. Two sources summing to 0.5 is not "a bit more execute".
 	&"execute_below",
 ]
@@ -181,8 +181,8 @@ static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 			# A quarter rate keeps the upgrade real and the footprint readable —
 			# rank 5 is 2x, not 5x. PAYLOAD radius and `reach` still scale fully.
 			scale = 1.0 + VECTOR_RADIUS_RANK * float(em.rank - 1)
-		elif key == &"ward_duration":
-			# Rank buys ward magnitude, never uptime.
+		elif key == &"ward_duration" or key == &"shield_rearm":
+			# Rank buys ward and shield magnitude, never uptime.
 			scale = 1.0
 		var v := float(m.stats[key]) * scale
 		if key in MUL_FOLD_KEYS:

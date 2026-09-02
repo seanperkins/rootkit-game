@@ -8,8 +8,8 @@ class_name ModuleTable extends RefCounted
 ## every player gets an empty card pool. A code table cannot go stale against
 ## itself and needs no build-time manifest step.
 ##
-## Split: 14 VECTOR / 7 TRIGGER / 14 PAYLOAD = 35.
-## Unlocked at start: 7 / 3 / 11 = 21; see LOCKED below for why the rest is
+## Split: 8 VECTOR / 7 TRIGGER / 15 PAYLOAD = 30.
+## Unlocked at start: 5 / 3 / 11 = 19; see LOCKED below for why the rest is
 ## gated. A module id occupies exactly one slot (Loadout.legal_targets), so a
 ## full board of three exploits needs three distinct unlocked VECTORs and three
 ## distinct unlocked TRIGGERs. The starting pool clears that with room on the
@@ -28,8 +28,7 @@ const T := Module.TriggerKind
 ## and that makes builds mushier, not richer. Gating the breadth behind kill and
 ## flip milestones keeps the early pool the size and sharpness it has today.
 const LOCKED := [&"beam", &"on_damage_taken", &"worm",
-	&"snipe", &"landmine", &"cascade",
-	&"mirror", &"airgap", &"checksum",
+	&"landmine", &"mirror", &"checksum",
 	&"on_low_integrity", &"on_flip", &"on_level_up",
 	&"heap_spray", &"tarpit"]
 
@@ -82,16 +81,8 @@ static func all() -> Array:
 		# --- VECTOR, attack -------------------------------------------------
 		Module.make(&"spike", "spike()", S.VECTOR,
 			{&"damage": 9.0, &"radius": 150.0, &"cooldown": 0.75}, [], V.CONE),
-		Module.make(&"flood", "flood()", S.VECTOR,
-			{&"damage": 2.0, &"radius": 300.0, &"cooldown": 1.6}, [], V.BROADCAST),
-		Module.make(&"snipe", "snipe()", S.VECTOR,
-			{&"damage": 14.0, &"projectile_speed": 900.0, &"cooldown": 1.5,
-			 &"travel": 1200.0, &"pierce": 2.0}, [], V.PACKET),
 		Module.make(&"landmine", "landmine()", S.VECTOR,
 			{&"damage": 16.0, &"radius": 130.0, &"cooldown": 1.9}, [&"aoe"], V.MINE),
-		Module.make(&"cascade", "cascade()", S.VECTOR,
-			{&"damage": 3.0, &"chain_count": 4.0, &"radius": 150.0,
-			 &"cooldown": 0.8}, [], V.CHAIN),
 
 		# --- VECTOR, defensive ----------------------------------------------
 		# Still weapons on a cadence; the payoff protects rather than kills.
@@ -101,15 +92,6 @@ static func all() -> Array:
 		Module.make(&"mirror", "mirror()", S.VECTOR,
 			{&"damage": 4.0, &"radius": 90.0, &"cooldown": 2.2,
 			 &"orbit_count": 3.0}, [], V.ORBIT),
-		Module.make(&"throttle", "throttle()", S.VECTOR,
-			{&"damage": 0.5, &"radius": 260.0, &"cooldown": 1.4,
-			 &"slow_amount": 0.55, &"slow_duration": 2.0}, [&"slow"], V.BROADCAST),
-		Module.make(&"airgap", "airgap()", S.VECTOR,
-			{&"radius": 210.0, &"cooldown": 1.6, &"knockback": 520.0,
-			 &"ward_armor": 1.4, &"ward_duration": 2.0}, [], V.PULSE),
-		Module.make(&"checksum", "checksum()", S.VECTOR,
-			{&"damage": 1.0, &"radius": 70.0, &"cooldown": 2.6,
-			 &"shield": 26.0}, [], V.BROADCAST),
 
 		# --- PAYLOAD --------------------------------------------------------
 		Module.make(&"buffer_overflow", "buffer_overflow", S.PAYLOAD,
@@ -138,6 +120,11 @@ static func all() -> Array:
 			{&"ward_defense": 10.0, &"ward_duration": 3.0}),
 		Module.make(&"nice", "nice()", S.PAYLOAD,
 			{&"ward_clock_speed": 12.0, &"ward_duration": 1.5}),
+		# Shield is a magnitude bought once; the rearm keeps it off the host
+		# vector's cadence (a packet at the floor would refill it forty times
+		# faster than the 2.6 s the old vector had). Unranked in Compiler._fold.
+		Module.make(&"checksum", "checksum()", S.PAYLOAD,
+			{&"shield": 26.0, &"shield_rearm": 2.6}),
 
 		# --- PAYLOAD, added with the module set -----------------------------
 		Module.make(&"bitmask", "bitmask", S.PAYLOAD, {&"pierce": 1.0}),

@@ -146,19 +146,14 @@ def read_shop() -> list:
 
 MODULE_NOTES = {
     "broadcast": "Hits everything in a ring around you. The reliable opener.",
-    "packet": "Fires at the nearest enemy. Your starting weapon.",
+    "packet": "A straight shot along your facing. Your starting weapon: aim by moving.",
     "chain": "Hops between enemies, jumping up to 120 units each time.",
-    "beam": "A line through several enemies at the nearest target.",
-    "spike": "A 90&deg; arc toward the nearest enemy. Heavy damage, demands facing.",
-    "flood": "An enormous, slow, weak ring. Crowd clearance rather than damage.",
-    "snipe": "Long, fast, pierces. The single hardest hit in the table.",
-    "landmine": "Drops a charge that waits until something comes within 46 units, then detonates. Area denial &mdash; predict the swarm&rsquo;s path.",
-    "cascade": "More hops than <code>chain()</code>, at less per hit.",
+    "beam": "A line along your facing through several enemies.",
+    "spike": "A 90&deg; wedge along your facing. Heavy damage, demands facing.",
+    "landmine": "Drops a charge a step behind you that waits until something comes within 46 units. Running lays a trail.",
     "bounce": "Shockwave with heavy knockback. Buys space rather than kills.",
     "mirror": "Shards orbit you, damaging on contact. Refiring replaces the ring rather than stacking it.",
-    "throttle": "Near-zero damage; slows everything across a wide field.",
-    "airgap": "No damage at all. Maximum knockback plus a ward.",
-    "checksum": "Grants a shield on fire, absorbed before integrity and before armour is consulted.",
+    "checksum": "A payload: the row grants a shield on fire, absorbed before integrity, rearming every 2.6 s. On a head that already shields it only slows the refill.",
     "interval": "On a timer. The baseline every other trigger is measured against, and the only one that fires on an empty field.",
     "on_kill": "Every time anything dies. The generalist: rate plus power.",
     "on_hit": "Every time one of your shots connects. Pure rate &mdash; rewards pierce and chain.",
@@ -222,7 +217,7 @@ STAT_LABEL = {
     "shield": "shield", "orbit_count": "orbiters", "burst": "burst",
     "lifesteal": "lifesteal", "botnet_cap": "botnet", "ward_armor": "ward armour",
     "ward_defense": "ward defence", "ward_clock_speed": "ward speed",
-    "ward_duration": "ward s",
+    "ward_duration": "ward s", "shield_rearm": "rearm s",
 }
 
 

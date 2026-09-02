@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 81
+const EXPECTED_CHECKS := 87
 
 var failures := 0
 var checks := 0
@@ -37,6 +37,8 @@ func _init() -> void:
 	ward_equality()
 	uniqueness_is_loadout_wide()
 	defensive_share()
+	equals_sees_shield_and_shield_rearm()
+	shield_rearm_is_unranked()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -67,8 +69,8 @@ func data_sweep() -> void:
 	var errs := []
 	for m in ModuleTable.all():
 		errs.append_array(Compiler.validate(m))
-	_check("data sweep: 18 modules, 0 errors", errs.size(), 0)
-	_check("data sweep: module count", ModuleTable.all().size(), 35)
+	_check("data sweep: 30 modules, 0 errors", errs.size(), 0)
+	_check("data sweep: module count", ModuleTable.all().size(), 30)
 
 ## A 3-exploit board needs 3 distinct VECTORs and 3 distinct TRIGGERs. Fewer
 ## unlocked and the advertised cap is unreachable, permanently, for a new player.
@@ -305,7 +307,7 @@ func defensive_share() -> void:
 		if m.id in [&"harden", &"sandbox", &"nice", &"keylog"]:
 			defensive += 1
 	_check("four defensive modules unlocked", defensive, 4)
-	_check("unlocked total", ModuleTable.starting_unlocked().size(), 21)
+	_check("unlocked total", ModuleTable.starting_unlocked().size(), 19)
 
 ## cadence_mult is the only STAT_KEY that does not default to zero, because it
 ## accumulates by product rather than by sum. Anything that resets fields
@@ -316,10 +318,10 @@ func cadence_mult_defaults_to_one() -> void:
 	_check("cadence_mult defaults to 1.0", r.cadence_mult, 1.0)
 	_check("cadence_mult is a legal stat key", &"cadence_mult" in Module.STAT_KEYS, true)
 	# 24: the module set added knockback, slow_amount, slow_duration, shield and
-	# orbit_count, the trigger rework added burst, and fusion adds split_count, blast_radius, execute_below and homing. Pinned because STAT_KEYS
+	# orbit_count, the trigger rework added burst, and fusion adds split_count, blast_radius, execute_below and homing, and the weapons pass adds shield_rearm. Pinned because STAT_KEYS
 	# is a CLOSED set whose every member must be a field on ResolvedExploit — a
 	# key added without its field makes _fold write into nothing at all.
-	_check("STAT_KEYS is 27", Module.STAT_KEYS.size(), 27)
+	_check("STAT_KEYS is 28", Module.STAT_KEYS.size(), 28)
 	var zero_defaults := 0
 	for k in Module.STAT_KEYS:
 		if float(r.get(k)) == 0.0:
@@ -327,7 +329,7 @@ func cadence_mult_defaults_to_one() -> void:
 	# cadence_mult is still the only one that does not, and burst was
 	# deliberately kept a zero-default (0 reads as one emission) so it stays
 	# that way.
-	_check("every OTHER stat key defaults to zero", zero_defaults, 26)
+	_check("every OTHER stat key defaults to zero", zero_defaults, 27)
 
 ## Rank scales the two directions differently, because each is the rule the other
 ## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;
@@ -392,14 +394,13 @@ func the_new_modules_are_present_and_valid() -> void:
 	for m in all:
 		by_id[m.id] = m
 	var missing := 0
-	for id in [&"spike", &"flood", &"snipe", &"landmine", &"cascade",
-			&"bounce", &"mirror", &"throttle", &"airgap", &"checksum",
+	for id in [&"spike", &"landmine", &"bounce", &"mirror", &"checksum",
 			&"on_low_integrity", &"on_flip", &"on_level_up",
 			&"bitmask", &"race_condition", &"heap_spray", &"tarpit"]:
 		if not by_id.has(id):
 			missing += 1
-	_check("all seventeen new modules are in the table", missing, 0)
-	_check("the table is 35 modules", all.size(), 35)
+	_check("all twelve new modules are in the table", missing, 0)
+	_check("the table is 30 modules", all.size(), 30)
 
 	var errs := 0
 	for m in all:
@@ -485,3 +486,26 @@ func uniqueness_is_loadout_wide() -> void:
 	lo.exploits[0].vector.rank = T[&"packet"].max_rank
 	_check("a maxed held id has no legal target",
 		lo.legal_targets(T[&"packet"]).size(), 0)
+
+## equals() enumerates fields by hand; a stat it skips is a stat the meta
+## derivation checks cannot see.
+func equals_sees_shield_and_shield_rearm() -> void:
+	var a := ResolvedExploit.new()
+	var b := ResolvedExploit.new()
+	_check("equal when blank", a.equals(b), true)
+	b.shield = 26.0
+	_check("equals distinguishes shield", a.equals(b), false)
+	b.shield = 0.0
+	b.shield_rearm = 2.6
+	_check("equals distinguishes shield_rearm", a.equals(b), false)
+
+## Rank buys shield magnitude, never uptime: the rearm is unranked.
+func shield_rearm_is_unranked() -> void:
+	var t := ModuleTable.by_id()
+	var ex := Exploit.new()
+	ex.place(t[&"packet"]); ex.place(t[&"interval"]); ex.place(t[&"checksum"])
+	ex.payloads[0].rank = 5
+	var r := Compiler.build(ex)
+	_check("shield scales with rank", r.shield, 26.0 * 5.0)
+	_check("the rearm does not", r.shield_rearm, 2.6)
+	_check("checksum is a payload", t[&"checksum"].slot, Module.Slot.PAYLOAD)

@@ -7,11 +7,10 @@ enum VectorKind  { BROADCAST, PACKET, CHAIN, BEAM, CONE, PULSE, MINE, ORBIT }
 enum TriggerKind { INTERVAL, ON_KILL, ON_HIT, ON_DAMAGE_TAKEN,
 	ON_LOW_INTEGRITY, ON_FLIP, ON_LEVEL_UP }
 
-## How a vector chooses among the enemies in range. Only BEAM, CONE, CHAIN and
-## PACKET consult it — BROADCAST, PULSE, MINE and ORBIT resolve from the
-## player's position and have nothing to choose. Three modes, not four: a
-## fourth that no module sets is a branch in two scans bought for nothing, and
-## this enum is append-safe if one is ever wanted.
+## How a vector chooses among the enemies in range. Only CHAIN and the homing
+## re-acquire consult it now — BEAM, CONE and PACKET fire along the owner's
+## facing, and BROADCAST, PULSE, MINE and ORBIT resolve from the player's
+## position. Three modes, not four; the enum is append-safe.
 enum Targeting  { NEAREST, STRONGEST, FARTHEST }
 
 ## The numeric scalar fields of ResolvedExploit, and the ONLY legal stat keys.
@@ -25,6 +24,7 @@ const STAT_KEYS := [
 	&"travel", &"cadence_mult",
 	&"knockback", &"slow_amount", &"slow_duration", &"shield", &"orbit_count",
 	&"burst", &"split_count", &"blast_radius", &"execute_below", &"homing",
+	&"shield_rearm",
 ]
 
 @export var id: StringName

@@ -70,9 +70,9 @@ An **exploit** is one weapon with three slot types:
 
 | Slot | Count | Decides | Modules |
 |---|---|---|---|
-| `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam, spike, flood, snipe, landmine, cascade, bounce, mirror, throttle, airgap, checksum |
+| `VECTOR` | 1 | how it reaches enemies | broadcast, packet, chain, beam, spike, landmine, bounce, mirror |
 | `TRIGGER` | 1 | when it fires, how it scales cadence, and how many shots one event produces | interval, on_kill, on_hit, on_damage_taken, on_low_integrity, on_flip, on_level_up |
-| `PAYLOAD` | 0–1 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice |
+| `PAYLOAD` | 0–1 | what it does on contact | buffer_overflow, fork_bomb, corrupt, keylog, worm, fork, overclock, harden, sandbox, nice, checksum, bitmask, race_condition, heap_spray, tarpit |
 
 You hold three exploits. A module's slot type picks its **column**, so the only
 question left is which **row** — and each of the three level-up cards carries one
@@ -84,7 +84,7 @@ the module. Any card can be declined for salvage.
 
 A **recipe** is three exact modules — a vector, a trigger and a payload. There
 are twenty, and every vector, trigger and payload appears in at least one, so no
-card is ever a dead end. `snipe + on_kill + bitmask` is `zero_day()`: a homing
+card is ever a dead end. `packet + on_kill + bitmask` is `zero_day()`: a homing
 sniper that picks the strongest thing in range.
 
 Matching the ids is not enough. **All three must be at max rank**, because a
