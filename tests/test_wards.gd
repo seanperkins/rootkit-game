@@ -74,9 +74,8 @@ func arms_and_decays() -> void:
 	run.queue_free()
 	await process_frame
 
-## Wards apply at the TOP of _emit_vector, before the match and its early
-## returns, so a BEAM with nothing to shoot still hardens. It spends its cooldown
-## either way — _try_event_fire sets _fire_cd before calling _emit_vector — so
+## Wards apply at the TOP of _emit_vector, before the match, so a BEAM fired
+## into empty ground still hardens. It spends its cooldown either way — _try_event_fire sets _fire_cd before calling _emit_vector — so
 ## the placement buys the ward, not the cadence.
 func targetless_beam_still_wards() -> void:
 	var run := await _bare_run()

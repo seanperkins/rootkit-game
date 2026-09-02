@@ -145,6 +145,13 @@ const KNOCK_DECAY := 6.0
 
 ## CONE's arc, half-angle in radians. 45 degrees either side of the aim.
 const CONE_HALF_ANGLE := 0.785
+## Half-width of the beam capsule. The grid query around the capsule midpoint
+## uses radius / 2 + BEAM_HALF_WIDTH and filters on centre distance; the
+## farthest centre the keep test accepts is a far corner at perpendicular
+## offset BEAM_HALF_WIDTH + ENEMY_RADIUS = 34, so the circle covers it iff
+## radius / 2 + 22 >= sqrt((radius / 2)^2 + 34^2), i.e. radius >= 30.55.
+## test_facing asserts every beam in the tables clears 31.
+const BEAM_HALF_WIDTH := 22.0
 ## A mine sits until something comes within this, then detonates in `radius`.
 ## The angle between adjacent shots of a split. At 0.22 rad an off-axis shot is
 ## 0.218*d from the aim line, so against a 16 px combined hit radius
@@ -562,6 +569,10 @@ var _botnet_ratio: PackedFloat32Array
 var _botnet_life: PackedFloat32Array
 
 var _buf: PackedInt32Array
+## Beam selection scratch: the kept candidates and their projections, sized
+## like _buf so the tick allocates nothing. Not simulation state.
+var _beam_hits: PackedInt32Array
+var _beam_keys: PackedFloat32Array
 var _counts: PackedInt32Array
 ## Enemy fire.
 ##
@@ -1330,6 +1341,8 @@ func _ready() -> void:
 	terrain.generate(tseed, player_pos[local_slot])
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
+	_beam_hits = PackedInt32Array(); _beam_hits.resize(_buf.size())
+	_beam_keys = PackedFloat32Array(); _beam_keys.resize(_buf.size())
 	_counts = PackedInt32Array(); _counts.resize(4)
 	_pos_arrays = [null, null, null, null]
 	_skips = [null, null, null, null]
@@ -2611,10 +2624,11 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 	var at := player_pos[owner]
 	feel.emit(Synth.fire_id(r.vector_kind))
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
-	# Before the match, deliberately. BEAM and CHAIN return early when they have
-	# no target, and a defensive build on those vectors must still ward — it has
-	# already spent its cooldown by the time it reaches here, because
-	# _try_event_fire sets _fire_cd before calling this.
+	# Before the match, deliberately. CHAIN returns early when it has no
+	# target, and a defensive build on it must still ward — it has already spent
+	# its cooldown by the time it reaches here, because _try_event_fire sets
+	# _fire_cd before calling this. (BEAM and CONE no longer return early: they
+	# fire along facing whether or not anything is there.)
 	if r.ward_duration > 0.0:
 		_ward_left[ei] = r.ward_duration
 	# A shielding exploit grants its pool on fire, capped rather than stacked:
@@ -2628,27 +2642,42 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			for k in mini(n, _buf.size()):
 				_hit(ei, r, Grid.index_of(_buf[k]))
 		Module.VectorKind.BEAM:
-			var target := _pick_target(r.radius, r.targeting, at)
-			if target < 0:
-				return
-			var dir := (enemies.pos[target] - at).normalized()
+			# A capsule along the owner's facing: length radius, half-width
+			# BEAM_HALF_WIDTH. Fires whether or not anything is in it.
+			var dir: Vector2 = player_facing[owner]
+			var mid := at + dir * r.radius * 0.5
 			_fx_line.append([at, at + dir * r.radius, FX_LIFE,
 				Color(2.2, 1.4, 2.6)])
-			var n2 := grid.query_radius_into(at + dir * r.radius * 0.5,
-				r.radius * 0.5, _buf, Grid.M_ENEMY)
-			var struck := 0
+			var n2 := grid.query_radius_into(mid, r.radius * 0.5 + BEAM_HALF_WIDTH, _buf, Grid.M_ENEMY)
+			var kept := 0
+			var band := BEAM_HALF_WIDTH + ENEMY_RADIUS
 			for k in mini(n2, _buf.size()):
-				if struck > r.pierce:
-					break
-				_hit(ei, r, Grid.index_of(_buf[k]))
-				struck += 1
+				var j := Grid.index_of(_buf[k])
+				var rel := enemies.pos[j] - at
+				var along := rel.dot(dir)
+				if along < 0.0 or along > r.radius:
+					continue
+				if absf(rel.cross(dir)) > band:
+					continue
+				_beam_hits[kept] = j
+				_beam_keys[kept] = along
+				kept += 1
+			# Select the pierce + 1 nearest by (projection, index): a total order,
+			# so equal projections resolve the same on every peer. O(n x k).
+			var want := mini(int(r.pierce) + 1, kept)
+			for s2 in want:
+				var best := s2
+				for c in range(s2 + 1, kept):
+					if _beam_keys[c] < _beam_keys[best] \
+							or (_beam_keys[c] == _beam_keys[best] and _beam_hits[c] < _beam_hits[best]):
+						best = c
+				if best != s2:
+					var tj := _beam_hits[s2]; _beam_hits[s2] = _beam_hits[best]; _beam_hits[best] = tj
+					var tk := _beam_keys[s2]; _beam_keys[s2] = _beam_keys[best]; _beam_keys[best] = tk
+				_hit(ei, r, _beam_hits[s2])
 		Module.VectorKind.CONE:
-			# A broadcast query filtered by ANGLE. Cheap, and it reads completely
-			# differently because it demands facing.
-			var ct := _pick_target(r.radius, r.targeting, at)
-			if ct < 0:
-				return
-			var cdir := (enemies.pos[ct] - at).normalized()
+			# A broadcast query filtered by ANGLE around the owner's facing.
+			var cdir: Vector2 = player_facing[owner]
 			_fx_line.append([at, at + cdir * r.radius, FX_LIFE,
 				Color(2.0, 1.6, 0.8)])
 			var cn := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
@@ -2745,11 +2774,19 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				from = enemies.pos[picked]
 				hops += 1
 		_:
-			# The viewport covers ~1113x626 world units at this zoom, so the
-			# corner is ~640 away. Targeting at 1400 let packets fire at enemies
-			# well off-screen — and made every shot walk the entire grid.
-			var t3 := _pick_target(VIEW_RANGE, r.targeting, at)
-			var dir2 := Vector2.RIGHT if t3 < 0 else (enemies.pos[t3] - at).normalized()
+			# Along the owner's facing, no target pick — except a homing fused
+			# module, which binds a target at spawn and launches TOWARD it: a
+			# seeker launched away would spend most of its travel coming about.
+			# (VIEW_RANGE: the viewport covers ~1113x626 world units at this
+			# zoom, so the corner is ~640 away; a wider pick let seekers bind to
+			# enemies well off-screen and walked the entire grid.)
+			var t3 := -1
+			var dir2: Vector2 = player_facing[owner]
+			if r.homing > 0.0:
+				t3 = _pick_target(VIEW_RANGE, r.targeting, at)
+				if t3 >= 0:
+					dir2 = (enemies.pos[t3] - at).normalized()
+			_fx_line.append([at, at + dir2 * 26.0, FX_LIFE, Color(1.1, 1.7, 1.4)])
 			var shots: int = maxi(int(r.split_count), 1)
 			for sp in shots:
 				# Centred on the aim: 1 shot is dead on, 3 is -spread/0/+spread.
@@ -5055,6 +5092,8 @@ func _build_manifest() -> void:
 			"_route_cell": "local presentation; reset so the route recomputes",
 			"feel": "presentation", "_shake_pref": "preference",
 			"_numbers_pref": "preference", "_falling": "presentation",
+			"_beam_hits": "beam selection scratch, presentation-free but never carried",
+			"_beam_keys": "beam selection scratch",
 			"_vignette": "presentation", "_fx_line": "presentation",
 			"_fx_ring": "presentation", "_order": "rebuilt whole in _depth_sort",
 			"_band_count": "scratch for _depth_sort",

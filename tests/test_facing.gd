@@ -10,7 +10,10 @@ const DT := 1.0 / 60.0
 
 const CASES := ["facing_follows_the_applied_record_and_holds",
 	"facing_survives_a_restore", "two_peers_agree_while_turning",
-	"a_return_resets_facing"]
+	"a_return_resets_facing",
+	"packet_flies_along_facing", "a_homing_packet_still_binds",
+	"beam_hits_its_capsule_only", "spike_hits_its_wedge_only",
+	"beam_radius_floor_holds_in_the_tables"]
 
 func _initialize() -> void:
 	print("ROOTKIT — facing\n")
@@ -20,6 +23,11 @@ func _initialize() -> void:
 	await facing_survives_a_restore()
 	await two_peers_agree_while_turning()
 	await a_return_resets_facing()
+	await packet_flies_along_facing()
+	await a_homing_packet_still_binds()
+	await beam_hits_its_capsule_only()
+	await spike_hits_its_wedge_only()
+	beam_radius_floor_holds_in_the_tables()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -105,3 +113,113 @@ func a_return_resets_facing() -> void:
 	h.teardown()
 	await process_frame
 	finished["a_return_resets_facing"] = true
+
+## A run with one exploit on the local slot: vector + interval (+ payloads).
+func _with(r: Node2D, vector_id: StringName, payloads: Array = [], fused: Module = null) -> int:
+	var t := ModuleTable.by_id()
+	var ex := Exploit.new()
+	if fused != null:
+		ex.vector = EquippedModule.new(fused, 1)
+	else:
+		ex.place(t[vector_id])
+	ex.place(t[&"interval"])
+	for p in payloads:
+		ex.place(t[p])
+	r.loadouts[r.local_slot].exploits = [ex]
+	r._recompile()
+	return r._gid(r.local_slot, 0)
+
+func _face(r: Node2D, dir: Vector2) -> void:
+	r.input_override = dir
+	r._physics_process(DT)
+	r.input_override = Vector2.ZERO
+
+func _spawn(r: Node2D, offset: Vector2) -> int:
+	return r.enemies.spawn(r.player_pos[r.local_slot] + offset, Vector2.ZERO, 9999.0, r.ENEMY_RADIUS, 0)
+
+## Which enemies the queue holds DAMAGE events for after one emit.
+func _targets_hit(r: Node2D, gid: int) -> Array:
+	r.queue.begin_tick()
+	r._step3_rebuild()
+	r._emit_vector(gid, r.resolved[gid])
+	var out := []
+	for k in r.queue.count:
+		if r.queue.source_exploit[k] == gid and not (r.queue.target[k] in out):
+			out.append(r.queue.target[k])
+	return out
+
+func packet_flies_along_facing() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"packet")
+	_spawn(r, Vector2(0.0, -300.0))            # an enemy up, off the facing axis
+	_face(r, Vector2.LEFT)
+	r.queue.begin_tick()
+	r._step3_rebuild()
+	var before: int = r.projectiles.count
+	r._emit_vector(gid, r.resolved[gid])
+	_check("a packet spawned", r.projectiles.count, before + 1)
+	var i: int = r.projectiles.count - 1
+	_check_true("it flies along facing, not at the enemy", r.projectiles.vel[i].normalized().dot(Vector2.LEFT) > 0.999)
+	_check("and binds no target", r._proj_target[i], -1)
+	r.free(); await process_frame
+	finished["packet_flies_along_facing"] = true
+
+func a_homing_packet_still_binds() -> void:
+	var r := await _fresh_run()
+	var homer := Module.make(&"test_homer", "test_homer()", Module.Slot.VECTOR,
+		{&"damage": 5.0, &"projectile_speed": 400.0, &"cooldown": 0.5,
+		 &"travel": 900.0, &"homing": 2.6}, [], Module.VectorKind.PACKET, Module.TriggerKind.INTERVAL)
+	homer.is_fused = true
+	var gid := _with(r, &"", [], homer)
+	var e := _spawn(r, Vector2(0.0, -300.0))
+	_face(r, Vector2.LEFT)
+	r.queue.begin_tick()
+	r._step3_rebuild()
+	r._emit_vector(gid, r.resolved[gid])
+	var i: int = r.projectiles.count - 1
+	_check("a homing packet binds its target", r._proj_target[i], e)
+	_check_true("and launches toward it", r.projectiles.vel[i].normalized().dot(Vector2.UP) > 0.99)
+	r.free(); await process_frame
+	finished["a_homing_packet_still_binds"] = true
+
+func beam_hits_its_capsule_only() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"beam")
+	var radius: float = r.resolved[gid].radius
+	_face(r, Vector2.RIGHT)
+	var far_end := _spawn(r, Vector2(radius - 1.0, 0.0))
+	var corner := _spawn(r, Vector2(radius, r.BEAM_HALF_WIDTH + r.ENEMY_RADIUS - 1.0))
+	var beside := _spawn(r, Vector2(radius * 0.5, r.BEAM_HALF_WIDTH + r.ENEMY_RADIUS + 20.0))
+	var behind := _spawn(r, Vector2(-60.0, 0.0))
+	var hit := _targets_hit(r, gid)
+	_check("the far end is hit", far_end in hit, true)
+	_check("the far-end corner at full offset is hit", corner in hit, true)
+	_check("beside the beam is not", beside in hit, false)
+	_check("behind is not", behind in hit, false)
+	r.free(); await process_frame
+	finished["beam_hits_its_capsule_only"] = true
+
+func spike_hits_its_wedge_only() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"spike")
+	_face(r, Vector2.DOWN)
+	var ahead := _spawn(r, Vector2(0.0, 80.0))
+	var behind := _spawn(r, Vector2(0.0, -80.0))
+	var hit := _targets_hit(r, gid)
+	_check("inside the wedge is hit", ahead in hit, true)
+	_check("behind is not", behind in hit, false)
+	r.free(); await process_frame
+	finished["spike_hits_its_wedge_only"] = true
+
+func beam_radius_floor_holds_in_the_tables() -> void:
+	var bad := []
+	for m in ModuleTable.all():
+		if m.slot == Module.Slot.VECTOR and m.vector_kind == Module.VectorKind.BEAM \
+				and float(m.stats.get(&"radius", 0.0)) < 31.0:
+			bad.append(m.id)
+	for rec in RecipeTable.all():
+		if rec.fused.vector_kind == Module.VectorKind.BEAM \
+				and float(rec.fused.stats.get(&"radius", 0.0)) < 31.0:
+			bad.append(rec.fused.id)
+	_check("every beam radius clears the query-cover floor of 31", bad, [])
+	finished["beam_radius_floor_holds_in_the_tables"] = true
