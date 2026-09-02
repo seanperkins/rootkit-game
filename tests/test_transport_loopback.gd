@@ -14,8 +14,8 @@ var finished := {}
 const PORT := 43217
 const CASES := ["reliable_input_survives_withheld_polling", "one_relay_bundle_per_tick",
 	"a_snapshot_does_not_delay_input", "tick_windows_are_distinct",
-	"foreign_envelopes_are_refused", "malformed_packets_are_counted_then_cut",
-	"silence_parks_after_three_seconds"]
+	"foreign_envelopes_are_refused", "a_join_after_start_is_refused",
+	"malformed_packets_are_counted_then_cut", "silence_parks_after_three_seconds"]
 
 var host_t: Transport
 var client_t: Transport
@@ -38,6 +38,7 @@ func _initialize() -> void:
 	a_snapshot_does_not_delay_input()
 	tick_windows_are_distinct()
 	foreign_envelopes_are_refused()
+	a_join_after_start_is_refused()
 	malformed_packets_are_counted_then_cut()
 	await silence_parks_after_three_seconds()
 	host_t.close()
@@ -253,11 +254,33 @@ func foreign_envelopes_are_refused() -> void:
 		Protocol.decode_envelope(lied, ctx).is_empty(), true)
 	finished["foreign_envelopes_are_refused"] = true
 
+## Once the host has STARTED, a fresh HELLO is refused at the transport and never
+## reaches the inbox; a reconnect naming the session and an existing slot does.
+func a_join_after_start_is_refused() -> void:
+	hs.started = true
+	hs.inbox.clear()
+	var before := host_t.malformed_total
+	client_t.send_control(Protocol.Message.HELLO, 0, {"protocol": SessionRules.PROTOCOL,
+		"name": "late", "session_id": 0, "slot": -1, "counters": {}})
+	_pump(40)
+	_check("a new participant after START is refused", host_t.malformed_total - before, 1)
+	_check("and never reaches the inbox", hs.inbox.size(), 0)
+	client_t.send_control(Protocol.Message.HELLO, 0, {"protocol": SessionRules.PROTOCOL,
+		"name": "back", "session_id": 77, "slot": 1, "counters": {}})
+	_pump(40)
+	_check("a reconnect to an existing slot is delivered", hs.inbox.size(), 1)
+	_check("as a HELLO", int(hs.inbox[0]["kind"]) if not hs.inbox.is_empty() else -1,
+		Protocol.Message.HELLO)
+	hs.started = false
+	hs.inbox.clear()
+	finished["a_join_after_start_is_refused"] = true
+
 ## Garbage is dropped and counted per peer; at BAD_PACKETS the peer is cut.
 func malformed_packets_are_counted_then_cut() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 5
 	var before := host_t.malformed_total
+	var peer_before := int(host_t.bad_packets.get(client_id, 0))
 	for k in 5:
 		var junk := PackedByteArray()
 		for j in 40:
@@ -268,7 +291,8 @@ func malformed_packets_are_counted_then_cut() -> void:
 		client_t.peer.put_packet(junk)
 	_pump(60)
 	_check("five junk packets were counted", host_t.malformed_total - before, 5)
-	_check("against the sending peer", int(host_t.bad_packets.get(client_id, 0)), 5)
+	_check("against the sending peer",
+		int(host_t.bad_packets.get(client_id, 0)) - peer_before, 5)
 	_check("and the peer is still connected", left_ids.has(client_id), false)
 	for k in SessionRules.BAD_PACKETS:
 		client_t.peer.set_target_peer(Transport.HOST_PEER)

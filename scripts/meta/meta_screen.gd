@@ -29,6 +29,25 @@ var _salvage: Label
 var _status: Label
 var _settings: Control
 
+# ------------------------------------------------------------------- link ---
+#
+# The co-op lobby. It owns the Transport until START, drains the session inbox
+# every frame, and hands both to the run when the session starts — the run
+# reparents the transport under itself, so the connection is never dropped and
+# re-made between the lobby and play. No lobby open means ./intrude is solo.
+
+var _link: VBoxContainer
+var _name_edit: LineEdit
+var _addr_edit: LineEdit
+var _host_btn: Button
+var _join_btn: Button
+var _leave_btn: Button
+var _start_btn: Button
+var _players: Label
+var _link_status: Label
+var _session: NetworkSession = null
+var _transport: Transport = null
+
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	var bg := ColorRect.new()
@@ -105,6 +124,7 @@ func _ready() -> void:
 	start.add_theme_font_size_override("font_size", 16)
 	start.pressed.connect(_start)
 	launch.add_child(start)
+	_start_btn = start
 
 	var settings_btn := Button.new()
 	settings_btn.text = "  settings  "
@@ -117,9 +137,254 @@ func _ready() -> void:
 	add_child(_settings)
 	settings_btn.pressed.connect(_settings.open)
 
+	_build_link()
 	start.grab_focus()
 
 	_refresh()
+
+## The link column, BESIDE the shop rather than under it: the shop column
+## already runs close to the viewport's height, which test_meta_layout
+## measures, so the lobby takes the empty right-hand side instead.
+func _build_link() -> void:
+	_link = VBoxContainer.new()
+	_link.position = Vector2(780, 52)
+	_link.add_theme_constant_override("separation", 8)
+	add_child(_link)
+	_link.add_child(_label("LINK  ::  online co-op, direct address", 14, DIM))
+	_link.add_child(_spacer(6))
+
+	_link.add_child(_label("handle", 12, DIM))
+	_name_edit = LineEdit.new()
+	_name_edit.custom_minimum_size = Vector2(300, 30)
+	_name_edit.max_length = SessionRules.NAME_MAX
+	_name_edit.text = SaveGame.string_pref("display_name")
+	_name_edit.placeholder_text = "display name"
+	_link.add_child(_name_edit)
+
+	_link.add_child(_label("host address", 12, DIM))
+	_addr_edit = LineEdit.new()
+	_addr_edit.custom_minimum_size = Vector2(300, 30)
+	_addr_edit.max_length = SessionRules.ADDRESS_MAX
+	_addr_edit.text = SaveGame.string_pref("last_address")
+	_addr_edit.placeholder_text = "127.0.0.1"
+	_link.add_child(_addr_edit)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	_link.add_child(row)
+	_host_btn = Button.new()
+	_host_btn.text = "  host  "
+	_host_btn.custom_minimum_size = Vector2(120, 34)
+	_host_btn.pressed.connect(_host)
+	row.add_child(_host_btn)
+	_join_btn = Button.new()
+	_join_btn.text = "  join  "
+	_join_btn.custom_minimum_size = Vector2(120, 34)
+	_join_btn.pressed.connect(_join)
+	row.add_child(_join_btn)
+	_leave_btn = Button.new()
+	_leave_btn.text = "  leave  "
+	_leave_btn.custom_minimum_size = Vector2(120, 34)
+	_leave_btn.pressed.connect(_leave)
+	_leave_btn.disabled = true
+	row.add_child(_leave_btn)
+
+	_link.add_child(_spacer(6))
+	_link.add_child(_label("players", 12, DIM))
+	_players = _label("", 14, FG)
+	_players.custom_minimum_size = Vector2(440, 0)
+	_link.add_child(_players)
+	_link_status = _label("no link — ./intrude runs solo", 13, DIM)
+	_link_status.custom_minimum_size = Vector2(440, 0)
+	_link_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_link.add_child(_link_status)
+
+## Whatever the fields say, as the save will keep it: sanitised on write.
+func _profile() -> Dictionary:
+	SaveGame.set_string_pref("display_name", _name_edit.text)
+	SaveGame.set_string_pref("last_address", _addr_edit.text)
+	SaveGame.save_state()
+	return {"slot": 0, "name": SaveGame.string_pref("display_name"),
+		"counters": SaveGame.session_counters()}
+
+func _host() -> void:
+	if _transport != null:
+		return
+	var profile := _profile()
+	# The session id and seed are the HOST's choice, made once here — outside
+	# the simulation, so a real random source is fine.
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	_session = NetworkSession.host_lobby(profile, rng.randi() | 1, rng.randi())
+	_transport = Transport.new()
+	add_child(_transport)
+	var err := _transport.host(SessionRules.DEFAULT_PORT, _session)
+	if err != OK:
+		_link_status.text = "could not bind port %d (%s)" % [SessionRules.DEFAULT_PORT,
+			error_string(err)]
+		_transport.queue_free()
+		_transport = null
+		_session = null
+		return
+	_transport.peer_left.connect(_on_peer_left)
+	_link_status.text = "hosting on port %d — ./intrude starts when everyone is in" \
+		% SessionRules.DEFAULT_PORT
+	_set_link_buttons(true)
+	_refresh_players()
+
+func _join() -> void:
+	if _transport != null:
+		return
+	_profile()
+	_session = NetworkSession.client_lobby()
+	_transport = Transport.new()
+	add_child(_transport)
+	var addr := SaveGame.string_pref("last_address")
+	var err := _transport.join(addr, SessionRules.DEFAULT_PORT, _session)
+	if err != OK:
+		_link_status.text = "could not start a link to %s (%s)" % [addr, error_string(err)]
+		_transport.queue_free()
+		_transport = null
+		_session = null
+		return
+	_transport.peer_joined.connect(_on_connected_to_host)
+	_transport.peer_left.connect(_on_peer_left)
+	_link_status.text = "connecting to %s…" % addr
+	_set_link_buttons(true)
+
+func _leave() -> void:
+	if _transport == null:
+		return
+	if _session != null and _session.role == NetworkSession.Role.CLIENT \
+			and _session.local_slot >= 0:
+		_transport.send_control(Protocol.Message.LEAVE, 0, {"slot": _session.local_slot})
+		_transport.poll()
+	_transport.close()
+	_transport.queue_free()
+	_transport = null
+	_session = null
+	_link_status.text = "no link — ./intrude runs solo"
+	_players.text = ""
+	_set_link_buttons(false)
+	_start_btn.disabled = false
+
+func _set_link_buttons(linked: bool) -> void:
+	_host_btn.disabled = linked
+	_join_btn.disabled = linked
+	_leave_btn.disabled = not linked
+	_name_edit.editable = not linked
+	_addr_edit.editable = not linked
+	# Only a host starts a session, and only once its server is up. A client's
+	# ./intrude waits for START.
+	_start_btn.disabled = linked and _session.role != NetworkSession.Role.HOST
+
+## A client is connected to the host: introduce this profile.
+func _on_connected_to_host(_id: int) -> void:
+	if _session == null or _session.role != NetworkSession.Role.CLIENT:
+		return
+	_transport.bind_peer(Transport.HOST_PEER, 0)
+	var p := _profile()
+	_transport.send_control(Protocol.Message.HELLO, 0, {
+		"protocol": SessionRules.PROTOCOL, "name": p["name"],
+		"counters": p["counters"], "session_id": 0, "slot": -1})
+	_link_status.text = "connected — waiting for a slot"
+
+func _on_peer_left(id: int) -> void:
+	if _session == null:
+		return
+	if _session.role == NetworkSession.Role.HOST:
+		_session.remove_peer(id)
+		_broadcast_welcome(-1)
+		_refresh_players()
+	else:
+		_link_status.text = "the host went away"
+		_leave()
+
+func _process(_dt: float) -> void:
+	if _transport == null or _session == null:
+		return
+	_transport.poll()
+	while not _session.inbox.is_empty():
+		var msg: Dictionary = _session.inbox.pop_front()
+		_handle(int(msg["kind"]), msg["body"], int(msg["peer"]))
+
+func _handle(kind: int, body: Dictionary, peer: int) -> void:
+	match kind:
+		Protocol.Message.HELLO:
+			if _session.role != NetworkSession.Role.HOST:
+				return
+			var slot := _session.admit(body, peer)
+			if slot < 0:
+				_transport.peer.disconnect_peer(peer)
+				return
+			_transport.bind_peer(peer, slot)
+			_transport.send_control(Protocol.Message.WELCOME, 0,
+				{"descriptor": _session.lobby_descriptor(), "slot": slot}, peer)
+			_broadcast_welcome(peer)
+			_refresh_players()
+		Protocol.Message.WELCOME:
+			if _session.role != NetworkSession.Role.CLIENT:
+				return
+			if _session.apply_welcome(body):
+				_link_status.text = "in the lobby as slot %d — waiting for the host to start" \
+					% _session.local_slot
+				_refresh_players()
+		Protocol.Message.START:
+			if _session.role != NetworkSession.Role.CLIENT:
+				return
+			if _session.apply_start(body):
+				_launch_session()
+			else:
+				_link_status.text = "the host started a session this link does not belong to"
+		Protocol.Message.LEAVE:
+			if _session.role == NetworkSession.Role.HOST:
+				_session.remove_peer(peer)
+				_transport.peer.disconnect_peer(peer)
+				_broadcast_welcome(-1)
+				_refresh_players()
+
+## Refresh every OTHER peer's roster after a change; the joining peer already
+## has its own WELCOME with its slot.
+func _broadcast_welcome(except: int) -> void:
+	for id in _transport.slot_of_peer.keys():
+		if int(id) == except:
+			continue
+		_transport.send_control(Protocol.Message.WELCOME, 0,
+			{"descriptor": _session.lobby_descriptor(), "slot": -1}, int(id))
+
+func _refresh_players() -> void:
+	if _session == null:
+		_players.text = ""
+		return
+	var lines := []
+	for row in _session.lobby_rows:
+		var tag := "  (you)" if int(row["slot"]) == _session.local_slot else ""
+		lines.append("slot %d   %s%s" % [int(row["slot"]),
+			row["name"] if String(row["name"]) != "" else "anonymous", tag])
+	_players.text = "\n".join(lines)
+
+## Hand the live session and its connection to the run and replace the scene.
+## The transport is reparented, not recreated: the same ENet peers carry the
+## lobby and the game.
+func _launch_session() -> void:
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	run.configure_session(_session)
+	remove_child(_transport)
+	run.add_child(_transport)
+	run.attach_transport(_transport)
+	_transport = null
+	var tree := get_tree()
+	tree.root.add_child(run)
+	var old := tree.current_scene
+	tree.current_scene = run
+	if old != null:
+		old.queue_free()
+	elif is_inside_tree():
+		queue_free()
+
+func _exit_tree() -> void:
+	if _transport != null:
+		_transport.close()
 
 func _label(t: String, size: int, c: Color) -> Label:
 	var l := Label.new()
@@ -178,9 +443,27 @@ func _buy(id: StringName) -> void:
 	SaveGame.buy(id)
 	_refresh()
 
+## ./intrude: solo when no link is open; as host, freeze the roster, send START
+## to every peer and go; as client, nothing — the host starts.
 func _start() -> void:
-	get_tree().change_scene_to_file("res://scenes/run.tscn")
+	if _transport == null or _session == null:
+		get_tree().change_scene_to_file("res://scenes/run.tscn")
+		return
+	if _session.role != NetworkSession.Role.HOST:
+		return
+	var desc := _session.start()
+	if desc.is_empty():
+		_link_status.text = "the lobby could not be frozen into a session"
+		return
+	_transport.send_control(Protocol.Message.START, 0, {"descriptor": desc, "slot": -1})
+	_transport.poll()
+	_launch_session()
 
 func _input(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and e.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+		# Not while a field is being typed into: Enter there is text, not launch.
+		if _name_edit != null and (_name_edit.has_focus() or _addr_edit.has_focus()):
+			return
+		if _start_btn != null and _start_btn.disabled:
+			return
 		_start()

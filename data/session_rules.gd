@@ -83,3 +83,6 @@ const CONTROL_MAX := 16384
 
 ## Longest a host address string may be, in characters.
 const ADDRESS_MAX := 64
+
+## The UDP port a host listens on. One port: direct-IP play, no matchmaking.
+const DEFAULT_PORT := 43210

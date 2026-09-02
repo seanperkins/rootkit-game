@@ -31,6 +31,16 @@ const PREF_RANGES := {
 	"damage_numbers": [0.0, 1.0],
 }
 
+## STRING preferences, kept apart from the numeric table on purpose: a string
+## has no min/max, it has a length cap and a character whitelist, and pushing
+## one through _num would silently turn a name into 0.0. Each row is
+## [max_length, whitelist_kind]. Applied on read AND on write, like the numeric
+## ranges, because save.json is user-editable and treated as hostile.
+const PREF_STRINGS := {
+	"display_name": [SessionRules.NAME_MAX, "printable"],
+	"last_address": [SessionRules.ADDRESS_MAX, "hostname"],
+}
+
 
 ## The v2 split. Two tables, because the two namespaces are read at different
 ## times by different code. SHEET_EFFECT is additive PLAYER stats, read directly
@@ -76,6 +86,8 @@ static func _default() -> Dictionary:
 			"volume_music": 0.5,
 			"shake": 1.0,
 			"damage_numbers": 1.0,
+			"display_name": "",
+			"last_address": "127.0.0.1",
 		},
 	}
 
@@ -164,6 +176,9 @@ static func _sanitise(d: Dictionary) -> Dictionary:
 	var pr = d.get("prefs", {})
 	if typeof(pr) == TYPE_DICTIONARY:
 		for k in out["prefs"]:
+			if PREF_STRINGS.has(k):
+				out["prefs"][k] = sanitise_string_pref(k, pr.get(k, out["prefs"][k]))
+				continue
 			var rng: Array = PREF_RANGES[k]
 			out["prefs"][k] = clampf(_num(pr.get(k, out["prefs"][k]),
 				out["prefs"][k]), rng[0], rng[1])
@@ -195,6 +210,46 @@ static func set_pref(key: String, value: float) -> void:
 	var d := load_state()
 	d["prefs"][key] = clampf(_num(value, float(_default()["prefs"][key])),
 		rng[0], rng[1])
+
+## A string preference, sanitised on write exactly as on read: the container
+## type is checked, the length is capped, and every character outside the key's
+## whitelist is dropped — never escaped or substituted, because a substituted
+## character would still be a string the game did not write.
+static func set_string_pref(key: String, value) -> void:
+	if not PREF_STRINGS.has(key):
+		return
+	load_state()["prefs"][key] = sanitise_string_pref(key, value)
+
+static func string_pref(key: String) -> String:
+	if not PREF_STRINGS.has(key):
+		return ""
+	return String(load_state()["prefs"].get(key, _default()["prefs"][key]))
+
+## The only legal shapes: "printable" is ASCII 0x20..0x7E, the characters a
+## display name may carry; "hostname" is letters, digits, dot, dash and colon,
+## which covers an IPv4, IPv6 or DNS host and nothing that could be a path or a
+## shell. A non-string is the default, not an empty string, so a hand-edited
+## `null` cannot blank a field the lobby needs.
+static func sanitise_string_pref(key: String, value) -> String:
+	var row: Array = PREF_STRINGS[key]
+	var fallback: String = _default()["prefs"][key]
+	if typeof(value) != TYPE_STRING:
+		return fallback
+	var kind: String = row[1]
+	var out := ""
+	for ch in String(value):
+		var code := ch.unicode_at(0)
+		var ok := false
+		if kind == "printable":
+			ok = code >= 0x20 and code <= 0x7E
+		else:
+			ok = (code >= 0x30 and code <= 0x39) or (code >= 0x41 and code <= 0x5A) \
+				or (code >= 0x61 and code <= 0x7A) or ch == "." or ch == "-" or ch == ":"
+		if ok:
+			out += ch
+		if out.length() >= int(row[0]):
+			break
+	return out
 
 static func save_state() -> bool:
 	var d := load_state()

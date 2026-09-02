@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 9
+const EXPECTED_CHECKS := 15
 
 var failures := 0
 var checks := 0
@@ -73,6 +73,22 @@ func fits_the_viewport() -> void:
 
 	var scroll: Node = _find(main, "ScrollContainer", "")
 	_check("the upgrade rows are in a ScrollContainer", scroll != null, true)
+
+	# The link column sits beside the shop, inside the viewport at 1280 wide and
+	# clear of the shop column, so neither can push the other off-screen at the
+	# smallest supported width.
+	var host: Node = _find(main, "Button", "host")
+	var join: Node = _find(main, "Button", "join")
+	var addr: Node = _find(main, "LineEdit", "")
+	_check("the host button exists", host != null, true)
+	_check("the join button exists", join != null, true)
+	_check("an address field exists", addr != null, true)
+	if host != null and join != null:
+		var hr: Rect2 = (host as Control).get_global_rect()
+		var jr: Rect2 = (join as Control).get_global_rect()
+		_check("the link column fits inside the viewport width", jr.end.x <= vw, true)
+		_check("and its buttons sit clear of the shop column", hr.position.x >= r.end.x, true)
+		_check("and above the viewport's bottom", jr.end.y <= vh, true)
 
 	main.queue_free()
 	await process_frame

@@ -624,6 +624,19 @@ var _camera: Camera2D
 func configure_session(session: NetworkSession) -> void:
 	_session = session
 
+## The live transport, handed over by the lobby before _ready and reparented
+## under this node. Polled ABOVE the world guard only; nothing below it, and
+## nothing in input application, ever inspects it. Solo has none.
+var _transport: Transport = null
+
+func attach_transport(transport: Transport) -> void:
+	_transport = transport
+
+## The LIVE slots whose record for the next tick has not arrived, for the HUD's
+## stall notice once _stalled_ticks passes STALL_NOTICE.
+func missing_slots() -> PackedInt32Array:
+	return lockstep.missing(lockstep.executed)
+
 ## A one-slot solo session carrying this profile's own counters, the default
 ## seed, delay zero, and no choice timeout.
 func _default_solo_session() -> NetworkSession:
@@ -1068,6 +1081,16 @@ func _physics_process(_dt: float) -> void:
 	# shake would render zero frames, the effects would freeze mid-decay, and —
 	# worst — the hitstop would never be released, because all three of its
 	# triggers set one of these three flags on the frame they fire.
+	# THE NETWORK, above the guard: receive whatever arrived (records land in
+	# the ring, control messages in the session inbox), then, as host, send the
+	# one relay bundle this tick owes every client. The simulation below never
+	# sees any of this; it sees records.
+	if _transport != null:
+		_transport.poll()
+		_drain_inbox()
+		if _transport.is_host:
+			_transport.flush_relay(lockstep.executed + lockstep.delay)
+
 	_present(_dt)
 
 	# INPUT APPLICATION, above the world guard. The ring decides whether this
@@ -1094,18 +1117,40 @@ func _physics_process(_dt: float) -> void:
 	# world-step guard so the freeze is faithful even when a trigger also set a
 	# guard flag on the same frame, and so presentation and input intake above
 	# still run through it. A dead or paused run stays frozen by its own flag.
-	if hitstop_ticks > 0:
-		hitstop_ticks -= 1
-		return
-
+	#
 	# `user_paused` gates the world in SOLO only. In a session it is a local
 	# overlay: this peer's record carries zero movement while it is up, but
 	# lockstep, the world and the hashes keep going, because one player's menu
 	# cannot stop three others' game.
 	var solo := _session.role == NetworkSession.Role.SOLO
-	if paused or (user_paused and solo) or not alive or won:
-		return
+	if hitstop_ticks > 0:
+		hitstop_ticks -= 1
+	elif not (paused or (user_paused and solo) or not alive or won):
+		_step_world()
+	_report_checksum()
 
+## The periodic checksum: every CHECKSUM_INTERVAL consumed ticks, in a session,
+## hash the executed state and report it — to the local ring, so this peer's
+## own report takes part in desync_at, and to the wire. Solo reports nothing;
+## there is nobody to disagree with.
+func _report_checksum() -> void:
+	if _transport == null or tick % SessionRules.CHECKSUM_INTERVAL != 0:
+		return
+	var h := _state_hash()
+	lockstep.submit_checksum(local_slot, tick, h)
+	_transport.send_checksum(tick, h)
+
+## Control messages the transport validated, drained above the guard. Later
+## tasks dispatch ABSENT/PRESENT/RESYNC/END here; for now nothing in a running
+## session needs them, and an inbox that is never drained would grow forever.
+func _drain_inbox() -> void:
+	if _session.inbox.is_empty():
+		return
+	_session.inbox.clear()
+
+## One fixed world step: the ordered tick, and only that. Everything about
+## whether to run it was decided above.
+func _step_world() -> void:
 	# ONCE per tick, and before any step. It used to open _step5_fire, which
 	# meant every event appended earlier in the tick — the mine fuse in
 	# _step2_integrate, and the hazard and corruption zones in _step2b_zones —
@@ -1258,9 +1303,13 @@ func _poll_local_input() -> void:
 	# submit lands; a duplicate for a tick already recorded leaves it for the
 	# next tick rather than losing it.
 	var c := _local_choice
-	if lockstep.submit(local_slot, lockstep.executed + lockstep.delay, move,
-			c.x, c.y, c.z):
+	var t := lockstep.executed + lockstep.delay
+	if lockstep.submit(local_slot, t, move, c.x, c.y, c.z):
 		_local_choice = Vector3i(-1, -1, -1)
+		# The same immutable record goes on the wire — to the host, or into
+		# the host's own relay staging — exactly once, the tick it was made.
+		if _transport != null:
+			_transport.send_input(t, move, c.x, c.y, c.z)
 
 ## Keep the ring's roster masks in step with slot_state, so a slot marked DEAD
 ## or ABSENT by the simulation stops being waited on the same tick.
@@ -4323,6 +4372,7 @@ func _build_manifest() -> void:
 			"_mm_enemy": "presentation", "_mm_proj": "presentation",
 			"_mm_shard": "presentation", "_mm_botnet": "presentation",
 			"_camera": "presentation", "_session": "immutable descriptor",
+			"_transport": "the network, polled above the guard; never simulation",
 			"local_slot": "this process's identity", "_players": "immutable roster size",
 			"pickup_radius": "derived from the descriptor counters",
 			"user_paused": "local overlay",

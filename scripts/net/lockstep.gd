@@ -131,6 +131,18 @@ func ready(tick: int) -> bool:
 		return _required == 0
 	return (_have[cell] & _required) == _required
 
+## The LIVE slots whose record for tick T has not arrived — what a stall notice
+## names. Empty when the tick is ready.
+func missing(tick: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var cell := tick & _MASK
+	var have := _have[cell] if _tick_tag[cell] == tick else 0
+	for slot in SessionRules.MAX_PLAYERS:
+		var bit := 1 << slot
+		if (_required & bit) != 0 and (have & bit) == 0:
+			out.append(slot)
+	return out
+
 ## Fill four caller-owned, MAX_PLAYERS-sized arrays with tick T's records in slot
 ## order and advance executed to T + 1. Allocation-free on the hot path. Returns
 ## false without touching executed if T is not the next tick or is not ready. The

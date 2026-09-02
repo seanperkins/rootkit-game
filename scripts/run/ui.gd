@@ -293,9 +293,16 @@ func _refresh() -> void:
 	centre.add_theme_color_override("font_color",
 		WARN if banner != "" else FG)
 
-	_hud.get_node("Tally").text = \
-		"salvage %d\nbotnet %d\nkills %d   flips %d" % [
-			run.salvage, run.botnet.count, run.kills[ls], run.flips[ls]]
+	var tally := "salvage %d\nbotnet %d\nkills %d   flips %d" % [
+		run.salvage, run.botnet.count, run.kills[ls], run.flips[ls]]
+	# The stall notice: once lockstep has waited STALL_NOTICE callbacks on a
+	# record, name the slots it is waiting on. Presentation only.
+	if run._stalled_ticks >= SessionRules.STALL_NOTICE:
+		var names := []
+		for s in run.missing_slots():
+			names.append(str(s))
+		tally += "\nwaiting for input: %s" % ", ".join(names)
+	_hud.get_node("Tally").text = tally
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())
 

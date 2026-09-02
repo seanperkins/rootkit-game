@@ -24,6 +24,7 @@ SUITES=(
   test_feel test_synth test_audio_events test_input test_prefs test_hud test_arrivals test_flow test_interpolation
   test_determinism_rules test_meta_derivation test_lockstep test_plurality test_offers
   test_manifest test_snapshot_hostile test_multiplayer_sim test_transport_loopback
+  test_lobby
 )
 [ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)
 
