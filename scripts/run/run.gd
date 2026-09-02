@@ -1911,11 +1911,20 @@ func _step_world() -> void:
 	# and nothing else, so flooding 2401 cells through a wave of daemons buys
 	# precisely nothing — and this is the whole of its cost, so gating it here
 	# takes the flow field out of the tick entirely for most of a subnet.
+	#
+	# ONE rebuild per tick, round-robin from the tick number: a party that
+	# crosses cells together (the perf gate's pinned party does every time)
+	# would otherwise flood four fields in one tick, and that was the gate's
+	# p95 tail. A slot's field waits at most three ticks for its turn, 50 ms a
+	# boss cannot notice. The start slot derives from the tick, so no new state
+	# enters the manifest and every peer picks the same slot.
 	if boss_present():
-		for s in SessionRules.MAX_PLAYERS:
+		for k in SessionRules.MAX_PLAYERS:
+			var s := (tick + k) % SessionRules.MAX_PLAYERS
 			if slot_state[s] == SlotState.LIVE \
 					and _flow[s].needs_rebuild(terrain, player_pos[s]):
 				_flow[s].rebuild(terrain, player_pos[s])
+				break
 	_step4_steer()
 	_step5_fire(sdt)
 	_step6_detect(sdt)

@@ -23,7 +23,9 @@ already had, and walks every dynamic blocker first, which cost 2.8 → 6.9 ms p9
 And `run.gd` gates `rebuild` on `boss_present()`, removing it from the tick
 entirely for the part of a subnet with no boss in it.
 
-`needs_rebuild(terrain, at)` is true only on a player CELL crossing.
+`needs_rebuild(terrain, at)` is true only on a player CELL crossing, and the
+run rebuilds at most ONE slot's field per tick, round-robin from the tick
+number (a party crossing cells together flooded four fields in one tick).
 Covered by `tests/test_flow.gd`.
 
 ## `scripts/core/grid.gd` (242) — `Grid`
