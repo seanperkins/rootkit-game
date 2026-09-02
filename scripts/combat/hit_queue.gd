@@ -45,6 +45,11 @@ var count: int = 0
 ## `dropped` is that evidence, and the capacity is sized so it stays zero.
 var dropped: int = 0
 
+## Hit events drained this TICK, across every drain_pass — a per-tick
+## diagnostic for the perf gate's load pin. `count` and `hit_count` are both
+## zeroed by the drain, so nothing else can read the tick's hits after it.
+var drained_events: int = 0
+
 var _capacity: int
 
 ## Per-entity adjudication state for the current tick, indexed by entity slot.
@@ -82,6 +87,7 @@ func _init(capacity: int, entity_capacity: int) -> void:
 
 func begin_tick() -> void:
 	count = 0
+	drained_events = 0
 	hit_count = 0
 	adjudication.fill(OPEN)
 	outcome.fill(Outcome.NONE)
@@ -192,6 +198,7 @@ func drain_pass(pop: Population, thresholds: PackedFloat32Array,
 		adjudication[i] = CLOSED
 		resolved += 1
 
+	drained_events += count
 	count = 0
 	return resolved
 

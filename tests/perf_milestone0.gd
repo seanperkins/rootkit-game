@@ -10,11 +10,12 @@ extends SceneTree
 ## previous version measured a hand-written model of the tick, and review showed
 ## the model had drifted from the game: a 2560x1440 arena against the real
 ## 3200x2000 (3600 grid cells against 6300), MAX_BOTNET 8 against 64, and it
-## omitted _pick_target(1400) — the PACKET targeting query, which spans the
-## whole grid and runs up to 12 times a tick from the starting loadout — plus
-## the drain and the renderer writes. It reported PASS while the real tick's p95
-## exceeded its own scaled budget. A gate that measures a model of the code
-## establishes nothing about the code.
+## omitted the heavy fire paths — today the beam capsule query and selection
+## (slots 2 and 3, rank 5, k up to 16) and the four homing rows, which steer
+## and re-acquire per live projectile — plus the drain and the renderer
+## writes. It reported PASS while the real tick's p95 exceeded its own scaled
+## budget. A gate that measures a model of the code establishes nothing about
+## the code.
 ##
 ## Run: godot --headless -s res://tests/perf_milestone0.gd
 
@@ -49,6 +50,83 @@ const MAX_CONTENTION := 1.8
 var run: Node2D
 ## Events the gated real run dropped, captured before its node is freed.
 var _gate_drops: int = 0
+## Whether the real run reached its pinned coverage — see the BASELINE_*
+## constants below.
+var _gate_covered := true
+
+## Load statistics over the real run's ticks. Three, because they move in
+## different directions: a lighter field lowers the enemy mean; a weaker or
+## blind-aimed build lowers the hit and kill means while raising the enemy
+## mean; a dead slot 0 lowers kills. A tick that does not step the world (an
+## offer the fixture has not yet answered) leaves all three unchanged, so it
+## dilutes every mean equally and a ratio pin is unaffected.
+var _enemy_sum := 0.0
+var _hit_sum := 0.0
+var _cap_ticks := 0.0
+
+## The fixture's end and load before the weapons pass, recorded so the gate
+## cannot get lighter by dying sooner OR by surviving a thinner field: a
+## baseline WIN requires a win; a baseline death at tick N requires surviving
+## at least 90% of N (declared slack: the run is deterministic but chaotic);
+## a baseline TIMEOUT (the 24000-tick cap, which is what this branch measured)
+## requires the cap or a win; and the load means — live enemies, hits per
+## tick and kills per tick — must each reach 97% of the baseline's. The run is
+## seeded with no run-to-run variance, so 3% is not noise: it is the allowance
+## for this pass's behavioural drift, kept below the gate's 5.4% p95 headroom.
+## Order: pin from the pre-change run, pass the post-change fixture against
+## it, only then move the constants — outcome upward only; each load baseline
+## upward, or downward with a written reason here. A fall below any floor
+## needs a stated reason, never a re-pin. Both values stay in this comment so
+## the delta is visible. If the gate comes back HEAVIER (blind-aimed pinned
+## slots mean a fuller field), profile and optimise; never thin the fixture
+## or lower the budget.
+##
+## Measured 2026-09-02, three points so fixture and game changes are
+## attributed separately:
+##   old fixture, pre-pass tree: "died at 400s" — the old loop ran while ANY
+##     slot was LIVE, so this was the 24000 cap with slot 0's fate unknown;
+##     p95 9.571 ms.
+##   new fixture, pre-pass tree (the pin's baseline): died at tick 10908
+##     (182 s), mean live enemies 252.4, mean hits/tick 3.90, kills/tick
+##     0.293, at cap 3% of ticks. The OLD always-moving kite under the same
+##     slot-0 loop also died there (tick 10461 with the centre offsets, tick
+##     20700 with the old corner offsets — which is what the shipped fixture
+##     was actually measuring), so the pre-pass "timeout" was three immortal
+##     teammates propping up a dead slot 0, not a kite that survived; the
+##     hysteresis kite is not what changed the outcome.
+##   new fixture, post-pass tree: timeout at tick 24000 (400 s), mean live
+##     enemies 286.0, mean hits/tick 2.70, kills/tick 0.240, at cap 11%.
+## The outcome moved UP (died -> the cap) and the enemy mean up, so those
+## are pinned at the post-pass figures. The hit and kill means are pinned
+## BELOW the pre-pass figures, with the reason the rule demands: the
+## pre-pass means cover a run truncated at tick 10908, a different span, and
+## the pass moved packet, beam and spike onto facing, so the three pinned
+## slots' forward rows fire blind by design (a rotating record sweeps them)
+## and land fewer hits per tick than the old auto-aimed packets did. That
+## is the coverage this fixture now has; it is pinned so it cannot fall
+## further unnoticed.
+const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout"
+const BASELINE_END_TICK := 24000
+const BASELINE_MEAN_ENEMIES := 286.0
+const BASELINE_MEAN_HITS := 2.70
+const BASELINE_KILLS_PER_TICK := 0.240
+
+## The autopilot's hysteresis band and nudge cadence — see _kite. Measured
+## on the pre-pass tree: a 120/190 band died at tick 10182 and 150/190 at
+## 13518; on this tree 150/190 died at 15256 and 190/190 reaches the cap
+## (with or without the dash flee; with it the hit mean is higher, 2.70
+## against 1.95), so the band is 190/190: flee inside 190 as the old kite
+## did, and HOLD facing with zero records once nothing is inside it.
+var _kite_fleeing := false
+var _kite_hold := 0
+const KITE_FLEE_IN := 190.0
+const KITE_FLEE_OUT := 190.0
+const KITE_NUDGE_EVERY := 37
+## A stationary kite is what a sentinel's dash and a probe's lead are aimed
+## at, so a charger winding up or dashing inside KITE_DASH_RANGE also opens
+## the flee state.
+const KITE_DASH_FLEE := true
+const KITE_DASH_RANGE := 300.0
 
 func _initialize() -> void:
 	SaveGame.use_test_paths()
@@ -145,6 +223,17 @@ func _initialize() -> void:
 	if _gate_drops > 0:
 		print("  FAIL — the real run dropped %d events; determinism needs zero." % _gate_drops)
 		quit(1)
+	# Coverage before contention: a loaded machine must not turn a coverage
+	# regression into PASS-by-INCONCLUSIVE. An unpinned baseline is refused
+	# too, so the pin cannot be vacuous by omission.
+	elif BASELINE_MEAN_ENEMIES <= 0.0 or BASELINE_MEAN_HITS <= 0.0 \
+			or BASELINE_KILLS_PER_TICK <= 0.0 or BASELINE_END_TICK <= 0:
+		print("  FAIL — the coverage baseline is not pinned; run the gate on the pre-change tree and record it.")
+		quit(1)
+	elif not _gate_covered:
+		print("  FAIL — the fixture measured less than its baseline (%s at %d, mean enemies %.1f, mean hits %.2f, kills/tick %.3f): a coverage regression, not a speedup." % [
+			BASELINE_OUTCOME, BASELINE_END_TICK, BASELINE_MEAN_ENEMIES, BASELINE_MEAN_HITS, BASELINE_KILLS_PER_TICK])
+		quit(1)
 	elif scale > MAX_CONTENTION:
 		print("  INCONCLUSIVE — machine %.2fx the reference, too contended." % scale)
 		quit(0)
@@ -162,8 +251,10 @@ func _initialize() -> void:
 ## leash on both axes — the 7200 grid window, four flow fields rebuilding as
 ## the party crosses cells, four builds firing. This is the worst case the
 ## design leashes the party TO, so it is the load the budget is judged on.
-const PARTY_OFFSETS := [Vector2.ZERO, Vector2(4000.0, 0.0),
-	Vector2(0.0, 4000.0), Vector2(4000.0, 4000.0)]
+## Slot 0 sits at the CENTRE of the box, so the leash lets it flee in every
+## direction; the pinned offsets still span the full 4000 on both axes.
+const PARTY_OFFSETS := [Vector2.ZERO, Vector2(2000.0, 2000.0),
+	Vector2(-2000.0, 2000.0), Vector2(2000.0, -2000.0)]
 
 ## A run configured with a four-slot session, this process at slot zero.
 func _party_run() -> Node2D:
@@ -207,7 +298,25 @@ func _real_run() -> PackedFloat64Array:
 		var ex3 := Exploit.new()
 		ex3.vector = EquippedModule.new(homer, 5)
 		lo.exploits.append(ex3)
+	# Slots 2 and 3 carry a rank-5 beam in place of the aura: the capsule
+	# query and its pierce + 1 selection are the heaviest forward path, and
+	# the rotating records below sweep it. The row inherits on_hit, which
+	# keeps firing because the same slot's homer lands reliable hits. The
+	# homers stay on every slot — the header argues they are what lets the
+	# gate fail at all.
+	for s in [2, 3]:
+		var lo2: Loadout = g.loadouts[s]
+		var exb := Exploit.new()
+		exb.place(tbl[&"beam"])
+		exb.place(tbl[&"on_hit"])
+		exb.vector.rank = 5
+		lo2.exploits[1] = exb          # the broadcast row; the homer on row 2 stays
 	g._recompile()
+	_kite_fleeing = false
+	_kite_hold = 0
+	_enemy_sum = 0.0
+	_hit_sum = 0.0
+	_cap_ticks = 0.0
 	g.level_up_offered.connect(func(c): g.choose_card(c[0][0], Loadout.best_target(c[0][1])))
 	# Without a handler _block_payout refuses to offer a fusion at all (it
 	# would pause with nobody to unpause it); with one, an autopiloted run
@@ -215,7 +324,10 @@ func _real_run() -> PackedFloat64Array:
 	g.fusion_offered.connect(func(_m): g.choose_fusion(0))
 	var out := PackedFloat64Array()
 	var t := 0
-	while t < 24000 and g.alive and not g.won:
+	# The loop ends on SLOT 0: `alive` is true while any slot is LIVE, and the
+	# pinned slots are force-LIVE below, so a dead kite would otherwise be
+	# propped up by three immortal teammates for the rest of the run.
+	while t < 24000 and g.slot_state[0] == g.SlotState.LIVE and not g.won:
 		g.input_override = _kite(g)
 		# Hold the party at the full leash for the whole run, and keep the pinned
 		# slots alive: a teammate that dies shrinks the window and lightens the
@@ -233,7 +345,16 @@ func _real_run() -> PackedFloat64Array:
 			var open: Dictionary = g._offer_open[s]
 			if not open.is_empty():
 				c = Vector3i(0, 0, int(open["seq"]))
-			g.lockstep.submit(s, g.lockstep.executed, Vector2.ZERO, c.x, c.y, c.z)
+			# A slowly rotating unit vector, one turn per 600 ticks, so the
+			# pinned slots' facing sweeps and their forward rows fire in every
+			# direction. The drift it would cause is erased by the force-write
+			# above; facing is set from the RECORD, not the realised step, so
+			# the leash clamping the outward half is harmless. Side effects,
+			# accepted: player_vel on these slots is non-zero (read by _flank
+			# and _fire_hostile) and they take the movement branch inside the
+			# timed region.
+			var spin := TAU * float(t) / 600.0
+			g.lockstep.submit(s, g.lockstep.executed, Vector2(cos(spin), sin(spin)), c.x, c.y, c.z)
 		var t0 := Time.get_ticks_usec()
 		g._physics_process(DT)
 		# The periodic checksum is part of the tick's cost in a session, so it
@@ -242,39 +363,116 @@ func _real_run() -> PackedFloat64Array:
 			g._state_hash()
 		g._update_renderers()      # see the stress loop — moved, not removed
 		out.append(float(Time.get_ticks_usec() - t0) / 1000.0)
+		_enemy_sum += float(g.enemies.count)
+		_hit_sum += float(g.queue.drained_events)   # hit events drained this tick
+		if g.enemies.count >= g.MAX_ENEMIES:
+			_cap_ticks += 1.0
 		t += 1
-	print("    %s at %.0fs, peak enemies %d" % [
-		"won" if g.won else "died", t * DT, g.MAX_ENEMIES])
+	var outcome := "won" if g.won else ("died" if g.slot_state[0] != g.SlotState.LIVE else "timeout")
+	var ticks := maxf(float(t), 1.0)
+	var mean_enemies := _enemy_sum / ticks
+	var mean_hits := _hit_sum / ticks
+	var total_kills := 0
+	for s in SessionRules.MAX_PLAYERS:
+		total_kills += g.kills[s]
+	var kills_per_tick := float(total_kills) / ticks
+	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, kills/tick %.3f, at cap %.0f%% of ticks" % [
+		outcome, t, t * DT, mean_enemies, mean_hits, kills_per_tick, 100.0 * _cap_ticks / ticks])
+	var covered := true
+	if BASELINE_OUTCOME == "won":
+		covered = outcome == "won"
+	elif BASELINE_OUTCOME == "died":
+		covered = outcome != "died" or t >= int(float(BASELINE_END_TICK) * 0.9)
+	elif BASELINE_OUTCOME == "timeout":
+		covered = outcome != "died"
+	if mean_enemies < BASELINE_MEAN_ENEMIES * 0.97 or mean_hits < BASELINE_MEAN_HITS * 0.97 \
+			or kills_per_tick < BASELINE_KILLS_PER_TICK * 0.97:
+		covered = false
+	_gate_covered = covered
 	# Determinism, not speed: an event queue that overflowed at cap dropped work
 	# one peer would keep, so the gate refuses a run that dropped anything.
 	_gate_drops = g.queue.dropped
 	g.queue_free()
 	return out
 
+## The autopilot. Facing is the last non-zero record, so a kite that only
+## ever FLED would point every forward weapon away from the swarm, die early
+## and shrink the gate — the trap the header names. So: hysteresis. Flee while
+## the nearest enemy is inside KITE_FLEE_IN until it is back out past
+## KITE_FLEE_OUT, then nudge one tick toward the swarm and HOLD facing with
+## zero records, nudging again every KITE_NUDGE_EVERY ticks. Duty cycle:
+## facing points at the swarm from each nudge until the next burst begins,
+## and away for the burst itself (roughly two-fifths to two-thirds of each
+## cycle at the swarm, against a tracer or a daemon respectively). Slot 0's
+## survival rests on its aura and its homing row; the forward packet is drain
+## coverage, which the load pin measures.
 func _kite(g: Node2D) -> Vector2:
-	# Head for the gate once the subnet is cleared. Standing still in CLEARED
-	# would shrink the gate's coverage the same way terrain-blindness already
-	# did once, and a perf gate that measures less whenever the game changes is
-	# not gating anything.
+	# The CLEARED branch stays FIRST and unconditional: a cleared subnet has
+	# nothing inside 120, and a kite that held there would never reach the
+	# gate. Standing still in CLEARED would shrink the gate's coverage the same
+	# way terrain-blindness already did once.
 	if g.phase == g.Phase.CLEARED:
 		var gate = g.terrain.gate()
 		if gate != null and gate.open:
 			return _around_walls(g, (gate.end - g.player_pos[g.local_slot]).normalized())
+	var me: Vector2 = g.player_pos[g.local_slot]
+	var nearest := -1
+	var nd := INF
+	for i in g.enemies.count:
+		var d: float = me.distance_to(g.enemies.pos[i])
+		if d < nd:
+			nd = d; nearest = i
+	# The flee sum over everything within KITE_FLEE_OUT; its negative is the
+	# swarm's mass, which is where a nudge should face (the nearest single
+	# enemy can be a straggler off to one side at cap).
 	var flee := Vector2.ZERO
 	var k := 0
 	for i in g.enemies.count:
-		var d: Vector2 = g.player_pos[g.local_slot] - g.enemies.pos[i]
+		var d: Vector2 = me - g.enemies.pos[i]
 		var dl := d.length()
-		if dl < 190.0 and dl > 0.01:
-			flee += d / dl * (190.0 - dl)
+		if dl < KITE_FLEE_OUT and dl > 0.01:
+			flee += d / dl * (KITE_FLEE_OUT - dl)
 			k += 1
-	var dir := flee.normalized() if k > 0 else Vector2.ZERO
-	# The CURRENT arena's centre, not the world origin: the campaign is three
-	# arenas laid out end to end now, and only the first is centred on zero.
-	var c: Vector2 = g.terrain.arena().get_center() - g.player_pos[g.local_slot]
-	if c.length() > 1100.0:
-		dir = (dir + c.normalized() * 1.6).normalized()
-	return _around_walls(g, dir)
+	if _kite_fleeing and nd > KITE_FLEE_OUT:
+		_kite_fleeing = false
+		_kite_hold = 0
+		return _nudge(g, flee, k, nearest)
+	if not _kite_fleeing and nd < KITE_FLEE_IN:
+		_kite_fleeing = true
+	if not _kite_fleeing and KITE_DASH_FLEE:
+		for i in g.enemies.count:
+			if g.enemy_types[g.enemies.type_index[i]].behaviour != EnemyTable.Behaviour.CHARGER:
+				continue
+			if g._ai_phase[i] != g.CH_WINDUP and g._ai_phase[i] != g.CH_DASH:
+				continue
+			if me.distance_to(g.enemies.pos[i]) < KITE_DASH_RANGE:
+				_kite_fleeing = true
+				break
+	if _kite_fleeing:
+		var dir := flee.normalized() if k > 0 else Vector2.ZERO
+		# The CURRENT arena's centre, not the world origin: the campaign is
+		# three arenas laid out end to end, and only the first is centred on
+		# zero.
+		var c: Vector2 = g.terrain.arena().get_center() - me
+		if c.length() > 1100.0:
+			dir = (dir + c.normalized() * 1.6).normalized()
+		return _around_walls(g, dir)
+	_kite_hold += 1
+	if _kite_hold >= KITE_NUDGE_EVERY:
+		_kite_hold = 0
+		return _nudge(g, flee, k, nearest)
+	return Vector2.ZERO
+
+## One tick toward the swarm's mass (the negative flee sum), else toward the
+## nearest enemy, else nothing. NOT through _around_walls: this is a facing
+## intent, its step is rejected by terrain.slide against rock anyway, and a
+## wall-deflected nudge would face away from the swarm.
+func _nudge(g: Node2D, flee: Vector2, k: int, nearest: int) -> Vector2:
+	if k > 0 and flee.length_squared() > 0.000001:
+		return (-flee).normalized()
+	if nearest < 0:
+		return Vector2.ZERO
+	return (g.enemies.pos[nearest] - g.player_pos[g.local_slot]).normalized()
 
 ## Terrain awareness, added when walls arrived.
 ##

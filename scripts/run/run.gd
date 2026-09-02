@@ -5232,6 +5232,7 @@ func _build_manifest() -> void:
 			"target": "begin_tick", "target_generation": "begin_tick",
 			"amount": "begin_tick", "count": "begin_tick",
 			"dropped": "diagnostic counter, local", "_capacity": "constant",
+			"drained_events": "per-tick diagnostic; never carried",
 			"adjudication": "begin_tick", "outcome": "begin_tick",
 			"killer_exploit": "begin_tick", "flipper_exploit": "begin_tick",
 			"hit_exploit": "per pass", "hit_target": "per pass", "hit_count": "per pass",
