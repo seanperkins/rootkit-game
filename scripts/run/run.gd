@@ -96,6 +96,8 @@ const BOTNET_BASE_RATIO := 0.6
 
 signal level_up_offered(cards: Array)
 signal fusion_offered(matches: Array)
+## The local slot has resolved its offer and is waiting on `unresolved` others.
+signal offer_waiting(unresolved: int)
 signal run_ended(won: bool, salvage: int)
 signal stats_changed()
 
@@ -245,7 +247,57 @@ enum CardMode { NORMAL, SEEDED, RANK_ONLY }
 ## mechanism, so the weight is high on purpose.
 const TARGETED_ODDS := 0.70
 
+## The LOCAL slot's open fusion offer as [exploit_index, Recipe] pairs, decoded
+## from primitive offer state for presentation. Never simulation state itself.
 var _pending_fusions: Array = []
+
+# ------------------------------------------------------------ input ring ---
+#
+# Every input the simulation consumes — movement AND choices — is a record in
+# the lockstep ring, taken one tick at a time above the world guard. The tick
+# reads no device, no clock and no connection; it reads records. Solo is a
+# one-slot ring at delay zero, ready from tick zero, so offline play consumes
+# its own record on the frame it was sampled.
+var lockstep: Lockstep
+## The tick currently being executed: lockstep.executed at the moment take()
+## succeeded, so offer deadlines and every "opened on tick T" fact share one
+## clock.
+var tick := 0
+## Consecutive physics callbacks in which the ring was not ready. Read by the
+## HUD to name the slots being waited on.
+var _stalled_ticks := 0
+## The local slot's staged choice for its open offer, as (card, target, offer
+## seq); card -1 means none. Written by the UI-facing choose/decline calls,
+## consumed by the next successful record submit.
+var _local_choice := Vector3i(-1, -1, -1)
+## Caller-owned take buffers so the 60 Hz path allocates nothing.
+var _rec_moves: PackedVector2Array
+var _rec_cards: PackedInt32Array
+var _rec_targets: PackedInt32Array
+var _rec_offers: PackedInt32Array
+
+# ---------------------------------------------------------------- offers ---
+#
+# An offer is PRIMITIVE, PER-SLOT simulation state: a strictly increasing
+# sequence number, a kind, its contents as table indices, and a deadline tick.
+# Each slot has at most one open offer and a FIFO behind it. A choice is an
+# input record whose `offer` field names the open sequence; a stale or bad
+# choice is no choice. The card/fusion SIGNALS are presentation notices derived
+# from this state for the local slot, never the state itself.
+enum OfferKind { LEVEL, SEEDED, RANK_ONLY, FUSION }
+var _offer_seq: PackedInt32Array
+var _offer_open: Array = []      # per slot: {seq, kind, contents, deadline} or {}
+var _offer_queue: Array = []     # per slot: Array of the same rows, deadline -1
+## True while a level-up ROUND is in progress: every LIVE slot was given a LEVEL
+## offer and not all have resolved. pending_levels counts rounds still owed.
+var _round_open := false
+## Module encoding for offer contents. Modules are addressed by their index in
+## ModuleTable.all(), cached ONCE here because that call builds fresh objects
+## every time; fused modules by recipe index; -1 is the salvage card.
+var _modules: Array = []
+var _module_index: Dictionary = {}
+var _recipe_index: Dictionary = {}     # fused module id -> RecipeTable index
+const FUSED_BASE := -2
 ## Out of the entity grid, and therefore untouchable and harmless.
 ## How lit each enemy is from a hit landed this tick, decayed in _age_fx and
 ## read by the renderer. Per-enemy, so it needs BOTH halves of the slot
@@ -626,6 +678,19 @@ func _ready() -> void:
 	_flow = []
 	for _s in SessionRules.MAX_PLAYERS:
 		_flow.append(FlowField.new())
+	# One ring for the session. Roster masks follow slot_state each tick; the
+	# opening delay ticks are primed so nobody waits on input that cannot exist.
+	lockstep = Lockstep.new(SessionRules.MAX_PLAYERS,
+		int(_session.descriptor.get("delay", 0)))
+	_sync_ring_roster()
+	if lockstep.delay > 0:
+		lockstep.prime(0, lockstep.delay - 1)
+	_modules = ModuleTable.all()
+	for mi in _modules.size():
+		_module_index[_modules[mi].id] = mi
+	var recipes := RecipeTable.all()
+	for ri in recipes.size():
+		_recipe_index[recipes[ri].fused.id] = ri
 	var tseed: int = base + _SEED_TERRAIN
 	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, tseed)
 	# Every slot starts at the same origin, so the spawn-safe margin is measured
@@ -752,10 +817,19 @@ func _allocate_slots() -> void:
 	_unlocked = []; _unlocked.resize(n)
 	loadouts = []; loadouts.resize(n)
 	resolved = []; resolved.resize(n * GID_STRIDE)
+	_offer_seq = PackedInt32Array(); _offer_seq.resize(n)
+	_offer_open = []; _offer_open.resize(n)
+	_offer_queue = []; _offer_queue.resize(n)
 	for s in n:
 		_banked[s] = {&"salvage": 0, &"kills": 0, &"flips": 0}
 		_sheet[s] = PlayerStats.BASE.duplicate()
 		_unlocked[s] = []
+		_offer_open[s] = {}
+		_offer_queue[s] = []
+	_rec_moves = PackedVector2Array(); _rec_moves.resize(n)
+	_rec_cards = PackedInt32Array(); _rec_cards.resize(n)
+	_rec_targets = PackedInt32Array(); _rec_targets.resize(n)
+	_rec_offers = PackedInt32Array(); _rec_offers.resize(n)
 
 ## Bring every roster slot to LIVE with its starting build, sheet and unlock set
 ## derived from the counters the descriptor carries — the SAME derivation on
@@ -984,6 +1058,25 @@ func _physics_process(_dt: float) -> void:
 	# triggers set one of these three flags on the frame they fire.
 	_present(_dt)
 
+	# INPUT APPLICATION, above the world guard. The ring decides whether this
+	# tick can execute at all: until every LIVE slot's record for it has
+	# arrived, nothing below runs and the world holds. Once it can, exactly one
+	# tick's records are taken and applied — movement into `inputs`, choices
+	# into the offers — deadlines resolve, and a finished round opens the next.
+	# All of that happens whether or not the world then steps: an open offer
+	# holds the world, not the input stream, so a paused party still consumes
+	# ticks and applies the choices that will unpause it.
+	_sync_ring_roster()
+	if not lockstep.ready(lockstep.executed):
+		_stalled_ticks += 1
+		return
+	_stalled_ticks = 0
+	tick = lockstep.executed
+	lockstep.take(tick, _rec_moves, _rec_cards, _rec_targets, _rec_offers)
+	_apply_records()
+	_resolve_deadlines()
+	_settle_offers()
+
 	# The hitstop is part of the deterministic tick: it freezes the world for a
 	# fixed number of ticks rather than slowing a process-global clock. Above the
 	# world-step guard so the freeze is faithful even when a trigger also set a
@@ -993,7 +1086,12 @@ func _physics_process(_dt: float) -> void:
 		hitstop_ticks -= 1
 		return
 
-	if paused or user_paused or not alive or won:
+	# `user_paused` gates the world in SOLO only. In a session it is a local
+	# overlay: this peer's record carries zero movement while it is up, but
+	# lockstep, the world and the hashes keep going, because one player's menu
+	# cannot stop three others' game.
+	var solo := _session.role == NetworkSession.Role.SOLO
+	if paused or (user_paused and solo) or not alive or won:
 		return
 
 	# ONCE per tick, and before any step. It used to open _step5_fire, which
@@ -1112,30 +1210,82 @@ func _process(_dt: float) -> void:
 ## points diagonally). The unprojection is a VIEW concern; it belongs on this
 ## side of the seam, not in the tick.
 func _poll_local_input() -> void:
+	var move := Vector2.ZERO
 	if input_override != null:
-		inputs[local_slot] = (input_override as Vector2).normalized()
-		return
-	# One call reads both axes, so an analog stick comes along for free — the
-	# InputMap carries the keyboard and the gamepad bindings together and
-	# neither can drift from the other.
-	var screen := Input.get_vector("move_left", "move_right",
-		"move_up", "move_down")
-	if screen.length_squared() == 0.0:
-		inputs[local_slot] = Vector2.ZERO
-		return
-	# Uniform SCREEN speed, not uniform world speed.
-	#
-	# Normalising the WORLD direction keeps world speed constant, which makes
-	# on-screen speed inherit the 2:1 squash — left/right moves twice as fast
-	# as up/down, which is what makes the controls feel lopsided. Because
-	# to_iso(from_iso(d)) == d exactly, feeding the unprojected direction
-	# through WITHOUT renormalising makes the on-screen velocity exactly
-	# clock_speed in every direction.
-	#
-	# The trade is that world speed now varies with heading (fastest along
-	# the screen vertical, where the projection compresses most). That is the
-	# right way round for a game where every dodge is judged on screen.
-	inputs[local_slot] = from_iso(screen.normalized())
+		move = (input_override as Vector2).normalized()
+	else:
+		# One call reads both axes, so an analog stick comes along for free —
+		# the InputMap carries the keyboard and the gamepad bindings together
+		# and neither can drift from the other.
+		var screen := Input.get_vector("move_left", "move_right",
+			"move_up", "move_down")
+		if screen.length_squared() > 0.0:
+			# Uniform SCREEN speed, not uniform world speed.
+			#
+			# Normalising the WORLD direction keeps world speed constant, which
+			# makes on-screen speed inherit the 2:1 squash — left/right moves
+			# twice as fast as up/down, which is what makes the controls feel
+			# lopsided. Because to_iso(from_iso(d)) == d exactly, feeding the
+			# unprojected direction through WITHOUT renormalising makes the
+			# on-screen velocity exactly clock_speed in every direction.
+			#
+			# The trade is that world speed now varies with heading (fastest
+			# along the screen vertical, where the projection compresses most).
+			# That is the right way round for a game where every dodge is
+			# judged on screen.
+			move = from_iso(screen.normalized())
+	# A session pause is a local overlay: the record it sends is neutral.
+	if user_paused and _session.role != NetworkSession.Role.SOLO:
+		move = Vector2.ZERO
+	# The sampled intent is visible immediately for the local slot; the value
+	# the simulation actually applies is whatever the ring hands back for the
+	# tick it executes, which at delay zero is this same record.
+	inputs[local_slot] = move
+	# Submit the FULL record — movement plus any staged choice — for the tick
+	# this peer is running ahead. The staged choice is consumed only when the
+	# submit lands; a duplicate for a tick already recorded leaves it for the
+	# next tick rather than losing it.
+	var c := _local_choice
+	if lockstep.submit(local_slot, lockstep.executed + lockstep.delay, move,
+			c.x, c.y, c.z):
+		_local_choice = Vector3i(-1, -1, -1)
+
+## Keep the ring's roster masks in step with slot_state, so a slot marked DEAD
+## or ABSENT by the simulation stops being waited on the same tick.
+func _sync_ring_roster() -> void:
+	for s in SessionRules.MAX_PLAYERS:
+		match slot_state[s]:
+			SlotState.LIVE:
+				lockstep.mark_live(s)
+			SlotState.DEAD:
+				lockstep.mark_present(s)
+				lockstep.mark_dead(s)
+			_:
+				lockstep.mark_absent(s)
+
+## Apply the tick's records: sanitised movement into `inputs`, and each slot's
+## choice against its open offer. The stored record is never altered — a
+## hostile movement is treated as neutral HERE, at application, so every peer
+## applies the same value from the same immutable bytes.
+func _apply_records() -> void:
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] != SlotState.LIVE:
+			inputs[s] = Vector2.ZERO
+			continue
+		inputs[s] = _sanitise_move(_rec_moves[s])
+		if _rec_cards[s] != -1:
+			_apply_choice(s, _rec_cards[s], _rec_targets[s], _rec_offers[s])
+
+## A movement with a non-finite component, or one past MOVE_COMPONENT_MAX on
+## either axis, is Vector2.ZERO; anything else is preserved unchanged. clampf is
+## not a finiteness check, so the components are tested explicitly.
+static func _sanitise_move(m: Vector2) -> Vector2:
+	if not is_finite(m.x) or not is_finite(m.y):
+		return Vector2.ZERO
+	var cap := SessionRules.MOVE_COMPONENT_MAX
+	if absf(m.x) > cap or absf(m.y) > cap:
+		return Vector2.ZERO
+	return m
 
 ## Copy every population's `pos` into its `prev_pos`. One memcpy each, not a
 ## loop over ~2700 entities — see Population.snapshot. The four player slots are
@@ -2087,6 +2237,9 @@ func _fire_trigger_for(slot: int, kind: int) -> void:
 func _die(slot: int) -> void:
 	player_health[slot] = 0.0
 	slot_state[slot] = SlotState.DEAD
+	# A dead slot cannot hold a round open: its offers resolve to their first
+	# option at once.
+	_resolve_offer_on_slot_exit(slot)
 	if slot == local_slot:
 		# Both of these only animate because _present() runs above the tick guard.
 		feel.add_trauma(0.7)
@@ -2567,8 +2720,7 @@ func _on_death(i: int) -> void:
 		feel.add_trauma(0.45)
 		feel.emit("miniboss_kill")
 		_hitstop()
-		if not paused:
-			_offer_cards(local_slot)
+		_settle_offers()
 	if enemies.type_index[i] == EnemyTable.ICE and not won:
 		# kills is incremented FIRST: banking before it meant the kill that ends
 		# a winning run was never persisted, so entering the boss at 399 kills
@@ -2890,15 +3042,20 @@ func _block_payout(holder: int) -> void:
 	# resolution is a deterministic input (auto-resolving on timeout), never a
 	# live signal connection.
 	if not matches.is_empty():
-		_pending_fusions = matches
-		_offer_slot = holder
-		paused = true
-		emit_signal("fusion_offered", matches)
-		return
+		# The fusion offer is a per-slot offer to the HOLDER, encoded as
+		# (exploit index, recipe index) pairs.
+		var pairs := PackedInt32Array()
+		for m in matches:
+			var ri := int(_recipe_index.get(m[1].fused.id, -1))
+			if ri >= 0:
+				pairs.append(int(m[0]))
+				pairs.append(ri)
+		if not pairs.is_empty():
+			_open_offer(holder, OfferKind.FUSION, pairs)
+			return
 
 	var seed_m := _targeted_module(holder)
 	if seed_m != null and _card_rng[holder].randf() < TARGETED_ODDS:
-		pending_levels += 1
 		_offer_cards(holder, CardMode.SEEDED, seed_m)
 		return
 
@@ -2909,7 +3066,6 @@ func _block_payout(holder: int) -> void:
 	elif roll < 0.70:
 		_block_heal(holder)
 	else:
-		pending_levels += 1
 		_offer_cards(holder, CardMode.RANK_ONLY)
 
 ## The heal branch of a payout: heal the holder when they can use it, otherwise
@@ -2926,26 +3082,6 @@ func _block_heal(holder: int) -> bool:
 	salvage += 150 * subnet
 	emit_signal("stats_changed")
 	return false
-
-func choose_fusion(index: int) -> void:
-	# Bounds-checked against the PENDING list, not against the loadout: a stale
-	# index from a screen the player already declined must consume nothing, and
-	# Loadout.fuse re-checks can_fuse for the same reason.
-	if index >= 0 and index < _pending_fusions.size():
-		var m = _pending_fusions[index]
-		loadouts[_offer_slot].fuse(m[0], m[1].fused)
-		_recompile(_offer_slot)
-	_pending_fusions = []
-	paused = false
-	emit_signal("stats_changed")
-
-func decline_fusion() -> void:
-	# Declining costs nothing and the recipe stays matched, so the next block
-	# offers it again. A fusion is permanent; refusing one must not be.
-	_pending_fusions = []
-	salvage += 25
-	paused = false
-	emit_signal("stats_changed")
 
 ## The module that would do the most for the build right now: one that completes
 ## a recipe a row is a single module short of, or failing that one that fills a
@@ -3074,8 +3210,7 @@ func _gain_xp(n: int) -> void:
 		xp_needed = _xp_for(level)
 		pending_levels += 1
 		_fire_trigger(Module.TriggerKind.ON_LEVEL_UP)
-	if pending_levels > 0 and not paused:
-		_offer_cards(local_slot)
+	_settle_offers()
 	emit_signal("stats_changed")
 
 ## The unlocked table, plus every fused module the loadout currently holds.
@@ -3105,21 +3240,237 @@ func _card_pool(slot: int) -> Array:
 ## The slot the open card or fusion offer belongs to — its pool, its RNG, and
 ## the loadout a choice lands in. Per-slot offer queues are a later task; this
 ## is the single open offer's owner.
-var _offer_slot := 0
+# ------------------------------------------------------- offer machinery ---
 
-## Multiple thresholds crossed in one tick queue; screens show in sequence.
-func _offer_cards(slot: int, mode: int = CardMode.NORMAL,
-		seed_module: Module = null) -> void:
+## Encode a card as a table index: a module's index in the cached table, a
+## fused module as FUSED_BASE - recipe index, the salvage card as -1.
+func _encode_card(m: Module) -> int:
+	if m == null:
+		return -1
+	if _module_index.has(m.id):
+		return int(_module_index[m.id])
+	if _recipe_index.has(m.id):
+		return FUSED_BASE - int(_recipe_index[m.id])
+	return -1
+
+## The Module a card index names, or null for the salvage card or a bad index.
+func _decode_card(code: int) -> Module:
+	if code >= 0 and code < _modules.size():
+		return _modules[code]
+	if code <= FUSED_BASE:
+		var ri := FUSED_BASE - code
+		var recipes := RecipeTable.all()
+		if ri >= 0 and ri < recipes.size():
+			return recipes[ri].fused
+	return null
+
+## The index of a target in a legal_targets list, by FIELDS: the list is
+## rebuilt on every query, so identity never matches. -1 when absent.
+static func _target_index(targets: Array, t) -> int:
+	if t == null:
+		return -1
+	for k in targets.size():
+		var c = targets[k]
+		if c.exploit == t.exploit and c.slot == t.slot and c.action == t.action:
+			return k
+	return -1
+
+## Issue an offer to a slot: opened at once if the slot has none open, queued
+## behind the open one otherwise. Sequence numbers are per slot and strictly
+## increasing, so a choice can name exactly one offer.
+func _open_offer(slot: int, kind: int, contents: PackedInt32Array) -> void:
+	_offer_seq[slot] += 1
+	var row := {"seq": _offer_seq[slot], "kind": kind, "contents": contents,
+		"deadline": -1}
+	if (_offer_open[slot] as Dictionary).is_empty():
+		_open_now(slot, row)
+	else:
+		(_offer_queue[slot] as Array).append(row)
+	_settle_offers()
+
+## Make a row the slot's open offer, stamping the deadline from THIS tick.
+func _open_now(slot: int, row: Dictionary) -> void:
+	var timeout := int(_session.descriptor.get("choice_timeout", 0))
+	row["deadline"] = (tick + timeout) if timeout > 0 else -1
+	_offer_open[slot] = row
 	paused = true
-	_offer_slot = slot
+	if slot == local_slot:
+		_emit_local_offer()
+
+## Resolve the slot's open offer and open the next queued one, if any.
+func _resolve_offer(slot: int) -> void:
+	_offer_open[slot] = {}
+	var q: Array = _offer_queue[slot]
+	if not q.is_empty():
+		_open_now(slot, q.pop_front())
+	elif slot == local_slot:
+		_emit_local_offer()
+	_settle_offers()
+
+## Apply a slot's choice record against its open offer. A record naming any
+## other sequence, an out-of-range card, or an out-of-range target is NO
+## choice: it is consumed and the offer stays open. A valid choice lands in the
+## slot's own loadout and resolves the offer.
+func _apply_choice(slot: int, card: int, target: int, offer: int) -> void:
+	var open: Dictionary = _offer_open[slot]
+	if open.is_empty() or offer != int(open["seq"]):
+		return
+	var contents: PackedInt32Array = open["contents"]
+	if int(open["kind"]) == OfferKind.FUSION:
+		if card == -2:
+			salvage += 25
+		elif card >= 0 and card * 2 + 1 < contents.size():
+			var ex_i := contents[card * 2]
+			var ri := contents[card * 2 + 1]
+			var recipes := RecipeTable.all()
+			if ri < 0 or ri >= recipes.size():
+				return
+			var lo: Loadout = loadouts[slot]
+			if not lo.can_fuse(ex_i, recipes[ri].fused):
+				return
+			lo.fuse(ex_i, recipes[ri].fused)
+			_recompile(slot)
+		else:
+			return
+	else:
+		if card == -2:
+			salvage += 25
+		elif card >= 0 and card < contents.size():
+			var m := _decode_card(contents[card])
+			if m == null:
+				salvage += 50
+			else:
+				var targets := (loadouts[slot] as Loadout).legal_targets(m)
+				if target < 0 or target >= targets.size():
+					return
+				var t = targets[target]
+				(loadouts[slot] as Loadout).place_at(m, t.exploit, t.slot)
+				_recompile(slot)
+		else:
+			return
+	_resolve_offer(slot)
+	emit_signal("stats_changed")
+
+## Resolve a slot's open offer to its FIRST option: card zero into its first
+## legal target, or the first fusion match. Used by deadlines and by slot exit.
+func _apply_first(slot: int) -> void:
+	var open: Dictionary = _offer_open[slot]
+	if open.is_empty():
+		return
+	_apply_choice(slot, 0, 0, int(open["seq"]))
+	# A first card with no legal target (an empty pool) is a decline.
+	if not (_offer_open[slot] as Dictionary).is_empty() \
+			and int(_offer_open[slot]["seq"]) == int(open["seq"]):
+		_apply_choice(slot, -2, -1, int(open["seq"]))
+
+## Any slot unresolved at its deadline takes its first option. Solo has no
+## timeout; a session's is a descriptor parameter.
+func _resolve_deadlines() -> void:
+	for s in SessionRules.MAX_PLAYERS:
+		var open: Dictionary = _offer_open[s]
+		if open.is_empty():
+			continue
+		var dl := int(open["deadline"])
+		if dl >= 0 and tick >= dl:
+			_apply_first(s)
+
+## A slot that dies or parks with offers pending resolves every one of them to
+## its first option at once, so it can never hold a round open.
+func _resolve_offer_on_slot_exit(slot: int) -> void:
+	var guard := 0
+	while not (_offer_open[slot] as Dictionary).is_empty() and guard < 64:
+		_apply_first(slot)
+		guard += 1
+	(_offer_queue[slot] as Array).clear()
+	_settle_offers()
+
+## The round bookkeeping and the pause flag, from primitive state. A round is
+## finished when no slot holds a LEVEL offer open or queued; then one owed
+## level is spent and, if more are owed, the next round opens on this same
+## tick. `paused` is simply "somebody has an offer open".
+func _settle_offers() -> void:
+	if _round_open and not _any_level_pending():
+		_round_open = false
+		pending_levels = maxi(0, pending_levels - 1)
+	if pending_levels > 0 and not _round_open:
+		_open_round()
+	paused = _any_open_offer()
+
+func _any_open_offer() -> bool:
+	for s in SessionRules.MAX_PLAYERS:
+		if not (_offer_open[s] as Dictionary).is_empty():
+			return true
+	return false
+
+func _any_level_pending() -> bool:
+	for s in SessionRules.MAX_PLAYERS:
+		var open: Dictionary = _offer_open[s]
+		if not open.is_empty() and int(open["kind"]) == OfferKind.LEVEL:
+			return true
+		for row in (_offer_queue[s] as Array):
+			if int(row["kind"]) == OfferKind.LEVEL:
+				return true
+	return false
+
+## Open a level-up ROUND: every LIVE slot is offered three cards from its own
+## pool, shuffled by its own stream. With nobody LIVE the level stays owed.
+func _open_round() -> void:
+	var live := _live_slots()
+	if live.is_empty():
+		return
+	_round_open = true
+	for s in live:
+		_open_offer(s, OfferKind.LEVEL, _card_contents(s, CardMode.NORMAL, null))
+
+## Rebuild the local slot's presentation payloads from its open offer and emit
+## the matching notice, so the overlay follows primitive state — after an open,
+## a resolve, a restore or a rebind alike.
+func _emit_local_offer() -> void:
+	var open: Dictionary = _offer_open[local_slot]
+	_pending_fusions = []
+	if open.is_empty():
+		emit_signal("offer_waiting", _unresolved_count())
+		return
+	var contents: PackedInt32Array = open["contents"]
+	if int(open["kind"]) == OfferKind.FUSION:
+		var recipes := RecipeTable.all()
+		var matches := []
+		var k := 0
+		while k * 2 + 1 < contents.size():
+			var ri := contents[k * 2 + 1]
+			if ri >= 0 and ri < recipes.size():
+				matches.append([contents[k * 2], recipes[ri]])
+			k += 1
+		_pending_fusions = matches
+		emit_signal("fusion_offered", matches)
+		return
+	var cards := []
+	var lo: Loadout = loadouts[local_slot]
+	for code in contents:
+		var m := _decode_card(code)
+		cards.append([m, lo.legal_targets(m) if m != null else []])
+	emit_signal("level_up_offered", cards)
+
+## How many LIVE slots still hold an open offer — the "waiting for N" count.
+func _unresolved_count() -> int:
+	var n := 0
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] == SlotState.LIVE \
+				and not (_offer_open[s] as Dictionary).is_empty():
+			n += 1
+	return n
+
+## Three cards for a slot, as encoded contents: its pool, filtered for a
+## rank-only draw, shuffled by ITS stream, seeded module first if asked, padded
+## with the salvage card.
+func _card_contents(slot: int, mode: int, seed_module: Module) -> PackedInt32Array:
 	var pool := _card_pool(slot)
 	if mode == CardMode.RANK_ONLY:
-		# Filter the TARGETS, not just the entries. Keeping a whole entry because
-		# it contains a rank-up leaves its EMPTY_SLOT and REPLACE buttons on the
-		# card, so the screen would be a guaranteed-rank-AVAILABLE screen rather
-		# than a guaranteed rank. An empty result falls through to the ordinary
-		# pool on purpose: it means nothing in the loadout can rank at all, and
-		# an ordinary draw beats an empty screen.
+		# Filter the TARGETS, not just the entries: a whole entry kept because
+		# it contains a rank-up would leave its EMPTY_SLOT and REPLACE choices
+		# on the card, so the screen would be a guaranteed-rank-AVAILABLE screen
+		# rather than a guaranteed rank. An empty result falls through to the
+		# ordinary pool on purpose — an ordinary draw beats an empty screen.
 		var ranked := []
 		for entry in pool:
 			var only := []
@@ -3141,34 +3492,71 @@ func _offer_cards(slot: int, mode: int = CardMode.NORMAL,
 			if pool[i][0] != null and pool[i][0].id == seed_module.id:
 				var tmp2 = pool[0]; pool[0] = pool[i]; pool[i] = tmp2
 				break
-	var cards := []
+	var out := PackedInt32Array()
 	for entry in pool:
-		if cards.size() >= 3:
+		if out.size() >= 3:
 			break
-		cards.append(entry)
-	while cards.size() < 3:
-		cards.append([null, []])        # salvage card fallback
-	emit_signal("level_up_offered", cards)
+		out.append(_encode_card(entry[0]))
+	while out.size() < 3:
+		out.append(-1)                  # salvage card fallback
+	return out
+
+## Offer one slot a card draw of the given mode. Level-up ROUNDS go through
+## _open_round; this is the per-slot path a block payout takes, and the one the
+## suites drive directly.
+func _offer_cards(slot: int, mode: int = CardMode.NORMAL,
+		seed_module: Module = null) -> void:
+	var kind := OfferKind.LEVEL
+	if mode == CardMode.SEEDED:
+		kind = OfferKind.SEEDED
+	elif mode == CardMode.RANK_ONLY:
+		kind = OfferKind.RANK_ONLY
+	_open_offer(slot, kind, _card_contents(slot, mode, seed_module))
+
+# --------------------------------------------- the local choice surface ---
+#
+# The UI calls these. None of them changes the simulation: each STAGES a
+# choice record for the local slot's open offer, which the next submit carries
+# into the ring and the tick applies when it executes. That is what makes a
+# card pick a deterministic input rather than a callback.
 
 func choose_card(m, target) -> void:
-	if m == null:
-		salvage += 50
-	else:
-		loadouts[_offer_slot].place_at(m, target.exploit, target.slot)
-		_recompile(_offer_slot)
-	pending_levels = maxi(0, pending_levels - 1)
-	paused = false
-	if pending_levels > 0:
-		_offer_cards(local_slot)
-	emit_signal("stats_changed")
+	var open: Dictionary = _offer_open[local_slot]
+	if open.is_empty() or int(open["kind"]) == OfferKind.FUSION:
+		return
+	var contents: PackedInt32Array = open["contents"]
+	var want := _encode_card(m)
+	var card := -1
+	for k in contents.size():
+		if contents[k] == want:
+			card = k
+			break
+	if card < 0:
+		return
+	var ti := -1
+	if m != null:
+		ti = _target_index((loadouts[local_slot] as Loadout).legal_targets(m), target)
+		if ti < 0:
+			return
+	_local_choice = Vector3i(card, ti, int(open["seq"]))
 
 func decline_card() -> void:
-	salvage += 25
-	pending_levels = maxi(0, pending_levels - 1)
-	paused = false
-	if pending_levels > 0:
-		_offer_cards(local_slot)
-	emit_signal("stats_changed")
+	var open: Dictionary = _offer_open[local_slot]
+	if open.is_empty() or int(open["kind"]) == OfferKind.FUSION:
+		return
+	_local_choice = Vector3i(-2, -1, int(open["seq"]))
+
+func choose_fusion(index: int) -> void:
+	var open: Dictionary = _offer_open[local_slot]
+	if open.is_empty() or int(open["kind"]) != OfferKind.FUSION:
+		return
+	_local_choice = Vector3i(index, -1, int(open["seq"]))
+
+func decline_fusion() -> void:
+	var open: Dictionary = _offer_open[local_slot]
+	if open.is_empty() or int(open["kind"]) != OfferKind.FUSION:
+		return
+	_local_choice = Vector3i(-2, -1, int(open["seq"]))
 
 func time_left() -> float:
 	return maxf(0.0, SpawnDirector.SUBNET_SECONDS - director.elapsed)

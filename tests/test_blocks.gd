@@ -142,6 +142,7 @@ func the_payout_prefers_a_fusion() -> void:
 	_check("and the run is paused for the choice", run.paused, true)
 
 	run.choose_fusion(0)
+	run._physics_process(DT)       # the choice is an input record; one tick lands it
 	_check("choosing it fuses the row",
 		run.loadouts[run.local_slot].exploits[0].vector.module.id, &"zero_day")
 	_check("and unpauses", run.paused, false)

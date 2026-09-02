@@ -203,6 +203,9 @@ func _real_run() -> PackedFloat64Array:
 			g.player_pos[s] = g.player_pos[0] + PARTY_OFFSETS[s]
 			g.player_health[s] = g._eff_integrity(s)
 			g.slot_state[s] = g.SlotState.LIVE
+			# Lockstep waits on every LIVE slot's record; the pinned slots send
+			# neutral ones, as a parked-but-present controller would.
+			g.lockstep.submit(s, g.lockstep.executed, Vector2.ZERO, -1, -1, -1)
 		var t0 := Time.get_ticks_usec()
 		g._physics_process(DT)
 		g._update_renderers()      # see the stress loop — moved, not removed

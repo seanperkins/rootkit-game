@@ -28,6 +28,7 @@ func bind(r: Node2D) -> void:
 	_build()
 	run.level_up_offered.connect(_on_cards)
 	run.fusion_offered.connect(_on_fusion)
+	run.offer_waiting.connect(_on_waiting)
 	run.run_ended.connect(_on_end)
 	run.stats_changed.connect(_refresh)
 	_refresh()
@@ -378,6 +379,23 @@ func _decline_current() -> void:
 ## The one screen this feature adds. It reuses the level-up overlay wholesale —
 ## same row, same highlight, same keys — because a second navigation model for a
 ## screen that appears once or twice a run is a second thing to get wrong.
+## The local slot has answered its offer; teammates have not. The overlay stays
+## up — the world is still held — but shows only the wait, never another
+## player's cards: the HUD renders local_slot and nothing else.
+func _on_waiting(unresolved: int) -> void:
+	_cards_data = []
+	_fusion_buttons = []
+	var row: HBoxContainer = card_row()
+	for c in row.get_children():
+		row.remove_child(c)
+		c.queue_free()
+	_cards.clear()
+	_nav.clear()
+	if unresolved <= 0:
+		return
+	_overlay.get_node("Title").text = "  waiting for %d…" % unresolved
+	_overlay.visible = true
+
 func _on_fusion(matches: Array) -> void:
 	_recipes.visible = false
 	_cards_data = []

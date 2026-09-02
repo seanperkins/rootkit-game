@@ -9,7 +9,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 
 ```bash
 godot                          # play, from the project root
-tools/run_tests.sh             # 36 suites + the perf gate
+tools/run_tests.sh             # 43 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 godot --headless -s res://tests/test_build.gd     # one suite
 godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)
@@ -38,22 +38,31 @@ instead.
 What follows is not a description of the architecture. It is the set of rules
 that architecture depends on, each of which has been broken at least once:
 
-- **The pure layers stay pure.** `scripts/build/`, `scripts/run/feel.gd` and
-  `scripts/audio/synth.gd` touch no scene tree, no globals and no engine
-  singleton beyond `Resource`/`RefCounted`. Every one of them is driven directly
-  by a suite with no viewport, and that is the only reason those suites can
-  exist. In particular `feel.gd` REPORTS a desired `Engine.time_scale` and never
-  writes it — `run.gd` applies it.
+- **The pure layers stay pure.** `scripts/build/`, `scripts/run/feel.gd`,
+  `scripts/audio/synth.gd`, `scripts/net/lockstep.gd`,
+  `scripts/net/network_session.gd` and `scripts/net/protocol.gd` touch no scene
+  tree, no globals and no engine singleton beyond `Resource`/`RefCounted`. Every
+  one of them is driven directly by a suite with no viewport, and that is the
+  only reason those suites can exist. `scripts/net/transport.gd` is the ONLY
+  class that touches ENet; nothing below the world guard inspects it.
 - **The simulation never holds a node reference.** Audio and music are reached
   by DRAINING (`feel.sfx`) or POLLING (`run.threat()`), never by calling out.
   Reverse that direction and the tick stops being reachable headless.
 - **All combat resolves in one ordered tick in `run.gd:_physics_process`, never
   inside a callback.** Adding a step means adding a call there, in the right
   place — not a signal.
-- **`_present(dt)` runs ABOVE the tick guard; everything else runs below it.**
-  Presentation must survive `paused`/`user_paused`/`not alive`/`won`, because all
-  three hitstop triggers set one of those flags on the frame they fire — a
-  release below the guard never runs, and `Engine.time_scale` is process-global.
+- **Below the world guard the WORLD steps; above it run presentation, input
+  intake and input application — in that order.** `_present` must survive
+  `paused`/`user_paused`/`not alive`/`won`, because the hitstop triggers set one
+  of those flags on the frame they fire. The lockstep ring is consumed above the
+  guard too: one tick's records are taken and applied — movement into `inputs`,
+  choices into the per-slot offers, deadlines resolved — whether or not the
+  world then steps, so an open card screen holds the world, never the input
+  stream. The tick reads no device, clock or connection; it reads records. A
+  card or fusion pick is a STAGED input record, not a callback: `choose_card`
+  and friends stage it, the next submit carries it, and the tick that consumes
+  that record applies it. The hitstop is a tick count above the guard, and no
+  code writes `Engine.time_scale`.
 - **Entities are packed arrays over a spatial grid**, not nodes, and
   `Population.despawn` swap-removes the tail into the freed slot. See the
   parallel-array invariant below; it is the one that keeps costing money.

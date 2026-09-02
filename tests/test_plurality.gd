@@ -141,7 +141,8 @@ func two_slots_move_independently() -> void:
 	_check("slot two is absent", r.slot_state[2], r.SlotState.ABSENT)
 	_check("both slots have a build", r._slot_exploits(1).size() > 0, true)
 	var p0: Vector2 = r.player_pos[0]
-	r.inputs[1] = Vector2.RIGHT
+	# A remote slot's input is a RECORD in the ring for the tick to consume.
+	r.lockstep.submit(1, r.lockstep.executed, Vector2.RIGHT, -1, -1, -1)
 	r._physics_process(DT)
 	_check_true("slot one moved right", r.player_pos[1].x > 0.0)
 	_check("slot zero stayed put on neutral input", r.player_pos[0], p0)

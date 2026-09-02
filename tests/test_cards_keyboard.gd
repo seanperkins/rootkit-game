@@ -70,7 +70,6 @@ func _ui(r: Node2D) -> CanvasLayer:
 
 ## Open the level-up overlay the way a level-up does.
 func _offer(r: Node2D) -> CanvasLayer:
-	r.pending_levels += 1
 	r._offer_cards(r.local_slot)
 	return _ui(r)
 
@@ -83,6 +82,9 @@ func _key(ui: CanvasLayer, code: int) -> void:
 	e.physical_keycode = code
 	e.pressed = true
 	ui._input(e)
+	# A key STAGES a choice; the tick applies it as an input record. One tick
+	# lands it, exactly as it does for the player.
+	ui.run._physics_process(1.0 / 60.0)
 
 ## What the player can see: the text of the highlighted button.
 func _label(ui: CanvasLayer) -> String:

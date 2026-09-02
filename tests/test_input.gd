@@ -97,7 +97,6 @@ func tools_use_real_actions() -> void:
 func a_joypad_can_drive_the_overlay() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
-	r.pending_levels += 1
 	r._offer_cards(r.local_slot)
 	await process_frame
 	_check("the overlay is up", ui._overlay.visible, true)
@@ -134,10 +133,10 @@ func user_pause_gates_the_tick() -> void:
 func a_card_decline_does_not_release_a_player_pause() -> void:
 	var r := await _fresh_run()
 	r.user_paused = true
-	r.pending_levels += 1
 	r._offer_cards(r.local_slot)
 	_check("the offer set the modal flag", r.paused, true)
 	r.decline_card()
+	r._physics_process(1.0 / 60.0)
 	_check("the decline cleared the modal flag", r.paused, false)
 	_check("but the player pause survived it", r.user_paused, true)
 	r.free()
@@ -149,7 +148,6 @@ func a_card_decline_does_not_release_a_player_pause() -> void:
 func cancel_routes_by_screen() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
-	r.pending_levels += 1
 	r._offer_cards(r.local_slot)
 	await process_frame
 
@@ -160,6 +158,7 @@ func cancel_routes_by_screen() -> void:
 	_check("and leaves the card offer standing", ui._overlay.visible, true)
 
 	ui._route_cancel()
+	r._physics_process(1.0 / 60.0)
 	_check("a second cancel declines the card", r.paused, false)
 
 	ui._route_cancel()
