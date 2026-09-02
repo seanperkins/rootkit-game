@@ -20,6 +20,17 @@ var _decline: Button
 ## Which card, which of its enabled rows, or the decline button underneath them.
 var _col := 0
 var _row := 0
+
+## Card navigation is edge-triggered for the analog stick: a sweep past the
+## deadzone arrives as several InputEventJoypadMotion events, every one of
+## which reads as "pressed", so one push used to skip three cards. A held
+## direction moves once, re-arms on release, and auto-repeats slowly from
+## _process while it stays held.
+const NAV_ACTIONS := ["move_up", "move_down", "move_left", "move_right"]
+const NAV_REPEAT_DELAY := 0.40
+const NAV_REPEAT_EVERY := 0.16
+var _nav_held := {}
+var _nav_repeat_left := NAV_REPEAT_DELAY
 var _on_decline := false
 var _end: Control
 
@@ -866,10 +877,19 @@ func _input(e: InputEvent) -> void:
 	elif e.is_action_pressed("pause") and _can_pause():
 		_toggle_pause()
 	elif _overlay.visible:
-		if e.is_action_pressed("move_up"):        _move_row(-1)
-		elif e.is_action_pressed("move_down"):    _move_row(1)
-		elif e.is_action_pressed("move_left"):    _move_card(-1)
-		elif e.is_action_pressed("move_right"):   _move_card(1)
+		var nav := ""
+		for a in NAV_ACTIONS:
+			if e.is_action_released(a):
+				_nav_held[a] = false
+			elif e.is_action_pressed(a):
+				nav = a
+		if nav != "":
+			if e is InputEventJoypadMotion and _nav_held.get(nav, false):
+				pass                         # still the same push; see NAV_ACTIONS
+			else:
+				_nav_held[nav] = true
+				_nav_repeat_left = NAV_REPEAT_DELAY
+				_nav_move(nav)
 		elif e.is_action_pressed("confirm"):      _activate()
 		elif e.is_action_pressed("recipes"):      _toggle_recipes()
 		else:                                     handled = false
@@ -939,9 +959,35 @@ func _toggle_pause() -> void:
 	run.user_paused = not run.user_paused
 	_pause_panel.visible = run.user_paused
 
-func _process(_d: float) -> void:
+func _nav_move(action: String) -> void:
+	match action:
+		"move_up":    _move_row(-1)
+		"move_down":  _move_row(1)
+		"move_left":  _move_card(-1)
+		"move_right": _move_card(1)
+
+## Auto-repeat for a held navigation direction on the card screen. The UI is
+## presentation, so reading the device here is not a second source of truth
+## for the simulation (test_input's one-place rule covers run.gd).
+func _nav_repeat(d: float) -> void:
+	var held := ""
+	for a in NAV_ACTIONS:
+		if Input.is_action_pressed(a):
+			held = a
+			break
+	if held == "":
+		_nav_repeat_left = NAV_REPEAT_DELAY
+		return
+	_nav_repeat_left -= d
+	if _nav_repeat_left <= 0.0:
+		_nav_repeat_left = NAV_REPEAT_EVERY
+		_nav_move(held)
+
+func _process(d: float) -> void:
 	if run != null and _vignette != null:
 		_vignette.color.a = clampf(run._vignette, 0.0, 1.0) * 0.30
+	if _overlay.visible:
+		_nav_repeat(d)
 	if run != null and not run.paused:
 		if _overlay.visible:
 			_overlay.visible = false

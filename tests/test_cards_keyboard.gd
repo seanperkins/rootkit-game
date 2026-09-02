@@ -21,6 +21,7 @@ const CASES := [
 	"decline_sits_clear_of_the_cards",
 	"the_fusion_screen_takes_the_keyboard",
 	"escape_declines_a_fusion",
+	"a_stick_sweep_moves_one_card",
 ]
 
 func _initialize() -> void:
@@ -36,6 +37,7 @@ func _initialize() -> void:
 	await decline_sits_clear_of_the_cards()
 	await the_fusion_screen_takes_the_keyboard()
 	await escape_declines_a_fusion()
+	await a_stick_sweep_moves_one_card()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -413,3 +415,35 @@ func _maxed(ex: Exploit) -> Exploit:
 	for em in ex.equipped():
 		em.rank = em.module.max_rank
 	return ex
+
+func _stick(ui: CanvasLayer, value: float) -> void:
+	var e := InputEventJoypadMotion.new()
+	e.axis = JOY_AXIS_LEFT_X
+	e.axis_value = value
+	ui._input(e)
+
+## An analog stick sweeping past the deadzone is several InputEventJoypadMotion
+## events, each of which reads as "pressed": one push used to skip three
+## cards. Held is held; a release re-arms; a hold auto-repeats slowly.
+func a_stick_sweep_moves_one_card() -> void:
+	var r := await _fresh_run()
+	var ui := _offer(r)
+	await process_frame
+	var n: int = ui._nav.size()
+	var col0: int = ui._col
+	for v in [0.3, 0.6, 0.9]:
+		_stick(ui, v)
+	_check("a stick sweep past the deadzone moves one card", ui._col, posmod(col0 + 1, n))
+	_stick(ui, 0.0)
+	_stick(ui, 0.9)
+	_check("after a release the next push moves again", ui._col, posmod(col0 + 2, n))
+	Input.action_press("move_right")
+	ui._process(ui.NAV_REPEAT_DELAY + 0.01)
+	_check("a held stick repeats after the delay", ui._col, posmod(col0 + 3, n))
+	ui._process(ui.NAV_REPEAT_EVERY + 0.01)
+	_check("and again at the repeat rate", ui._col, posmod(col0 + 4, n))
+	Input.action_release("move_right")
+	_stick(ui, 0.0)
+	r.free()
+	await process_frame
+	finished["a_stick_sweep_moves_one_card"] = true
