@@ -2,7 +2,7 @@ extends SceneTree
 
 ## The block: when it spawns, how it fills, and what stops it.
 
-const EXPECTED_CHECKS := 21
+const EXPECTED_CHECKS := 24
 const DT := 1.0 / 60.0
 
 var failures := 0
@@ -18,6 +18,7 @@ func _initialize() -> void:
 	the_hold()
 	await a_live_block_stands_on_open_ground()
 	await the_payout_prefers_a_fusion()
+	await the_payout_offers_fusion_without_a_listener()
 	print("")
 	if checks != EXPECTED_CHECKS:
 		print("  FAIL — ran %d checks, expected %d (a function aborted early)"
@@ -149,6 +150,33 @@ func the_payout_prefers_a_fusion() -> void:
 	# targeted card is what makes an exact triple reachable at all.
 	_check("the targeted module completes the near-miss row",
 		run._targeted_module().id, &"fork_bomb")
+	run.queue_free()
+	await process_frame
+
+## The fusion offer is SIMULATION state, not a UI courtesy. It enters the pending
+## queue and pauses the run whether or not anything is listening on the signal —
+## the old get_connections() guard made the offer depend on presentation, which
+## would desync a headless peer from a peer with the screen open. Resolution is a
+## deterministic input (a later task), never a live connection.
+func the_payout_offers_fusion_without_a_listener() -> void:
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(run)
+	await process_frame
+	run.input_override = Vector2.ZERO
+
+	# The scene wires its UI to fusion_offered, so tear every listener off first —
+	# this is the genuinely-no-listener case the removed guard used to block.
+	for c in run.fusion_offered.get_connections():
+		run.fusion_offered.disconnect(c["callable"])
+	_check("no listener remains on the signal",
+		run.fusion_offered.get_connections().is_empty(), true)
+	run.loadout.exploits = [_maxed(_row(run, &"snipe", &"on_kill", &"bitmask")),
+		_row(run, &"packet", &"interval", &"")]
+	run._recompile()
+	run._block_payout()
+	_check("the fusion enters simulation state with no listener",
+		run._pending_fusions.size(), 1)
+	_check("and the run pauses for it regardless", run.paused, true)
 	run.queue_free()
 	await process_frame
 

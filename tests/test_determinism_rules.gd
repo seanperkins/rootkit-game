@@ -14,7 +14,8 @@ var finished := {}
 const DT := 1.0 / 60.0
 
 const CASES := ["tick_ignores_dt_below_guard", "hitstop_costs_fixed_ticks",
-	"no_clock_in_tick_graph", "tick_rngs_derive_from_descriptor"]
+	"no_clock_in_tick_graph", "tick_rngs_derive_from_descriptor",
+	"negative_owner_never_decodes_to_slot_zero"]
 
 func _initialize() -> void:
 	print("ROOTKIT — determinism rules\n")
@@ -23,6 +24,7 @@ func _initialize() -> void:
 	await hitstop_costs_fixed_ticks()
 	no_clock_in_tick_graph()
 	await tick_rngs_derive_from_descriptor()
+	await negative_owner_never_decodes_to_slot_zero()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -172,6 +174,26 @@ func tick_rngs_derive_from_descriptor() -> void:
 	c.free()
 	await process_frame
 	finished["tick_rngs_derive_from_descriptor"] = true
+
+## An event owner is decoded through one helper, so the plural cutover teaches
+## only that helper the slot encoding. The sentinels the hit queue writes — -1
+## (unowned / environment) and -2 (unset) — must decode to NO owner, never to
+## slot zero, or an unowned kill would silently credit the first player.
+func negative_owner_never_decodes_to_slot_zero() -> void:
+	var r: Node2D = await _fresh_run()
+	_check("the -1 sentinel decodes to no slot", r._decode_exploit(-1).x, -1)
+	_check("the -2 sentinel decodes to no slot", r._decode_exploit(-2).x, -1)
+	_check("a wildly negative id decodes to no slot",
+		r._decode_exploit(-999).x, -1)
+	_check("a negative id resolves to no exploit",
+		r._resolved(-1) == null, true)
+	# A valid id still resolves to a real exploit on the local slot.
+	_check("a valid id decodes to the local slot",
+		r._decode_exploit(0).x, r.local_slot)
+	_check_true("a valid id resolves to an exploit", r._resolved(0) != null)
+	r.free()
+	await process_frame
+	finished["negative_owner_never_decodes_to_slot_zero"] = true
 
 ## The source text of a top-level GDScript function, from its `func NAME(` line
 ## up to the next line that begins a new top-level `func ` at column zero.

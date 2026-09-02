@@ -26,9 +26,11 @@ func _initialize() -> void:
 	await a_step_two_detonation_reaches_the_drain()
 	environment_corruption_flips_rather_than_kills()
 	execute_finishes_the_weak_and_spares_a_boss()
+	case_full_queue_counts_drops()
+	case_dropped_is_permanent()
 	print("")
 	if failures == 0:
-		print("  PASS — all 9 cases")
+		print("  PASS — all 11 cases")
 	else:
 		print("  FAIL — %d case(s)" % failures)
 	quit(1 if failures > 0 else 0)
@@ -47,6 +49,45 @@ func _check(label: String, got, want) -> void:
 	else:
 		print("  FAIL  %s — got %s, want %s" % [label, got, want])
 		failures += 1
+
+## A full queue never overflows its backing array: the append is refused and
+## counted. Determinism needs the drop COUNTED rather than silently ignored, so a
+## desync from a peer whose queue overflowed is visible, not mysterious. The
+## multiplayer capacity is four players' worth of events, but the counting rule
+## is what matters here, so this drives a tiny queue.
+func case_full_queue_counts_drops() -> void:
+	var pop := Population.new(4)
+	var i := pop.spawn(Vector2.ZERO, Vector2.ZERO, 100.0, 12.0, 0)
+	var q := HitQueue.new(2, 4)
+	q.begin_tick()
+	_check("a fresh queue has dropped nothing", q.dropped, 0)
+	_check("the first append fits",
+		q.append(HitQueue.Kind.DAMAGE, 0, i, pop.generation[i], 1.0), true)
+	_check("the second append fits",
+		q.append(HitQueue.Kind.DAMAGE, 0, i, pop.generation[i], 1.0), true)
+	_check("still nothing dropped at capacity", q.dropped, 0)
+	_check("the append past capacity is refused",
+		q.append(HitQueue.Kind.DAMAGE, 0, i, pop.generation[i], 1.0), false)
+	_check("and the drop is counted", q.dropped, 1)
+	q.append(HitQueue.Kind.DAMAGE, 0, i, pop.generation[i], 1.0)
+	_check("a second overflow counts again", q.dropped, 2)
+
+## The drop counter is permanent for the life of the queue — reset only when the
+## run constructs a fresh one, never per tick — so a single overflow anywhere in
+## the run is still reportable at the end. begin_tick must not clear it.
+func case_dropped_is_permanent() -> void:
+	var pop := Population.new(4)
+	var i := pop.spawn(Vector2.ZERO, Vector2.ZERO, 100.0, 12.0, 0)
+	var q := HitQueue.new(1, 4)
+	q.begin_tick()
+	q.append(HitQueue.Kind.DAMAGE, 0, i, pop.generation[i], 1.0)
+	q.append(HitQueue.Kind.DAMAGE, 0, i, pop.generation[i], 1.0)  # dropped
+	_check("one drop recorded", q.dropped, 1)
+	q.drain_pass(pop, PackedFloat32Array([THRESH]))
+	q.begin_tick()
+	_check("a new tick does not reset the drop count", q.dropped, 1)
+	var fresh := HitQueue.new(1, 4)
+	_check("but a freshly constructed queue starts at zero", fresh.dropped, 0)
 
 ## Lethal damage and threshold corruption in the SAME pass: flip wins, and the
 ## result must not depend on which drained first.

@@ -39,6 +39,12 @@ var target_generation: PackedInt32Array
 var amount: PackedFloat32Array
 var count: int = 0
 
+## Events refused because the queue was full, counted for the life of the queue —
+## never reset per tick, only when the run constructs a fresh HitQueue. A silent
+## overflow would desync one peer from the rest with no evidence; a nonzero
+## `dropped` is that evidence, and the capacity is sized so it stays zero.
+var dropped: int = 0
+
 var _capacity: int
 
 ## Per-entity adjudication state for the current tick, indexed by entity slot.
@@ -93,6 +99,7 @@ func begin_tick() -> void:
 
 func append(k: int, exploit: int, tgt: int, gen: int, amt: float) -> bool:
 	if count >= _capacity:
+		dropped += 1
 		return false
 	kind[count] = k
 	source_exploit[count] = exploit

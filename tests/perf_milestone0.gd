@@ -47,6 +47,8 @@ const CALIBRATION_ITERS := 400000
 const MAX_CONTENTION := 1.8
 
 var run: Node2D
+## Events the gated real run dropped, captured before its node is freed.
+var _gate_drops: int = 0
 
 func _initialize() -> void:
 	SaveGame.use_test_paths()
@@ -123,6 +125,11 @@ func _initialize() -> void:
 
 	print("  STRESS (all pools at simultaneous cap — a load real play never reaches):")
 	_report(samples, budget, scale)
+	if run.queue.dropped > 0:
+		print("  FAIL — the event queue dropped %d events at cap; determinism needs zero."
+			% run.queue.dropped)
+		quit(1)
+		return
 
 	# The gate itself: a real winning run, which is the load that actually exists.
 	print("")
@@ -134,7 +141,10 @@ func _initialize() -> void:
 	print("    worst  %7.3f ms" % _pct(live, 1.0))
 	print("    normalised p95: %.3f ms" % (p95 / scale))
 	print("")
-	if scale > MAX_CONTENTION:
+	if _gate_drops > 0:
+		print("  FAIL — the real run dropped %d events; determinism needs zero." % _gate_drops)
+		quit(1)
+	elif scale > MAX_CONTENTION:
 		print("  INCONCLUSIVE — machine %.2fx the reference, too contended." % scale)
 		quit(0)
 	elif p95 <= budget:
@@ -170,6 +180,9 @@ func _real_run() -> PackedFloat64Array:
 		t += 1
 	print("    %s at %.0fs, peak enemies %d" % [
 		"won" if g.won else "died", t * DT, g.MAX_ENEMIES])
+	# Determinism, not speed: an event queue that overflowed at cap dropped work
+	# one peer would keep, so the gate refuses a run that dropped anything.
+	_gate_drops = g.queue.dropped
 	g.queue_free()
 	return out
 

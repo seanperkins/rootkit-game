@@ -565,7 +565,11 @@ func _ready() -> void:
 	botnet = Population.new(MAX_BOTNET)
 	hostiles = Population.new(MAX_HOSTILES)
 	_hostile_life = PackedFloat32Array(); _hostile_life.resize(MAX_HOSTILES)
-	queue = HitQueue.new(EVENT_BUDGET, MAX_ENEMIES)
+	# Four players can generate four parties' worth of events in one tick, so the
+	# event budget scales with the player cap. Sized generously enough that
+	# queue.dropped stays zero even at the worst-case fixture; a nonzero value is
+	# a determinism bug, not a tuning knob.
+	queue = HitQueue.new(EVENT_BUDGET * SessionRules.MAX_PLAYERS, MAX_ENEMIES)
 	director = SpawnDirector.new(base + _SEED_DIRECTOR)
 	# The WHOLE campaign, plotted before the first frame: three arenas and the
 	# corridors between them on one grid. Generated from the player's start,
@@ -714,6 +718,32 @@ func _rebuild_execute_table() -> void:
 	_execute_by_exploit.resize(resolved.size())
 	for i in resolved.size():
 		_execute_by_exploit[i] = resolved[i].execute_below
+
+# ------------------------------------------------------- exploit ownership ---
+#
+# Every read that asks "which exploit owns this event, and whose build is it" —
+# lifesteal, the flip's botnet, and the ON_KILL/ON_FLIP attribution — goes
+# through these two helpers, so the plural cutover teaches the slot encoding to
+# ONE place. The load-bearing rule they enforce is that a NEGATIVE owner id
+# (the hit queue's -1 unowned / -2 unset sentinels) decodes to no owner, never
+# to slot zero: an unowned kill must credit nobody, not silently the first
+# player. Integer division of -1 by the per-slot stride truncates to 0 in
+# GDScript, which is exactly the trap.
+
+## The ResolvedExploit an owner id refers to, or null for a negative sentinel or
+## an out-of-range id.
+func _resolved(gid: int) -> ResolvedExploit:
+	if gid < 0 or gid >= resolved.size():
+		return null
+	return resolved[gid]
+
+## (slot, exploit_index) for an owner id, or (-1, -1) when the id is negative or
+## out of range. Solo has one slot, so a valid id is (local_slot, id); the
+## plural cutover replaces this body with the real gid decode.
+func _decode_exploit(gid: int) -> Vector2i:
+	if gid < 0 or gid >= resolved.size():
+		return Vector2i(-1, -1)
+	return Vector2i(local_slot, gid)
 
 # ---------------------------------------------------------------- the tick ---
 
@@ -2170,11 +2200,9 @@ func _on_death(i: int) -> void:
 		var r: ResolvedExploit = resolved[ei]
 		if not r.inert and r.trigger_kind == Module.TriggerKind.ON_KILL:
 			_try_event_fire(ei, r)
-	var killer := queue.killer_exploit[i]
-	if killer >= 0 and killer < resolved.size():
-		var lifesteal: float = resolved[killer].lifesteal
-		if lifesteal > 0.0:
-			player_health = minf(_eff_integrity(), player_health + lifesteal)
+	var killer := _resolved(queue.killer_exploit[i])
+	if killer != null and killer.lifesteal > 0.0:
+		player_health = minf(_eff_integrity(), player_health + killer.lifesteal)
 
 ## A flipped enemy drops the same shards a killed one does, so a corruption
 ## build does not starve its own level-ups in proportion to how well it works.
@@ -2188,10 +2216,10 @@ func _on_flip(i: int) -> void:
 		cap += r.botnet_cap
 	if botnet.count >= mini(cap, MAX_BOTNET):
 		return
-	var src := queue.flipper_exploit[i]
+	var src := _resolved(queue.flipper_exploit[i])
 	var corr := 6.0
-	if src >= 0 and src < resolved.size():
-		corr = maxf(resolved[src].corruption, 1.0)
+	if src != null:
+		corr = maxf(src.corruption, 1.0)
 	var bi := botnet.spawn(enemies.pos[i], Vector2.ZERO, 1.0, ENEMY_RADIUS, 0)
 	if bi >= 0:
 		_botnet_ratio[bi] = BOTNET_BASE_RATIO * corr
@@ -2397,13 +2425,13 @@ func _block_payout() -> void:
 		if loadout.can_fuse(m[0], m[1].fused):
 			matches.append(m)
 
-	# A fusion offer PAUSES the run and waits for choose_fusion/decline_fusion.
-	# With nobody connected there is nobody to unpause it, and _physics_process
-	# returns early on `paused` forever: the run deadlocks. Every headless driver
-	# connects level_up_offered and nothing else, so this guard is what keeps an
-	# autopiloted run that happens to assemble a maxed triple from hanging the
-	# perf gate. The drivers also get a handler; the design must not depend on it.
-	if not matches.is_empty() and not fusion_offered.get_connections().is_empty():
+	# The offer is SIMULATION state, entered unconditionally. It used to depend on
+	# fusion_offered.get_connections() being non-empty, so a headless peer with no
+	# UI and a peer with the screen open would diverge on whether the offer even
+	# happened. Presentation OBSERVES the pending offer; it does not gate it, and
+	# resolution is a deterministic input (auto-resolving on timeout), never a
+	# live signal connection.
+	if not matches.is_empty():
 		_pending_fusions = matches
 		paused = true
 		emit_signal("fusion_offered", matches)
