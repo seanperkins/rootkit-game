@@ -1216,6 +1216,13 @@ Pinned records: replace `g.lockstep.submit(s, g.lockstep.executed, Vector2.ZERO,
 			g.lockstep.submit(s, g.lockstep.executed, Vector2(cos(spin), sin(spin)), c.x, c.y, c.z)
 ```
 
+Party geometry — slot 0 sits at a corner of the leash box today and cannot flee toward negative x or y. Change `PARTY_OFFSETS` to put it in the centre while keeping the full 4000 span on both axes:
+
+```gdscript
+const PARTY_OFFSETS := [Vector2.ZERO, Vector2(2000.0, 2000.0),
+	Vector2(-2000.0, 2000.0), Vector2(2000.0, -2000.0)]
+```
+
 Kite state and hysteresis — add fixture vars and reset them at the top of `_real_run`:
 
 ```gdscript
@@ -1247,21 +1254,24 @@ func _kite(g: Node2D) -> Vector2:
 	# KITE_FLEE_OUT, then nudge toward the swarm once and HOLD facing with zero
 	# records. Facing is the last non-zero record, so the hold is what keeps
 	# slot 0's forward weapons pointed at the swarm between bursts.
+	# The flee sum over everything within KITE_FLEE_OUT; its negative is the
+	# swarm's mass, which is where a nudge should face (the nearest single
+	# enemy can be a straggler off to one side at cap).
+	var flee := Vector2.ZERO
+	var k := 0
+	for i in g.enemies.count:
+		var d: Vector2 = me - g.enemies.pos[i]
+		var dl := d.length()
+		if dl < KITE_FLEE_OUT and dl > 0.01:
+			flee += d / dl * (KITE_FLEE_OUT - dl)
+			k += 1
 	if _kite_fleeing and nd > KITE_FLEE_OUT:
 		_kite_fleeing = false
 		_kite_hold = 0
-		return _nudge(g, nearest)
+		return _nudge(g, flee, k, nearest)
 	if not _kite_fleeing and nd < KITE_FLEE_IN:
 		_kite_fleeing = true
 	if _kite_fleeing:
-		var flee := Vector2.ZERO
-		var k := 0
-		for i in g.enemies.count:
-			var d: Vector2 = me - g.enemies.pos[i]
-			var dl := d.length()
-			if dl < KITE_FLEE_OUT and dl > 0.01:
-				flee += d / dl * (KITE_FLEE_OUT - dl)
-				k += 1
 		var dir := flee.normalized() if k > 0 else Vector2.ZERO
 		var c: Vector2 = g.terrain.arena().get_center() - me
 		if c.length() > 1100.0:
@@ -1270,10 +1280,14 @@ func _kite(g: Node2D) -> Vector2:
 	_kite_hold += 1
 	if _kite_hold >= KITE_NUDGE_EVERY:
 		_kite_hold = 0
-		return _nudge(g, nearest)
+		return _nudge(g, flee, k, nearest)
 	return Vector2.ZERO
 
-func _nudge(g: Node2D, nearest: int) -> Vector2:
+## One tick toward the swarm's mass (the negative flee sum), else toward the
+## nearest enemy, else nothing.
+func _nudge(g: Node2D, flee: Vector2, k: int, nearest: int) -> Vector2:
+	if k > 0 and flee.length_squared() > 0.000001:
+		return _around_walls(g, (-flee).normalized())
 	if nearest < 0:
 		return Vector2.ZERO
 	return _around_walls(g, (g.enemies.pos[nearest] - g.player_pos[g.local_slot]).normalized())
@@ -1285,10 +1299,13 @@ The pin — constants from Step 1 and an assertion after the loop:
 ## The fixture's end and load before the weapons pass, recorded so the gate
 ## cannot get lighter by dying sooner OR by surviving a thinner field: a
 ## baseline WIN requires a win; a baseline death at tick N requires surviving
-## at least N ticks; a baseline TIMEOUT (the 24000-tick cap, which is what this
-## branch measured) requires the cap or a win; and the mean live enemies must
-## reach 90% of the baseline's. Re-pinned only by running the gate on the
-## pre-change tree; both values stay in this comment so the delta is visible.
+## at least 90% of N (declared slack: the run is deterministic but chaotic);
+## a baseline TIMEOUT (the 24000-tick cap, which is what this branch measured)
+## requires the cap or a win; and the mean live enemies must reach 90% of the
+## baseline's. Order: pin from the pre-change run, pass the post-change
+## fixture against it, only then move the constants, and only upward. A fall
+## below either floor needs a stated reason, never a re-pin. Both values stay
+## in this comment so the delta is visible.
 ##   pre-pass  (2026-09-02): timeout at 24000, mean live enemies <from Step 1>
 ##   post-pass:              (written in Step 3 of this task, after the gate runs)
 const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout" — from Step 1
@@ -1304,15 +1321,21 @@ and after the loop (replacing the print added in Step 1's edit):
 	if BASELINE_OUTCOME == "won":
 		covered = outcome == "won"
 	elif BASELINE_OUTCOME == "died":
-		covered = outcome != "died" or t >= BASELINE_END_TICK
+		covered = outcome != "died" or t >= int(float(BASELINE_END_TICK) * 0.9)
 	elif BASELINE_OUTCOME == "timeout":
 		covered = outcome != "died"
 	if mean_enemies < BASELINE_MEAN_ENEMIES * 0.9:
 		covered = false
-	if not covered:
+	_gate_covered = covered
+```
+with `var _gate_covered := true` at file scope, and in `_initialize`, right after the `_gate_drops > 0` check and BEFORE the `scale > MAX_CONTENTION` branch (a loaded machine must not turn a coverage regression into PASS-by-INCONCLUSIVE):
+```gdscript
+	if not _gate_covered:
 		print("  FAIL — the fixture measured less than its baseline (%s at %d, mean enemies %.1f): a coverage regression, not a speedup." % [BASELINE_OUTCOME, BASELINE_END_TICK, BASELINE_MEAN_ENEMIES])
 		quit(1)
+		return
 ```
+If the hysteresis kite dies before the cap (standing still lets ranged shots connect that the always-moving kite dodged), raise `KITE_FLEE_IN` toward 190 until the run reaches the cap again, and record the value in the constant's comment.
 (If `quit` inside `_real_run` is awkward, return an empty array and let the caller fail on it.) Rewrite the header's packet-query sentence to name the beam capsule and the homing rows as the load.
 
 - [ ] **Step 3: Run the gate** — `godot --headless -s res://tests/perf_milestone0.gd 2>&1 | tail -12`. Expected: PASS within budget and the coverage assertion holding. If INCONCLUSIVE, rerun on a quiet machine. Write the post-pass outcome, tick and mean enemies into the constants' comment beside the pre-pass values. Headroom is about five percent, so if p95 is over budget, profile the beam selection first (k up to 56) before touching anything else.
