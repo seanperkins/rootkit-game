@@ -70,6 +70,15 @@ func _records_for(t: int, moves_fn: Callable) -> Array:
 			m[r.local_slot] = Vector2.ZERO
 	return m
 
+## The aims every slot sends for tick `t`, or zeros when the driver gave none.
+func _aims_for(t: int, aims_fn: Callable) -> Array:
+	if not aims_fn.is_valid():
+		var z := []
+		for _s in players:
+			z.append(Vector2.ZERO)
+		return z
+	return aims_fn.call(t)
+
 ## Whether slot `s` is off the wire for tick `t`.
 func _withheld(s: int, t: int) -> bool:
 	if not withheld.has(s):
@@ -81,15 +90,17 @@ func _withheld(s: int, t: int) -> bool:
 ## need, [executed, t], in a per-peer rotated order. A record already held
 ## is refused, so resubmission is free; a tick skipped while a peer was away
 ## is filled in, as the host's relay would.
-func _submit_remotes(r: Node2D, k: int, t: int, moves_fn: Callable) -> void:
+func _submit_remotes(r: Node2D, k: int, t: int, moves_fn: Callable,
+		aims_fn: Callable = Callable()) -> void:
 	for t2 in range(r.lockstep.executed, t + 1):
 		var m := _records_for(t2, moves_fn)
+		var a := _aims_for(t2, aims_fn)
 		for j in players:
 			var s := (j + k) % players
 			if s == r.local_slot or _withheld(s, t2):
 				continue
 			var c := _choice_for(r, s)
-			r.lockstep.submit(s, t2, (m[s] as Vector2).normalized(), c.x, c.y, c.z)
+			r.lockstep.submit(s, t2, (m[s] as Vector2).normalized(), c.x, c.y, c.z, a[s])
 
 func _dropped(r: Node2D) -> bool:
 	return _withheld(r.local_slot, r.lockstep.executed + r.lockstep.delay)
@@ -100,7 +111,7 @@ func _dropped(r: Node2D) -> bool:
 ## through its real poll — and the peer steps if its ring is ready. A stalled
 ## peer resubmits the same tick next time and the ring refuses the duplicate,
 ## so no tick is ever skipped or double-fed.
-func step(moves_fn: Callable) -> void:
+func step(moves_fn: Callable, aims_fn: Callable = Callable()) -> void:
 	for k in runs.size():
 		var r: Node2D = runs[k]
 		if _dropped(r) or r._session.reconnecting:
@@ -112,7 +123,8 @@ func step(moves_fn: Callable) -> void:
 		# already-normalised vector can move its last bit, and one bit is a
 		# desync.
 		r.input_override = m[r.local_slot]
-		_submit_remotes(r, k, t, moves_fn)
+		r.aim_override = _aims_for(t, aims_fn)[r.local_slot]
+		_submit_remotes(r, k, t, moves_fn, aims_fn)
 		var lc := _choice_for(r, r.local_slot)
 		if lc.x != -1:
 			r._local_choice = lc
@@ -123,14 +135,15 @@ func step(moves_fn: Callable) -> void:
 
 ## Step one peer alone, if its ring is ready — the movement function supplies
 ## its record for the tick it runs ahead, exactly as step() would.
-func step_one(k: int, moves_fn: Callable) -> bool:
+func step_one(k: int, moves_fn: Callable, aims_fn: Callable = Callable()) -> bool:
 	var r: Node2D = runs[k]
 	if _dropped(r) or r._session.reconnecting:
 		return false
 	var t: int = r.lockstep.executed + r.lockstep.delay
 	var m := _records_for(t, moves_fn)
 	r.input_override = m[r.local_slot]
-	_submit_remotes(r, k, t, moves_fn)
+	r.aim_override = _aims_for(t, aims_fn)[r.local_slot]
+	_submit_remotes(r, k, t, moves_fn, aims_fn)
 	var lc := _choice_for(r, r.local_slot)
 	if lc.x != -1:
 		r._local_choice = lc

@@ -17,7 +17,9 @@ const CASES := ["facing_follows_the_applied_record_and_holds",
 	"mines_drop_behind_on_open_ground", "mines_avoid_a_wall",
 	"the_checksum_payload_rearms_not_refires",
 	"redundancy_grants_every_fire_unless_it_carries_checksum",
-	"every_emitted_fx_kind_is_drawn"]
+	"every_emitted_fx_kind_is_drawn",
+	"aim_overrides_movement_facing", "a_hostile_aim_is_neutral_and_a_long_one_is_unit",
+	"aims_survive_a_restore", "two_peers_agree_while_aiming"]
 
 func _initialize() -> void:
 	print("ROOTKIT — facing\n")
@@ -37,6 +39,10 @@ func _initialize() -> void:
 	await the_checksum_payload_rearms_not_refires()
 	await redundancy_grants_every_fire_unless_it_carries_checksum()
 	every_emitted_fx_kind_is_drawn()
+	await aim_overrides_movement_facing()
+	await a_hostile_aim_is_neutral_and_a_long_one_is_unit()
+	await aims_survive_a_restore()
+	await two_peers_agree_while_aiming()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -338,3 +344,70 @@ func every_emitted_fx_kind_is_drawn() -> void:
 	_check("emit sites per kind are as pinned",
 		counts, {"RIPPLE": 2, "DASH": 1, "BOLT": 2, "BEAM": 1, "WEDGE": 1, "PULSE": 2, "BLAST": 1})
 	finished["every_emitted_fx_kind_is_drawn"] = true
+
+func aim_overrides_movement_facing() -> void:
+	var r := await _fresh_run()
+	r.input_override = Vector2.LEFT
+	r.aim_override = Vector2.UP
+	r._physics_process(DT)
+	_check("an aim sets the facing over the movement", r.player_facing[r.local_slot], Vector2.UP)
+	_check("the aim is applied into aims", r.aims[r.local_slot], Vector2.UP)
+	r.aim_override = Vector2.ZERO
+	r._physics_process(DT)
+	_check("a zero aim falls back to the movement", r.player_facing[r.local_slot], Vector2.LEFT)
+	r.input_override = Vector2.ZERO
+	for _i in 3:
+		r._physics_process(DT)
+	_check("standing still with no aim holds it", r.player_facing[r.local_slot], Vector2.LEFT)
+	r.free(); await process_frame
+	finished["aim_overrides_movement_facing"] = true
+
+## Sanitised at APPLICATION, like the move: a component past
+## MOVE_COMPONENT_MAX or non-finite is a zero aim; a legal non-unit aim is
+## normalised so a record cannot set a facing of length 40.
+func a_hostile_aim_is_neutral_and_a_long_one_is_unit() -> void:
+	var r := await _fresh_run()
+	_check("a huge aim is neutral", r._sanitise_aim(Vector2(40.0, 0.0)), Vector2.ZERO)
+	_check("a NaN aim is neutral", r._sanitise_aim(Vector2(NAN, 0.0)), Vector2.ZERO)
+	_check("a zero aim stays zero", r._sanitise_aim(Vector2.ZERO), Vector2.ZERO)
+	var u: Vector2 = r._sanitise_aim(Vector2(1.2, 0.9))
+	_check_true("a legal long aim is unit", absf(u.length() - 1.0) < 1e-6)
+	# Through the ring: a record placed for the tick the poll would fill stands,
+	# so the poll's own submit is refused and this record is what applies.
+	r.lockstep.submit(r.local_slot, r.lockstep.executed, Vector2.ZERO, -1, -1, -1, Vector2(40.0, 0.0))
+	r._physics_process(DT)
+	_check("a hostile aim leaves the facing alone", r.player_facing[r.local_slot], Vector2.RIGHT)
+	r.free(); await process_frame
+	finished["a_hostile_aim_is_neutral_and_a_long_one_is_unit"] = true
+
+func aims_survive_a_restore() -> void:
+	var a := await _fresh_run()
+	var b := await _fresh_run()
+	a.aim_override = Vector2.DOWN
+	a._physics_process(DT)
+	var bytes: PackedByteArray = a.serialize_state(a.tick)
+	_check_true("restore accepts it", b.restore_state(bytes, a.tick))
+	_check("aims came through the snapshot", b.aims[0], a.aims[0])
+	_check("and the facing did", b.player_facing[0], Vector2.DOWN)
+	_check("and the hashes agree", b._state_hash(), a._state_hash())
+	a.free(); b.free()
+	await process_frame
+	finished["aims_survive_a_restore"] = true
+
+func two_peers_agree_while_aiming() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 2, 2, 20260830)
+	var moves := func(t: int) -> Array:
+		var a := float(t) * 0.05
+		return [Vector2(cos(a), sin(a)), Vector2(-sin(a), cos(a))]
+	var aims := func(t: int) -> Array:
+		var a := float(t) * 0.11
+		return [Vector2(cos(a), -sin(a)), Vector2.ZERO if t % 7 == 0 else Vector2(sin(a), cos(a))]
+	for _i in 600:
+		h.step(moves, aims)
+	_check("two aiming peers agree", h.all_agree(), true)
+	if not h.all_agree():
+		print("    diff ", h.first_difference(h.runs[0], h.runs[1]))
+	h.teardown()
+	await process_frame
+	finished["two_peers_agree_while_aiming"] = true

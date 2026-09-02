@@ -291,6 +291,7 @@ var _stalled_ticks := 0
 var _local_choice := Vector3i(-1, -1, -1)
 ## Caller-owned take buffers so the 60 Hz path allocates nothing.
 var _rec_moves: PackedVector2Array
+var _rec_aims: PackedVector2Array
 var _rec_cards: PackedInt32Array
 var _rec_targets: PackedInt32Array
 var _rec_offers: PackedInt32Array
@@ -615,6 +616,9 @@ var _skips: Array
 var _unlocked: Array = []
 ## Headless tests drive the local player through this instead of the keyboard.
 var input_override = null
+## The aim the poll uses instead of the device, for headless drivers: null
+## reads the device, a Vector2 (zero allowed) is the aim.
+var aim_override = null
 ## Set by a headless driver BEFORE the node enters the tree: the engine's own
 ## physics callback is disabled at ready, so every tick is the driver's explicit
 ## call. Godot re-enables _physics_process at ready, which is why a driver
@@ -627,6 +631,10 @@ var external_drive := false
 ## whose entry arrives in a packet instead of from the InputMap, and the tick
 ## cannot tell the difference — which is the whole point.
 var inputs: PackedVector2Array
+## Each slot's applied AIM for the tick: a unit world vector, or zero for
+## "face the way you move". Simulation state like `inputs`; sanitised and
+## normalised at application so no record can set a facing that is not unit.
+var aims: PackedVector2Array
 var _rng := RandomNumberGenerator.new()
 ## One card/offer stream per POSSIBLE player slot, seeded independently from the
 ## descriptor. A player's card shuffles and block-payout rolls draw from their
@@ -1503,6 +1511,7 @@ func _allocate_slots() -> void:
 	_low_armed = PackedByteArray(); _low_armed.resize(n); _low_armed.fill(1)
 	_zone_slow_player = PackedByteArray(); _zone_slow_player.resize(n)
 	inputs = PackedVector2Array(); inputs.resize(n)
+	aims = PackedVector2Array(); aims.resize(n)
 	_banked = []; _banked.resize(n)
 	_sheet = []; _sheet.resize(n)
 	_unlocked = []; _unlocked.resize(n)
@@ -1518,6 +1527,7 @@ func _allocate_slots() -> void:
 		_offer_open[s] = {}
 		_offer_queue[s] = []
 	_rec_moves = PackedVector2Array(); _rec_moves.resize(n)
+	_rec_aims = PackedVector2Array(); _rec_aims.resize(n)
 	_rec_cards = PackedInt32Array(); _rec_cards.resize(n)
 	_rec_targets = PackedInt32Array(); _rec_targets.resize(n)
 	_rec_offers = PackedInt32Array(); _rec_offers.resize(n)
@@ -1784,7 +1794,7 @@ func _physics_process(_dt: float) -> void:
 		return
 	_stalled_ticks = 0
 	tick = lockstep.executed
-	lockstep.take(tick, _rec_moves, _rec_cards, _rec_targets, _rec_offers)
+	lockstep.take(tick, _rec_moves, _rec_cards, _rec_targets, _rec_offers, _rec_aims)
 	_apply_records()
 	_resolve_deadlines()
 	_settle_offers()
@@ -1979,6 +1989,9 @@ func _poll_local_input() -> void:
 	if _session.reconnecting:
 		return
 	var move := Vector2.ZERO
+	var aim := Vector2.ZERO
+	if aim_override != null:
+		aim = aim_override as Vector2
 	if input_override != null:
 		move = (input_override as Vector2).normalized()
 	else:
@@ -2009,23 +2022,25 @@ func _poll_local_input() -> void:
 	if _session.role != NetworkSession.Role.SOLO \
 			and (user_paused or slot_state[local_slot] != SlotState.LIVE or not alive or won):
 		move = Vector2.ZERO
+		aim = Vector2.ZERO
 		_local_choice = Vector3i(-1, -1, -1)
 	# The sampled intent is visible immediately for the local slot; the value
 	# the simulation actually applies is whatever the ring hands back for the
 	# tick it executes, which at delay zero is this same record.
 	inputs[local_slot] = move
+	aims[local_slot] = _sanitise_aim(aim)
 	# Submit the FULL record — movement plus any staged choice — for the tick
 	# this peer is running ahead. The staged choice is consumed only when the
 	# submit lands; a duplicate for a tick already recorded leaves it for the
 	# next tick rather than losing it.
 	var c := _local_choice
 	var t := lockstep.executed + lockstep.delay
-	if lockstep.submit(local_slot, t, move, c.x, c.y, c.z):
+	if lockstep.submit(local_slot, t, move, c.x, c.y, c.z, aim):
 		_local_choice = Vector3i(-1, -1, -1)
 		# The same immutable record goes on the wire — to the host, or into
 		# the host's own relay staging — exactly once, the tick it was made.
 		if _transport != null:
-			_transport.send_input(t, move, c.x, c.y, c.z)
+			_transport.send_input(t, move, c.x, c.y, c.z, aim)
 
 ## Keep the ring's roster masks in step with slot_state, so a slot marked DEAD
 ## or ABSENT by the simulation stops being waited on the same tick.
@@ -2048,8 +2063,10 @@ func _apply_records() -> void:
 	for s in SessionRules.MAX_PLAYERS:
 		if slot_state[s] != SlotState.LIVE:
 			inputs[s] = Vector2.ZERO
+			aims[s] = Vector2.ZERO
 			continue
 		inputs[s] = _sanitise_move(_rec_moves[s])
+		aims[s] = _sanitise_aim(_rec_aims[s])
 		if _rec_cards[s] != -1:
 			_apply_choice(s, _rec_cards[s], _rec_targets[s], _rec_offers[s])
 
@@ -2063,6 +2080,14 @@ static func _sanitise_move(m: Vector2) -> Vector2:
 	if absf(m.x) > cap or absf(m.y) > cap:
 		return Vector2.ZERO
 	return m
+
+## An aim is bounded like a move, then NORMALISED: the record says where, the
+## simulation says how far, so a facing is always unit or untouched.
+static func _sanitise_aim(a: Vector2) -> Vector2:
+	var m := _sanitise_move(a)
+	if m.length_squared() < 0.000001:
+		return Vector2.ZERO
+	return m.normalized()
 
 ## Copy every population's `pos` into its `prev_pos`. One memcpy each, not a
 ## loop over ~2700 entities — see Population.snapshot. The four player slots are
@@ -2280,7 +2305,9 @@ func _step2_integrate(dt: float) -> void:
 		if slot_state[s] != SlotState.LIVE:
 			continue
 		var world_dir: Vector2 = inputs[s]
-		if world_dir.length_squared() > 0.0:
+		if aims[s].length_squared() > 0.0:
+			player_facing[s] = aims[s]
+		elif world_dir.length_squared() > 0.0:
 			player_facing[s] = world_dir.normalized()
 		var pos_before := player_pos[s]
 		var p := pos_before
@@ -5141,7 +5168,7 @@ func _build_manifest() -> void:
 	for prop in ["slot_state", "player_pos", "player_prev_pos", "player_vel",
 			"player_facing", "player_health", "player_iframe", "player_shield",
 			"_parked_health", "_low_armed", "_zone_slow_player", "kills", "flips",
-			"inputs", "_offer_seq"]:
+			"inputs", "aims", "_offer_seq"]:
 		f.append(["run", prop, SH, "", []])
 	f.append(["run", "@loadouts", SH, "", ["loadouts"]])
 	f.append(["run", "@offers", SH | VARLEN, "", ["_offer_open", "_offer_queue"]])
@@ -5179,7 +5206,7 @@ func _build_manifest() -> void:
 		f.append(["rng_card%d" % s, "state", SH, "", ["_card_rng"]])
 	# --- the ring window: recovery continuity only, never hashed --------------
 	f.append(["lockstep", "@ring", SNAPSHOT | VARLEN, "",
-		["_moves", "_cards", "_targets", "_offers", "_tick_tag", "_have"]])
+		["_moves", "_aims", "_cards", "_targets", "_offers", "_tick_tag", "_have"]])
 	STATE_FIELDS = f
 
 	NOT_IN_MANIFEST = {
@@ -5198,7 +5225,7 @@ func _build_manifest() -> void:
 			"_pending_fusions": "presentation: derived from _offer_open by _emit_local_offer",
 			"_stalled_ticks": "transport liveness, local",
 			"_local_choice": "local staged input, not yet a record",
-			"_rec_moves": "take buffer", "_rec_cards": "take buffer",
+			"_rec_moves": "take buffer", "_rec_aims": "take buffer", "_rec_cards": "take buffer",
 			"_rec_targets": "take buffer", "_rec_offers": "take buffer",
 			"_modules": "constant table cache", "_module_index": "constant",
 			"_recipe_index": "constant",
@@ -5223,7 +5250,8 @@ func _build_manifest() -> void:
 			"enemy_types": "constant", "resolved": "derived: _recompile on restore",
 			"_buf": "scratch", "_counts": "scratch", "_pos_arrays": "scratch",
 			"_skips": "scratch", "_unlocked": "derived from the descriptor counters",
-			"input_override": "test seam", "external_drive": "test seam", "inputs": "",
+			"input_override": "test seam", "aim_override": "test seam",
+			"external_drive": "test seam", "inputs": "",
 			"_mm_enemy": "presentation", "_mm_proj": "presentation",
 			"_mm_shard": "presentation", "_mm_botnet": "presentation",
 			"_camera": "presentation", "_session": "immutable descriptor",
