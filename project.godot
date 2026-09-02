@@ -63,6 +63,26 @@ move_down={
 , Object(InputEventJoypadButton,"button_index":12,"pressed":false,"script":null)
 ]
 }
+aim_left={
+"deadzone": 0.25,
+"events": [Object(InputEventJoypadMotion,"axis":2,"axis_value":-1.0,"script":null)
+]
+}
+aim_right={
+"deadzone": 0.25,
+"events": [Object(InputEventJoypadMotion,"axis":2,"axis_value":1.0,"script":null)
+]
+}
+aim_up={
+"deadzone": 0.25,
+"events": [Object(InputEventJoypadMotion,"axis":3,"axis_value":-1.0,"script":null)
+]
+}
+aim_down={
+"deadzone": 0.25,
+"events": [Object(InputEventJoypadMotion,"axis":3,"axis_value":1.0,"script":null)
+]
+}
 confirm={
 "deadzone": 0.5,
 "events": [Object(InputEventKey,"physical_keycode":4194309,"pressed":false,"echo":false,"script":null)

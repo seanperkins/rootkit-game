@@ -14,7 +14,8 @@ const CASES := ["every_referenced_action_exists", "tools_use_real_actions",
 	"a_joypad_can_drive_the_overlay", "user_pause_gates_the_tick",
 	"a_card_decline_does_not_release_a_player_pause", "cancel_routes_by_screen",
 	"the_sim_reads_inputs_not_the_device", "input_override_feeds_slot_zero",
-	"the_device_is_polled_in_one_place", "confirm_cycles_spectate_targets"]
+	"the_device_is_polled_in_one_place", "confirm_cycles_spectate_targets",
+	"the_right_stick_aims", "the_mouse_aims_while_recently_moved"]
 
 const DT := 1.0 / 60.0
 
@@ -32,6 +33,8 @@ func _initialize() -> void:
 	await input_override_feeds_slot_zero()
 	the_device_is_polled_in_one_place()
 	await confirm_cycles_spectate_targets()
+	await the_right_stick_aims()
+	await the_mouse_aims_while_recently_moved()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -66,6 +69,7 @@ func _fresh_run() -> Node2D:
 ## movement silently stops working and no gamepad support is delivered.
 func every_referenced_action_exists() -> void:
 	for a in ["move_left", "move_right", "move_up", "move_down",
+			"aim_left", "aim_right", "aim_up", "aim_down",
 			"confirm", "cancel", "pause", "recipes", "restart"]:
 		_check("action '%s' is in the map" % a, InputMap.has_action(a), true)
 		_check("and '%s' has bindings" % a,
@@ -264,3 +268,42 @@ func confirm_cycles_spectate_targets() -> void:
 	h.teardown()
 	await process_frame
 	finished["confirm_cycles_spectate_targets"] = true
+
+## The right stick aims through four actions read by ONE get_vector in the
+## poll, unprojected like movement so a stick pushed up on screen aims up on
+## screen. Input.action_press is the engine's own device simulation.
+func the_right_stick_aims() -> void:
+	var r := await _fresh_run()
+	r.input_override = Vector2.ZERO
+	r.aim_override = null
+	Input.action_press("aim_up", 1.0)
+	r._poll_local_input()
+	var want: Vector2 = r.from_iso(Vector2(0.0, -1.0)).normalized()
+	_check("a stick pushed up aims up the screen", r.aims[r.local_slot].dot(want) > 0.999, true)
+	Input.action_release("aim_up")
+	r._poll_local_input()
+	_check("a centred stick aims nowhere", r.aims[r.local_slot], Vector2.ZERO)
+	r.queue_free()
+	await process_frame
+	finished["the_right_stick_aims"] = true
+
+## The mouse aims for MOUSE_AIM_HOLD seconds after it last moved, at the
+## cursor's world position relative to the local slot; then movement facing
+## takes over again.
+func the_mouse_aims_while_recently_moved() -> void:
+	var r := await _fresh_run()
+	r.input_override = Vector2.ZERO
+	r.aim_override = null
+	var e := InputEventMouseMotion.new()
+	e.position = Vector2(10.0, 10.0)
+	r._unhandled_input(e)
+	_check("a motion event arms the mouse aim", r._mouse_aim_left, r.MOUSE_AIM_HOLD)
+	r._mouse_iso = r.to_iso(r.player_render_pos[r.local_slot] + Vector2(0.0, -100.0))
+	r._poll_local_input()
+	_check("the aim points from the player to the cursor", r.aims[r.local_slot].dot(Vector2(0.0, -1.0)) > 0.999, true)
+	r._mouse_aim_left = 0.0
+	r._poll_local_input()
+	_check("an idle mouse aims nowhere", r.aims[r.local_slot], Vector2.ZERO)
+	r.queue_free()
+	await process_frame
+	finished["the_mouse_aims_while_recently_moved"] = true

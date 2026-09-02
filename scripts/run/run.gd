@@ -619,6 +619,18 @@ var input_override = null
 ## The aim the poll uses instead of the device, for headless drivers: null
 ## reads the device, a Vector2 (zero allowed) is the aim.
 var aim_override = null
+## Mouse aim: the cursor's position in the iso plane (canvas space, the same
+## space to_iso produces) as of its last motion event, and how long it keeps
+## aiming after that. A countdown decremented in _process, not a clock read:
+## the poll runs inside _physics_process and reads no clock.
+const MOUSE_AIM_HOLD := 1.5
+var _mouse_iso := Vector2.ZERO
+var _mouse_aim_left := 0.0
+
+func _unhandled_input(e: InputEvent) -> void:
+	if e is InputEventMouseMotion:
+		_mouse_iso = get_canvas_transform().affine_inverse() * (e as InputEventMouseMotion).position
+		_mouse_aim_left = MOUSE_AIM_HOLD
 ## Set by a headless driver BEFORE the node enters the tree: the engine's own
 ## physics callback is disabled at ready, so every tick is the driver's explicit
 ## call. Godot re-enables _physics_process at ready, which is why a driver
@@ -1956,6 +1968,7 @@ func _present(_dt: float) -> void:
 ## tick (~16 ms) of latency, deliberately, and it buys motion that cannot judder:
 ## both endpoints have already happened, so there is never a guess to correct.
 func _process(_dt: float) -> void:
+	_mouse_aim_left = maxf(0.0, _mouse_aim_left - _dt)
 	# Clamped, and this is the whole discipline. The fraction can overshoot 1.0
 	# when a frame runs long, and drawing past the newest simulated position is
 	# extrapolation — a guess that gets visibly retracted on the next tick.
@@ -1992,6 +2005,19 @@ func _poll_local_input() -> void:
 	var aim := Vector2.ZERO
 	if aim_override != null:
 		aim = aim_override as Vector2
+	else:
+		# The right stick while deflected, else the mouse while it has moved
+		# within MOUSE_AIM_HOLD, else nothing: facing follows movement.
+		# Normalised HERE, not only at application: the apply-time sanitiser
+		# caps each component like a move's, and a cursor 100 units away is
+		# not a hostile record.
+		var stick := Input.get_vector("aim_left", "aim_right", "aim_up", "aim_down")
+		if stick.length_squared() > 0.0:
+			aim = from_iso(stick.normalized()).normalized()
+		elif _mouse_aim_left > 0.0:
+			var to_cursor := from_iso(_mouse_iso - to_iso(player_render_pos[local_slot]))
+			if to_cursor.length_squared() > 1.0:
+				aim = to_cursor.normalized()
 	if input_override != null:
 		move = (input_override as Vector2).normalized()
 	else:
@@ -5251,6 +5277,8 @@ func _build_manifest() -> void:
 			"_buf": "scratch", "_counts": "scratch", "_pos_arrays": "scratch",
 			"_skips": "scratch", "_unlocked": "derived from the descriptor counters",
 			"input_override": "test seam", "aim_override": "test seam",
+			"_mouse_iso": "local presentation: the cursor",
+			"_mouse_aim_left": "local presentation: mouse aim countdown",
 			"external_drive": "test seam", "inputs": "",
 			"_mm_enemy": "presentation", "_mm_proj": "presentation",
 			"_mm_shard": "presentation", "_mm_botnet": "presentation",
