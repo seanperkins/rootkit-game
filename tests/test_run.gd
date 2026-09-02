@@ -190,8 +190,8 @@ func presentation_survives_death() -> void:
 	await process_frame
 	r.input_override = Vector2.ZERO
 
-	r._fx_ring.append([Vector2.ZERO, 100.0, 1.0, Color.WHITE])
-	var life_before: float = r._fx_ring[0][2]
+	r._fx.append([r.FxKind.RIPPLE, Vector2.ZERO, Vector2.RIGHT, 100.0, 1.0, Color.WHITE])
+	var life_before: float = r._fx[0][4]
 
 	r._damage_player(r.local_slot, 99999.0)
 	_check("the player is dead", r.alive, false)
@@ -201,7 +201,7 @@ func presentation_survives_death() -> void:
 	# The tick returns early now — dead, and frozen by the hitstop — but
 	# presentation does not.
 	r._physics_process(DT)
-	_check("effects still age after death", r._fx_ring[0][2] < life_before, true)
+	_check("effects still age after death", r._fx[0][4] < life_before, true)
 	_check("the hitstop drained one tick", r.hitstop_ticks,
 		SessionRules.HITSTOP_TICKS - 1)
 	_check("the camera position is finite",

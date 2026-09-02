@@ -528,8 +528,17 @@ const HIT_SOUNDS := ["hit_light", "hit_medium", "hit_heavy"]
 const ARRIVAL_CHARGE := 0.9
 const ARRIVAL_POP := 0.25
 const ARRIVAL_TOTAL := ARRIVAL_CHARGE + ARRIVAL_POP
-var _fx_line: Array = []      # [a, b, t, colour]
-var _fx_ring: Array = []      # [centre, radius, t, colour]
+## Transient fire visuals, one list, one entry per fire — except CHAIN, which
+## appends one BOLT per resolved link, and the two non-fire rings (an arrival
+## flash, kernel_panic's telegraph). MINE and ORBIT fires append nothing: they
+## show through the glyphs and the orbiter trail. An estimate for the reader,
+## not a capacity (the Array is unbounded, aged by life): per LIVE slot about
+## 3 exploits x max(FIRE_BUDGET, BURST_MAX) x (max chain_count + 1) entries.
+## Entry: [kind, at, dir, radius, life, colour]. `dir` is a unit facing with
+## `radius` the length for DASH, BEAM and WEDGE, and the full link OFFSET
+## (to - from) for BOLT.
+enum FxKind { RIPPLE, DASH, BOLT, BEAM, WEDGE, PULSE, BLAST }
+var _fx: Array = []
 var _order: PackedInt32Array
 var _band_count: PackedInt32Array
 const DEPTH_BANDS := 192
@@ -2307,8 +2316,7 @@ func _step2_integrate(dt: float) -> void:
 				var ice := enemies.type_index[i] == EnemyTable.ICE
 				feel.add_trauma(0.8 if ice else 0.5)
 				feel.emit("ice_arrive" if ice else "miniboss_arrive")
-				_fx_ring.append([enemies.pos[i], 40.0, FX_LIFE * 5.0,
-					Color(2.4, 2.2, 2.0)])
+				_fx.append([FxKind.RIPPLE, enemies.pos[i], Vector2.RIGHT, 40.0, FX_LIFE * 5.0, Color(2.4, 2.2, 2.0)])
 			# THE pass that matters. _behave dispatches to _charge / _ranged /
 			# _pulse / _support / _ambush / _flank, so without this gate an
 			# arriving boss chases at full speed (ICE is CHASE), _ranged spawns
@@ -2484,17 +2492,10 @@ func _age_fx(dt: float) -> void:
 		if _hit_flash[f] > 0.0:
 			_hit_flash[f] = maxf(0.0, _hit_flash[f] - dt * HIT_FLASH_DECAY)
 	var i := 0
-	while i < _fx_line.size():
-		_fx_line[i][2] -= dt
-		if _fx_line[i][2] <= 0.0:
-			_fx_line.remove_at(i)
-		else:
-			i += 1
-	i = 0
-	while i < _fx_ring.size():
-		_fx_ring[i][2] -= dt
-		if _fx_ring[i][2] <= 0.0:
-			_fx_ring.remove_at(i)
+	while i < _fx.size():
+		_fx[i][4] -= dt
+		if _fx[i][4] <= 0.0:
+			_fx.remove_at(i)
 		else:
 			i += 1
 
@@ -2650,7 +2651,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			_shield_left[ei] = r.shield_rearm
 	match r.vector_kind:
 		Module.VectorKind.BROADCAST:
-			_fx_ring.append([at, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
+			_fx.append([FxKind.RIPPLE, at, Vector2.RIGHT, r.radius, FX_LIFE, Color(0.5, 1.7, 1.1)])
 			var n := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(n, _buf.size()):
 				_hit(ei, r, Grid.index_of(_buf[k]))
@@ -2659,8 +2660,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			# BEAM_HALF_WIDTH. Fires whether or not anything is in it.
 			var dir: Vector2 = player_facing[owner]
 			var mid := at + dir * r.radius * 0.5
-			_fx_line.append([at, at + dir * r.radius, FX_LIFE,
-				Color(2.2, 1.4, 2.6)])
+			_fx.append([FxKind.BEAM, at, dir, r.radius, FX_LIFE, Color(2.2, 1.4, 2.6)])
 			var n2 := grid.query_radius_into(mid, r.radius * 0.5 + BEAM_HALF_WIDTH, _buf, Grid.M_ENEMY)
 			var kept := 0
 			var band := BEAM_HALF_WIDTH + ENEMY_RADIUS
@@ -2691,8 +2691,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 		Module.VectorKind.CONE:
 			# A broadcast query filtered by ANGLE around the owner's facing.
 			var cdir: Vector2 = player_facing[owner]
-			_fx_line.append([at, at + cdir * r.radius, FX_LIFE,
-				Color(2.0, 1.6, 0.8)])
+			_fx.append([FxKind.WEDGE, at, cdir, r.radius, FX_LIFE, Color(2.0, 1.6, 0.8)])
 			var cn := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(cn, _buf.size()):
 				var cj := Grid.index_of(_buf[k])
@@ -2703,8 +2702,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				if absf(to_e.normalized().angle_to(cdir)) <= CONE_HALF_ANGLE:
 					_hit(ei, r, cj)
 		Module.VectorKind.PULSE:
-			_fx_ring.append([at, r.radius, FX_LIFE * 1.6,
-				Color(0.9, 1.4, 2.2)])
+			_fx.append([FxKind.PULSE, at, Vector2.RIGHT, r.radius, FX_LIFE * 1.6, Color(0.9, 1.4, 2.2)])
 			var pn := grid.query_radius_into(at, r.radius, _buf, Grid.M_ENEMY)
 			for k in mini(pn, _buf.size()):
 				var pj := Grid.index_of(_buf[k])
@@ -2768,7 +2766,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 			if t2 < 0:
 				return
 			_hit(ei, r, t2)
-			_fx_line.append([at, enemies.pos[t2], FX_LIFE, Color(1.0, 2.2, 1.6)])
+			_fx.append([FxKind.BOLT, at, enemies.pos[t2] - at, 0.0, FX_LIFE, Color(1.0, 2.2, 1.6)])
 			var from := enemies.pos[t2]
 			var visited := [t2]
 			var hops := 0
@@ -2787,7 +2785,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				if picked < 0:
 					break
 				_hit(ei, r, picked)
-				_fx_line.append([from, enemies.pos[picked], FX_LIFE, Color(1.0, 2.2, 1.6)])
+				_fx.append([FxKind.BOLT, from, enemies.pos[picked] - from, 0.0, FX_LIFE, Color(1.0, 2.2, 1.6)])
 				visited.append(picked)
 				from = enemies.pos[picked]
 				hops += 1
@@ -2804,7 +2802,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				t3 = _pick_target(VIEW_RANGE, r.targeting, at)
 				if t3 >= 0:
 					dir2 = (enemies.pos[t3] - at).normalized()
-			_fx_line.append([at, at + dir2 * 26.0, FX_LIFE, Color(1.1, 1.7, 1.4)])
+			_fx.append([FxKind.DASH, at, dir2, 26.0, FX_LIFE, Color(1.1, 1.7, 1.4)])
 			var shots: int = maxi(int(r.split_count), 1)
 			for sp in shots:
 				# Centred on the aim: 1 shot is dead on, 3 is -spread/0/+spread.
@@ -2859,8 +2857,7 @@ func _detonate(i: int, radius: float) -> void:
 	var r := _resolved(ei)
 	if r != null and radius > 0.0:
 		feel.add_trauma(0.15)
-		_fx_ring.append([projectiles.pos[i], radius, FX_LIFE * 1.5,
-			Color(2.2, 1.2, 0.5)])
+		_fx.append([FxKind.BLAST, projectiles.pos[i], Vector2.RIGHT, radius, FX_LIFE * 1.5, Color(2.2, 1.2, 0.5)])
 		var n := grid.query_radius_into(projectiles.pos[i], radius, _buf,
 			Grid.M_ENEMY)
 		for k in mini(n, _buf.size()):
@@ -3229,7 +3226,7 @@ func _pulse(i: int, dt: float) -> void:
 	if _ai_aim[i].x > 0.0:
 		return
 	_ai_aim[i].x = PULSE_PERIOD
-	_fx_ring.append([enemies.pos[i], 700.0, FX_LIFE * 8.0, Color(2.2, 0.5, 0.4)])
+	_fx.append([FxKind.PULSE, enemies.pos[i], Vector2.RIGHT, 700.0, FX_LIFE * 8.0, Color(2.2, 0.5, 0.4)])
 	# Everything with line of sight takes the hit — every LIVE slot is checked
 	# on its own, so cover is per player.
 	for s in SessionRules.MAX_PLAYERS:
@@ -4756,20 +4753,22 @@ func _draw() -> void:
 		draw_colored_polygon(_ground_quad(cr.position, cr.end),
 			Color(0.035, 0.085, 0.075))
 
-	# Orbiters and mines share the projectile pool, so they need to look like
-	# what they are rather than like a shot that stopped.
+	# Orbiter trails, drawn from RENDER positions so the arc and the glyph
+	# agree at every frame fraction. Mines and orbiters themselves are glyphs
+	# in the projectile multimesh (see _update_renderers).
 	for i in projectiles.count:
-		if _orbit_left[i] > 0.0:
-			var op := to_iso(_rp(projectiles, i))
-			draw_circle(op, 6.0, Color(0.5, 1.6, 1.2, 0.30))
-			draw_circle(op, 3.0, Color(0.7, 2.0, 1.5))
-		elif _mine_left[i] > 0.0:
-			# Pulsing, because a mine you forgot you placed is a mine that kills
-			# you when the collapse pushes you back over it.
-			var mp := to_iso(_rp(projectiles, i))
-			var beat := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.006)
-			draw_circle(mp, 5.0 + 3.0 * beat, Color(2.0, 1.1, 0.4, 0.25 + 0.3 * beat))
-			draw_circle(mp, 2.5, Color(2.2, 1.3, 0.5))
+		if _orbit_left[i] <= 0.0:
+			continue
+		var owner_slot := _owner_slot(_proj_owner[i])
+		if owner_slot < 0:
+			continue
+		var centre := player_render_pos[owner_slot]
+		var here := _rp(projectiles, i)
+		var arm := here - centre
+		var pts := PackedVector2Array()
+		for k in 7:
+			pts.append(to_iso(centre + arm.rotated(-0.09 * float(k))))
+		draw_polyline(pts, Color(0.5, 1.6, 1.2, 0.35), 1.5)
 
 	# Enemy fire. Distinct from the player's: red, and with a soft halo so a
 	# shot crossing a busy field is still findable.
@@ -4867,19 +4866,58 @@ func _draw() -> void:
 				draw_line(from2, from2.lerp(to2, 0.35 + 0.5 * k3),
 					Color(1.9, 0.5, 0.45, 0.30 + 0.45 * k3), 1.0 + k3)
 
-	# Shot visuals, oldest fading out. Drawn under the ship.
-	for fx in _fx_line:
-		var f: float = fx[2] / FX_LIFE
-		var c: Color = fx[3]
-		draw_line(to_iso(fx[0]), to_iso(fx[1]), Color(c.r, c.g, c.b, f), 1.0 + 2.5 * f)
-	for fx in _fx_ring:
-		var f2: float = fx[2] / FX_LIFE
-		var c2: Color = fx[3]
-		var pts := PackedVector2Array()
-		for k in 33:
-			var a2 := TAU * k / 32.0
-			pts.append(to_iso(fx[0] + Vector2(cos(a2), sin(a2)) * fx[1] * (1.0 - f2 * 0.25)))
-		draw_polyline(pts, Color(c2.r, c2.g, c2.b, f2 * 0.85), 1.0 + 2.0 * f2)
+	# Shot visuals, oldest fading out, one shape per kind. Drawn under the
+	# ship. Fade is life / FX_LIFE clamped, so the longer-lived rings hold full
+	# strength and then fade over their last FX_LIFE.
+	for fx in _fx:
+		var kind: int = fx[0]
+		var at: Vector2 = fx[1]
+		var dir: Vector2 = fx[2]
+		var rad: float = fx[3]
+		var f: float = clampf(fx[4] / FX_LIFE, 0.0, 1.0)
+		var c: Color = fx[5]
+		match kind:
+			FxKind.RIPPLE:
+				_draw_ring(at, rad * (1.0 - f * 0.25), Color(c.r, c.g, c.b, f * 0.85), 1.0 + 2.0 * f)
+				_draw_ring(at, rad * (0.7 - f * 0.25), Color(c.r, c.g, c.b, f * 0.45), 1.0)
+			FxKind.DASH:
+				draw_line(to_iso(at + dir * 8.0), to_iso(at + dir * rad), Color(c.r, c.g, c.b, f), 1.0 + 3.0 * f)
+			FxKind.BOLT:
+				var pts := PackedVector2Array()
+				var seg := 6
+				var n := Vector2(-dir.y, dir.x).normalized()
+				for k in seg + 1:
+					var t := float(k) / float(seg)
+					var jitter := sin(t * 11.0 + float(k) * 2.3) * 7.0 * (1.0 if k > 0 and k < seg else 0.0)
+					pts.append(to_iso(at + dir * t + n * jitter))
+				draw_polyline(pts, Color(c.r, c.g, c.b, f), 1.0 + 2.0 * f)
+			FxKind.BEAM:
+				var n2 := Vector2(-dir.y, dir.x)
+				var w := BEAM_HALF_WIDTH * f
+				var quad := PackedVector2Array([to_iso(at + n2 * w), to_iso(at + dir * rad + n2 * w),
+					to_iso(at + dir * rad - n2 * w), to_iso(at - n2 * w)])
+				draw_colored_polygon(quad, Color(c.r, c.g, c.b, 0.18 * f))
+				draw_line(to_iso(at), to_iso(at + dir * rad), Color(c.r, c.g, c.b, f), 1.0 + 1.5 * f)
+			FxKind.WEDGE:
+				var pts2 := PackedVector2Array([to_iso(at)])
+				for k in 13:
+					var a := dir.angle() - CONE_HALF_ANGLE + 2.0 * CONE_HALF_ANGLE * float(k) / 12.0
+					pts2.append(to_iso(at + Vector2(cos(a), sin(a)) * rad))
+				draw_colored_polygon(pts2, Color(c.r, c.g, c.b, 0.22 * f))
+			FxKind.PULSE:
+				_draw_ring(at, rad * (1.0 - f * 0.25), Color(c.r, c.g, c.b, f * 0.85), 1.0 + 2.0 * f)
+				for k in 8:
+					var a2 := TAU * float(k) / 8.0
+					var sp := Vector2(cos(a2), sin(a2))
+					draw_line(to_iso(at + sp * rad * (0.55 - 0.3 * f)), to_iso(at + sp * rad * (0.85 - 0.3 * f)),
+						Color(c.r, c.g, c.b, f * 0.7), 1.0)
+			FxKind.BLAST:
+				_draw_ring(at, rad * (1.0 - f * 0.25), Color(c.r, c.g, c.b, f * 0.85), 1.0 + 2.0 * f)
+				for k in 10:
+					var a3 := TAU * float(k) / 10.0 + 0.3
+					var sp2 := Vector2(cos(a3), sin(a3))
+					draw_line(to_iso(at + sp2 * rad * 0.3), to_iso(at + sp2 * rad * (0.5 + 0.5 * (1.0 - f))),
+						Color(c.r, c.g, c.b, f * 0.6), 1.0)
 
 	# Arrivals. Two phases: rings converging on the destination while glyph
 	# columns rain down the isometric vertical, then a shockwave expanding out
@@ -4964,6 +5002,13 @@ func _draw() -> void:
 		if tag != "":
 			draw_string(pf, o + Vector2(0.0, -PLAYER_RADIUS - 6.0), tag,
 				HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color(c.r, c.g, c.b, a))
+
+func _draw_ring(centre: Vector2, radius: float, colour: Color, width: float) -> void:
+	var pts := PackedVector2Array()
+	for k in 33:
+		var a := TAU * k / 32.0
+		pts.append(to_iso(centre + Vector2(cos(a), sin(a)) * radius))
+	draw_polyline(pts, colour, width)
 
 # ========================================================== state manifest ===
 #
@@ -5112,8 +5157,8 @@ func _build_manifest() -> void:
 			"_numbers_pref": "preference", "_falling": "presentation",
 			"_beam_hits": "beam selection scratch, presentation-free but never carried",
 			"_beam_keys": "beam selection scratch",
-			"_vignette": "presentation", "_fx_line": "presentation",
-			"_fx_ring": "presentation", "_order": "rebuilt whole in _depth_sort",
+			"_vignette": "presentation", "_fx": "presentation",
+			"_order": "rebuilt whole in _depth_sort",
 			"_band_count": "scratch for _depth_sort",
 			"thresholds": "derived: _refresh_thresholds from subnet",
 			"enemy_types": "constant", "resolved": "derived: _recompile on restore",

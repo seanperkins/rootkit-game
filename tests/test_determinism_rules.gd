@@ -83,8 +83,8 @@ func hitstop_costs_fixed_ticks() -> void:
 	# A live, unpaused, unfinished run: the hitstop gate is the only thing that
 	# can stop the world.
 	_check("run is alive", r.alive, true)
-	r._fx_ring.append([Vector2.ZERO, 100.0, 1.0, Color.WHITE])
-	var life_before: float = r._fx_ring[0][2]
+	r._fx.append([r.FxKind.RIPPLE, Vector2.ZERO, Vector2.RIGHT, 100.0, 1.0, Color.WHITE])
+	var life_before: float = r._fx[0][4]
 
 	r._hitstop()
 	_check("a hitstop is HITSTOP_TICKS long", r.hitstop_ticks,
@@ -96,7 +96,7 @@ func hitstop_costs_fixed_ticks() -> void:
 			r.player_pos[r.local_slot].distance_to(frozen_at) < 1e-6)
 	_check("the hitstop drained to zero", r.hitstop_ticks, 0)
 	_check_true("effects aged while the world was frozen",
-		r._fx_ring[0][2] < life_before)
+		r._fx[0][4] < life_before)
 
 	r._physics_process(DT)
 	_check_true("the world steps again after the hitstop",

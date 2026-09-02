@@ -16,7 +16,8 @@ const CASES := ["facing_follows_the_applied_record_and_holds",
 	"beam_radius_floor_holds_in_the_tables",
 	"mines_drop_behind_on_open_ground", "mines_avoid_a_wall",
 	"the_checksum_payload_rearms_not_refires",
-	"redundancy_grants_every_fire_unless_it_carries_checksum"]
+	"redundancy_grants_every_fire_unless_it_carries_checksum",
+	"every_emitted_fx_kind_is_drawn"]
 
 func _initialize() -> void:
 	print("ROOTKIT — facing\n")
@@ -35,6 +36,7 @@ func _initialize() -> void:
 	await mines_avoid_a_wall()
 	await the_checksum_payload_rearms_not_refires()
 	await redundancy_grants_every_fire_unless_it_carries_checksum()
+	every_emitted_fx_kind_is_drawn()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -318,3 +320,21 @@ func redundancy_grants_every_fire_unless_it_carries_checksum() -> void:
 	_check("with checksum on it, the row refills on the rearm instead", r.player_shield[r.local_slot], 5.0)
 	r.free(); await process_frame
 	finished["redundancy_grants_every_fire_unless_it_carries_checksum"] = true
+
+## Every kind an emit site appends has a draw arm, and the emit-site counts
+## per kind are pinned so a non-fire emitter (the arrival flash, the
+## kernel_panic telegraph) cannot be dropped silently.
+func every_emitted_fx_kind_is_drawn() -> void:
+	var src := FileAccess.get_file_as_string("res://scripts/run/run.gd")
+	var draw_start := src.find("func _draw()")
+	var draw_body := src.substr(draw_start, src.find("\nfunc ", draw_start + 10) - draw_start)
+	var counts := {}
+	var re := RegEx.new()
+	re.compile("_fx\\.append\\(\\[FxKind\\.([A-Z]+)")
+	for m in re.search_all(src):
+		var k: String = m.get_string(1)
+		counts[k] = counts.get(k, 0) + 1
+		_check_true("FxKind.%s has a draw arm" % k, draw_body.contains("FxKind.%s:" % k))
+	_check("emit sites per kind are as pinned",
+		counts, {"RIPPLE": 2, "DASH": 1, "BOLT": 2, "BEAM": 1, "WEDGE": 1, "PULSE": 2, "BLAST": 1})
+	finished["every_emitted_fx_kind_is_drawn"] = true
