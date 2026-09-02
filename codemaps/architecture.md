@@ -1,19 +1,21 @@
-> Generated: 2026-09-01 | Token-lean format for LLM context
+> Generated: 2026-09-02 | Token-lean format for LLM context
 
 # ROOTKIT — Architecture
 
 Godot 4.7, GDScript only. No image assets, no font files, no `Area2D` anywhere
-(including the player). Entities are packed arrays over a uniform spatial grid.
+(including the players). Entities are packed arrays over a uniform spatial
+grid. One deterministic simulation, run identically on every peer of a
+lockstep session; solo is a one-slot session with delay zero.
 
 | Fact | Value |
 |---|---|
 | Engine | Godot 4.7, Forward Plus, `hdr_2d=true` |
-| Main scene | `res://scenes/main.tscn` → `scripts/meta/meta_screen.gd` |
-| Run scene | `res://scenes/run.tscn` → `scripts/run/run.gd` (`Node2D`) |
-| Physics tick | 60 Hz (`physics_ticks_per_second=60`) |
+| Main scene | `res://scenes/main.tscn` → `scripts/meta/meta_screen.gd` (shop + lobby) |
+| Run scene | `res://scenes/run.tscn` → `scripts/run/run.gd` (`Node2D`, 5.6k lines) |
+| Physics tick | 60 Hz, `SessionRules.TICK_DT`; the tick never reads a clock |
 | Viewport | 1280×720, stretch `canvas_items` |
-| Clear color | `Color(0.016, 0.031, 0.027)` |
-| Total GDScript | ~8.7k lines across `scripts/` + `data/` |
+| Players | `SessionRules.MAX_PLAYERS = 4`, every per-player field a slot array |
+| Total GDScript | ~13.4k lines across `scripts/` + `data/` |
 
 ## Directory map
 
@@ -22,152 +24,143 @@ scripts/core/    grid.gd flow_field.gd                      spatial index, boss 
 scripts/build/   module exploit equipped_module loadout      PURE: no scene tree,
                  compiler resolved_exploit player_stats           no globals
 scripts/combat/  population hit_queue                       packed arrays + adjudication
-scripts/run/     run spawn_director terrain ui backdrop      the live run
-                 props feel                                 (feel is PURE)
+scripts/net/     lockstep network_session protocol          PURE ring, session, codec
+                 transport                                  the ONE ENet class (Node)
+scripts/run/     run spawn_director terrain blocks ui        the live run
+                 backdrop props feel                        (feel is PURE)
 scripts/audio/   synth sfx music                             procedural, no files
                                                              (synth is PURE)
-scripts/meta/    save_game meta_screen settings_panel       persistence, shop, prefs
+scripts/meta/    save_game meta_screen settings_panel       persistence, shop, lobby
 data/            module_table enemy_table recipe_table      code-defined registries
+                 session_rules                              every shared constant
 shaders/         glyph.gdshader                             procedural glyph silhouettes
-tests/           37 suites + perf_milestone0                headless `-s` scripts
-tools/           run_tests.sh, shot_*.gd, fps_*.gd, build_manual.py
+tests/           52 suites + perf_milestone0, support/      headless `-s` scripts
+tools/           run_tests.sh, shot_*.gd, fps_*.gd,
+                 determinism_probe.gd, build_manual.py
 ```
 
-**Three pure classes, one rule.** `scripts/build/*`, `run/feel.gd` and
-`audio/synth.gd` touch no scene tree and no engine singleton — `AudioStreamWAV`
-is a `Resource`, which is why the synth qualifies. Each is driven directly by a
-suite with no viewport. `feel.gd` in particular REPORTS a desired
-`Engine.time_scale` and never writes it; `run.gd` applies it.
+**The pure layers.** `scripts/build/*`, `run/feel.gd`, `audio/synth.gd`,
+`net/lockstep.gd`, `net/network_session.gd` and `net/protocol.gd` touch no
+scene tree and no engine singleton beyond `Resource`/`RefCounted`. Each is
+driven directly by a suite with no viewport. Nothing writes
+`Engine.time_scale` any more: hitstop is a tick count.
 
 ## Dependency graph
 
 ```
-             meta_screen ──> save_game ──┐
-                  │                      │  (sheet deltas, mult deltas, unlocks)
-                  v                      v
-              run.gd ────────────> player_stats ──> loadout ──> compiler ──> resolved_exploit
-                │  │  │                                 │            ^
-                │  │  │                                 v            │
-                │  │  └──> spawn_director          exploit ──> equipped_module ──> module
-                │  │                                                              ^
-                │  ├──> terrain (walls, zones, gates, collapse, distance field)   │
-                │  ├──> population x3 (enemy, botnet-in-enemy-pop, hostiles)      │
-                │  ├──> grid  <── pos arrays of every population                  │
-                │  ├──> hit_queue ──> population                        module_table
-                │  ├──> flow_field  (bosses only, gated on boss_present) enemy_table
-                │  ├──> feel  ──> sfx node / music node  (drained, never called)
-                │  └──> ui / backdrop / props  (draw only)
-
-Audio and music POLL or DRAIN; nothing in the simulation holds a node
-reference. run.gd appends event ids to `feel.sfx` and the Sfx node drains them;
-the Music node polls `run.threat()`. That direction is deliberate and is what
-keeps the tick reachable headless.
+ meta_screen ──> save_game (counters, prefs)        meta_screen ──> network_session ──> transport
+      │  START descriptor {seed, delay, roster+counters}            (lobby: HELLO/WELCOME/START)
+      v                                                                        │ reparented
+   run.gd ── configure_session ──> network_session ──> lockstep <── transport <─┘
+     │  _derive_roster: player_stats ──> loadout ──> compiler ──> resolved_exploit
+     ├──> spawn_director        exploit ──> equipped_module ──> module   module_table
+     ├──> terrain (walls, zones, gates, collapse, distance field)         enemy_table
+     ├──> population ×5 (enemies, projectiles, shards, botnet, hostiles)
+     ├──> grid  <── pos arrays of every population; window = the party's bounds
+     ├──> hit_queue ──> population
+     ├──> flow_field ×4 (one per slot; bosses only)
+     ├──> blocks (the held objective)
+     ├──> feel  ──> sfx node / music node  (drained / polled, never called)
+     └──> ui / backdrop / props  (draw only)
 ```
 
-`scripts/build/*` has zero engine dependencies beyond `Resource`/`RefCounted` —
-it is unit-testable in isolation and every build test drives it directly.
+Audio and music POLL or DRAIN; the network is POLLED above the guard; nothing
+in the simulation holds a node reference. That direction is what keeps the
+tick reachable headless and identical on every peer.
 
 ## The tick — `run._physics_process`
 
-Split in two. **`_present(dt)` runs ABOVE the guard, every frame**; the
-simulation below it early-returns on `paused or user_paused or not alive or won`.
-Nothing resolves inside a callback.
+Two halves around ONE guard. Above it, every frame: render snapshot, local
+input sampling, the network, presentation, roster changes, the ring, input
+application. Below it, only when the ring is ready and nothing holds the
+world: `_step_world()`.
 
-The split is load-bearing: all three hitstop triggers set one of those flags on
-the frame they fire, so a release driven from below the guard would never run
-and `Engine.time_scale` — a process-global — would stay at 0.05 into the shell.
-It also makes the death shake animate and the pause panel render at full speed.
+| Above the guard | Does |
+|---|---|
+| `_snapshot_render_state` | `prev_pos = pos` for every population and slot |
+| `_poll_local_input` | the ONLY `Input.*` site; submits the full record for `executed + delay` to the ring and the wire |
+| `transport.poll / _drain_inbox / _reconnect_step / flush_relay` | records → ring, control → session inbox → dispatch; host sends one RELAY per tick |
+| `_present` | feel, fx, vignette, falling chunks on the unscaled frame delta |
+| `_roster_step` | ABSENT before the tick it names, PRESENT after |
+| `_sync_ring_roster / _recovery_step / _ending_step` | ring masks follow `slot_state`; desync boundaries; ending barrier |
+| `ready? take → _apply_records → _resolve_deadlines → _settle_offers` | one tick's records applied; card choices land here |
+| `hitstop_ticks` then the guard | `paused or (user_paused and solo) or not alive or won or ended` holds the world, not the input stream |
 
-| # | Call | Does |
-|---|---|---|
-| 0 | `_present` | **above the guard.** unscaled-frame-time ageing of feel, `_age_fx`, falling chunks and vignette; hitstop release on the WALL clock; camera + shake; `queue_redraw` |
-| 1 | `_step1_spawn` | director waves + minibosses; **FIGHTING phase only** |
-| 2 | `_step2_integrate` | player input, movement, wall slide, projectile/mine/orbit life, ward + fire cooldowns, fx ageing |
-| 2c | `_step2c_gate` | shut-gate blocking, gate-crossing → `_advance_subnet` |
-| 2d | `_step2d_collapse` | `collapse_left` countdown → `terrain.collapse_to`, void kills |
-| 2b | `_step2b_zones` | hazard/slow/corruption zones + temp zones on player and swarm |
-| 3 | `_step3_rebuild` | `grid.set_centre(player)`, union `_submerged` OR `_arriving` into the skip mask (rebuilt whole), one counting-sort rebuild; then the flow field if a boss is live |
-| 4 | `_step4_steer` | per-behaviour steering, sliced `STEER_SLICES=2`, gated `STEER_RANGE_SQ` |
-| 5 | `_step5_fire` | interval accumulators + queued event fires → `_emit_vector` |
-| 6 | `_step6_detect` | contact damage, projectile hits, pickup, iframes |
-| 6b | `_step6b_hostiles` | enemy projectiles (own `Population`, **not** in the grid) |
-| 7/8 | `_steps78_drain` | `hit_queue.drain_pass` loop → `_on_death` / `_on_flip` |
-| 9 | `_step9_recycle` | swap-remove despawns (via `_relocate_enemy`), botnet lifetime, shard expiry |
-| 9c | `_step9c_reapproach` | stragglers past `RECYCLE_RADIUS` MOVED back to the spawn ring, damage intact; bosses and worms exempt |
-| 9b | `_step9b_splits` | deferred fork_bomb splits |
-| — | `_update_renderers`, `_depth_sort`, camera, `queue_redraw` | draw |
+| `_step_world` | Does |
+|---|---|
+| `_step1_spawn` | director waves + minibosses, **FIGHTING only**, rate × party |
+| `_step2_integrate` | every LIVE slot: input, movement, leash, wall slide; projectile/mine/orbit life; cooldowns |
+| `_step2c_gate` / `_step2d_collapse` / `_step2e_blocks` / `_step2b_zones` | gate waits for all LIVE; arena then corridor collapse; the block; zones on every LIVE slot |
+| `_step3_rebuild` | grid window = party bounds; one O(entities) rebuild; flow fields if a boss is live |
+| `_step4_steer` / `_step5_fire` / `_step6_detect` / `_step6b_hostiles` | per-enemy target chosen once per tick by census; fire per owning slot; hits, pickups, iframes per slot |
+| `_steps78_drain` | `hit_queue.drain_pass` loop → `_on_death` / `_on_flip` |
+| `_step9_recycle` / `_step9c_reapproach` / `_step9b_splits` / `_depth_sort` | swap-remove despawns (relocating every parallel array), stragglers, splits, draw order |
 
-**Adjudication rules** (`scripts/combat/hit_queue.gd:1`): an entity is
-adjudicated exactly once per tick, from the totals of the pass it was first
-marked in, then CLOSED. Flip beats death. `ON_HIT` fires per landed hit,
-`ON_KILL` per adjudicated DEAD, `ON_DAMAGE_TAKEN` per damage the player takes —
-three different conditions, deliberately not one loop.
+`_present` and the network run above the guard because all hitstop and
+ending triggers set a guard flag on the frame they fire; a release below it
+would never run. See `codemaps/net.md` for the session, `codemaps/combat.md`
+for the world.
 
 ## Campaign flow
 
 ```
-meta_screen ──start──> run.tscn
+meta_screen ──start (solo or START)──> run.tscn
   subnet 1 ──5 min──> ICE spawns ──kill──> phase=CLEARED
       gate opens, spawns halt, route lit, collapse starts (COLLAPSE_SECONDS=75)
-      walk the corridor ──> _advance_subnet: +30% integrity, bank salvage,
-                            keep build/level/xp, gate shuts behind
-  subnet 3 cleared (no gate) ──> won
-  death anywhere ──> only salvage since the last clear is lost;
-                     kills and flips always bank toward unlocks
+      every LIVE slot through the gate ──> _advance_subnet: +30% integrity,
+                            bank salvage, keep builds, gate shuts behind
+  subnet 3 cleared (no gate) ──> won (a WIN candidate in a session)
+  no slot LIVE ──> lost (a LOSS candidate in a session); kills and flips
+                   always bank toward unlocks, per slot, once
 ```
 
 All three arenas + the two corridors are plotted on **one** grid before the
 first frame (`Terrain.plan`). `terrain.current` is the only thing that changes.
 
-## Capacities and budgets (scripts/run/run.gd:12-76)
+## Capacities and budgets (`run.gd:12-76`, `session_rules.gd`)
 
 | Const | Value | Const | Value |
 |---|---|---|---|
 | `ARENA_SIZE` | 7104 × 4416 | `CELL` | 32.0 |
-| `GRID_WINDOW` | 3200.0 | `MAX_ENEMIES` | 600 |
-| `MAX_PROJECTILES` | 400 | `MAX_SHARDS` | 1500 |
-| `MAX_BOTNET` | 64 | `MAX_HOSTILES` | 200 |
-| `FIRE_BUDGET` | 4/exploit/tick | `EVENT_BUDGET` | 7200 (3×4×600) |
-| `CASCADE_PASSES` | 8 | `BURST_MAX` | 12 |
+| `GRID_WINDOW` / `MAX_WINDOW` | 3200 / 7200 | `LEASH` | 4000 |
+| `MAX_ENEMIES` | 600 | `MAX_PROJECTILES` | 400 |
+| `MAX_SHARDS` | 1500 | `MAX_BOTNET` | 64 |
+| `FIRE_BUDGET` | 4/exploit/tick | `EVENT_BUDGET` | 7200 (× `MAX_PLAYERS` queue) |
+| `CASCADE_PASSES` | 8 | `HITSTOP_TICKS` | 4 |
 | `DEPTH_BANDS` | 192 | `ISO_K` | 0.82 |
 | `RECYCLE_RADIUS` | 1150.0 | `RECYCLE_PER_TICK` | 3 |
-| `MAX_FALLING` | 220 | `MAX_PRESENT_DT` | 0.1 |
-| `ARRIVAL_CHARGE` | 0.9 | `ARRIVAL_POP` | 0.25 |
-| `CHARGE_DASH` | 0.85 | `CHARGE_SPEED` | 3.6 |
+| `MAX_PRESENT_DT` | 0.1 | `Lockstep.RING` | 128 |
 
-The grid is a **window that follows the player**, not a map-sized structure:
-rebuild is O(cells), so sizing it to the arena would cost 5× per tick to index
-ground nobody is near. Trade: entities >½ window away are not in the grid.
+The grid is a **window over the party's bounding box**, not a map-sized
+structure; the leash keeps that box within `MAX_WINDOW`.
 
 ## Build, run, test
 
 ```
 godot                       # from project root
-tools/run_tests.sh          # 37 suites + perf gate
+tools/run_tests.sh          # 52 suites + perf gate
 tools/run_tests.sh --fast   # skip perf gate
 godot --headless -s res://tests/<suite>.gd
+godot --headless -s res://tools/determinism_probe.gd   # tick hash per tick
 ```
 
-The runner reads **stderr as well as the exit code**: a GDScript runtime error
-aborts only the function it happens in, so a suite whose assertions never ran
-exits 0 saying `PASS`. Any `SCRIPT ERROR`/`Parse Error` fails the suite.
+The runner reads **stderr as well as the exit code**: a runtime error aborts
+only the function it happens in, so a suite whose assertions never ran exits 0
+saying `PASS`. Any `SCRIPT ERROR`/`Parse Error` fails the suite.
+`test_transport_loopback` needs real UDP (run outside the Bash sandbox).
 
-Perf gate (`tests/perf_milestone0.gd`) drives the real `_physics_process` over a
-full autopiloted run: p95 **~4.9 ms** against a ~9.9 ms scaled budget.
-Load-relative — it times a fixed workload first and scales the budget.
-
-The flow field is the largest single cost added since the 2.4 ms era. Two
-measured lessons live in `flow_field.gd`: indexing `terrain.solid` directly
-rather than calling `terrain.is_solid` (which reconverts the cell and walks every
-dynamic blocker) took p95 from 6.9 to 4.9, and gating the rebuild on
-`boss_present()` removes it from the tick entirely for most of a subnet.
+Perf gate (`tests/perf_milestone0.gd`): the real `_physics_process` over a
+full autopiloted run with FOUR slots pinned at the full leash and worst-case
+builds on all of them — p95 normalised ~9.8 ms against an 11 ms budget.
+Load-relative: it times a fixed workload first and scales the budget.
 
 ## Per-area detail
 
 | File | Covers |
 |---|---|
 | `codemaps/build.md` | modules, exploits, the auto-slot rules, the compiler fold |
-| `codemaps/combat.md` | run.gd, grid, population, hit queue, terrain, spawning, AI |
-| `codemaps/data.md` | enemy table, module table, save schema, unlock ladder |
-| `codemaps/ui.md` | run HUD blocks, level-up cards, pause + settings, rendering, shader |
+| `codemaps/combat.md` | run.gd, grid, population, hit queue, terrain, spawning, AI, slots |
+| `codemaps/net.md` | session rules, lockstep, protocol, transport, recovery, endings, parking |
+| `codemaps/data.md` | enemy table, module table, save schema, session counters, unlock ladder |
+| `codemaps/ui.md` | run HUD, cards, lobby, pause + settings, rendering, shader, tools |
 | `codemaps/audio.md` | the synth, the sfx pool, the generative music, the feel layer |

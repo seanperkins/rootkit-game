@@ -10,7 +10,8 @@ var finished := {}
 
 const CASES := ["host_owns_slot_zero_and_assigns_the_lowest_free",
 	"start_freezes_the_roster", "a_client_applies_welcome_then_start",
-	"solo_builds_the_same_shape", "string_prefs_are_hostile_safe"]
+	"solo_builds_the_same_shape", "string_prefs_are_hostile_safe",
+	"control_bodies_round_trip_and_reject_bad_shapes"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lobby\n")
@@ -21,6 +22,7 @@ func _initialize() -> void:
 	a_client_applies_welcome_then_start()
 	solo_builds_the_same_shape()
 	string_prefs_are_hostile_safe()
+	control_bodies_round_trip_and_reject_bad_shapes()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -139,3 +141,31 @@ func string_prefs_are_hostile_safe() -> void:
 	_check("numeric prefs are untouched by the string path",
 		SaveGame._sanitise({"prefs": {"shake": 1.5}})["prefs"]["shake"], 1.5)
 	finished["string_prefs_are_hostile_safe"] = true
+
+## Every control kind the run and lobby send has a codec that keeps its named
+## fields and refuses a body outside its shape: a slot past the roster, an
+## outcome past the enum, a foreign field.
+func control_bodies_round_trip_and_reject_bad_shapes() -> void:
+	var M := Protocol.Message
+	var body := func(kind: int, tick: int, d: Dictionary) -> Dictionary:
+		var bytes := Protocol.encode_control(kind, 7, tick, d)
+		var env := Protocol.decode_envelope(bytes, {"session_id": 7})
+		return Protocol.decode_control(kind, int(env["tick"]), env["body"])
+	for kind in [M.ABSENT, M.PRESENT, M.LEAVE]:
+		var out: Dictionary = body.call(kind, 40, {"slot": 2, "extra": "dropped"})
+		_check("%s carries its slot and tick" % M.keys()[kind],
+			[out.get("slot"), out.get("tick"), out.has("extra")], [2, 40, false])
+		_check("%s refuses a slot past the roster" % M.keys()[kind],
+			body.call(kind, 40, {"slot": 4}).is_empty(), true)
+	var cand: Dictionary = body.call(M.END_CANDIDATE, 90,
+		{"outcome": NetworkSession.Outcome.LOSS, "hash": 12345})
+	_check("END_CANDIDATE carries outcome and hash",
+		[cand.get("outcome"), cand.get("hash")], [NetworkSession.Outcome.LOSS, 12345])
+	_check("an outcome past the enum is refused",
+		body.call(M.END, 90, {"outcome": NetworkSession.Outcome.size(), "hash": 0}).is_empty(), true)
+	_check("END_CHECK is its tick alone", body.call(M.END_CHECK, 96, {})["tick"], 96)
+	_check("RESYNC keeps its clears_end flag",
+		body.call(M.RESYNC, 96, {"clears_end": true})["clears_end"], true)
+	_check("a non-dictionary body is refused",
+		Protocol.decode_control(M.ABSENT, 1, var_to_bytes([1, 2])).is_empty(), true)
+	finished["control_bodies_round_trip_and_reject_bad_shapes"] = true

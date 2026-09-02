@@ -1,11 +1,11 @@
-> Generated: 2026-09-01 | Token-lean format for LLM context
+> Generated: 2026-09-02 | Token-lean format for LLM context
 
 # UI, rendering and tooling
 
 No font files and no image assets: text is Godot's default mono, entities are
 procedural shader glyphs, and everything else is `_draw` calls.
 
-## `scripts/run/ui.gd` (869) — `CanvasLayer`, the run HUD and its screens
+## `scripts/run/ui.gd` (952) — `CanvasLayer`, the run HUD and its screens
 
 ```gdscript
 FG   = Color(0.55, 1.00, 0.72)   # green
@@ -14,7 +14,9 @@ WARN = Color(1.00, 0.45, 0.42)
 ```
 
 `bind(run)` wires the run signals: `level_up_offered → _on_cards`,
-`fusion_offered → _on_fusion`, `run_ended → _on_end`, `stats_changed → _refresh`.
+`fusion_offered → _on_fusion`, `offer_waiting → _on_waiting`,
+`run_ended → _on_end`, `stats_changed → _refresh`. The HUD renders the LOCAL
+slot; everyone else is a strip.
 
 | State | Meaning |
 |---|---|
@@ -37,7 +39,7 @@ guard on those names; before it, nothing tested the HUD at all.
 |---|---|
 | `Status` | integrity + bar, armor, def, level + XP bar. Warn colour is PROPORTIONAL (<30%), not a fixed threshold |
 | `Centre` | subnet, timer, and the phase banner on its own line |
-| `Tally` | salvage, botnet, kills, flips |
+| `Tally` | salvage, botnet, kills, flips; then the notices — `waiting for input: …` after `STALL_NOTICE` ticks, `resynchronising…`, `reconnecting… (attempt n of 10)` — and `_teammate_strip`: one line per other roster slot (name + integrity bar, `down`, `away`), `spectating X — confirm cycles` once the local slot is not LIVE, `at the leash: …` |
 | `Build` | one line per exploit, shared with the run summary via `_build_lines` |
 
 The mini-boss banner is gated on `not run.is_arriving(i)` — the entity exists
@@ -64,7 +66,10 @@ Marks: `^` rank up, `+` fill an empty slot, `x` replace the occupant,
 `_make_card(entry, out_buttons)`, `_show_cards`, `_reset_selection`.
 A `null` target means the row is no legal home — after the column is fixed that
 can only be a max-rank duplicate or the last interval trigger, both named rather
-than greyed out silently. Any card can be declined for salvage.
+than greyed out silently. Any card can be declined for salvage. Every button only STAGES a choice
+(`run.choose_card` etc. set `_local_choice`); it lands when the tick consumes
+the record, and `_on_waiting(n)` keeps the overlay up with "waiting for N…"
+until every teammate's has.
 
 ### Input — ACTIONS, not keycodes
 `_input(e)` matches InputMap actions. An `InputEventJoypadButton` has no
@@ -75,6 +80,9 @@ names exist.
 
 Actions: `move_*`, `confirm`, `cancel`, `pause`, `recipes`, `restart`
 (deadzone 0.2). `recipes` and `restart` share R, disambiguated by screen.
+
+With no overlay up, `confirm` → `run.cycle_spectate()`: a DEAD local slot
+looks through the next LIVE slot.
 
 `_move_row(±1)`, `_move_card(±1)`, `_activate`, `_toggle_recipes`,
 `_route_cancel`, `_toggle_pause`, `_abandon`, `_on_settings_closed`,
@@ -102,7 +110,17 @@ It is an overlay, and its shell entry button sits BESIDE `./intrude`, because
 the shop column already ran to ~505 px in a 720 px viewport — which is exactly
 what `test_meta_layout` measures.
 
-## `scripts/meta/meta_screen.gd` (186) — `Control`, the shop (main scene)
+## `scripts/meta/meta_screen.gd` (469) — `Control`, the shop and the lobby
+
+The LINK column (`_build_link`, x = 780): handle and address fields
+(`SaveGame` string prefs), Host / Join / Leave, the player list, a status
+line. `_host` binds `Transport.host(DEFAULT_PORT)`; `_join` dials
+`last_address`; `_process` polls the transport and drains `session.inbox`
+into `_handle` (HELLO → `admit` + WELCOME to all; WELCOME/START on a client;
+LEAVE frees a slot before START). `_start` freezes the descriptor and sends
+START; `_launch_session` REPARENTS the transport under the run
+(`configure_session`, `attach_transport`) — the same ENet peers carry the
+lobby and the game. Solo `./intrude` builds the one-slot descriptor.
 
 `UNLOCK_ROWS = 2` still-locked modules listed before the rest is summarised.
 `FG`, `DIM`, `HOT = Color(1.0, 0.72, 0.35)`.
@@ -158,6 +176,17 @@ rect index and cleared when a new subnet empties `terrain.voided`, or walls drop
 in an arena the player has not reached. The clock is unscaled: a hitstop must
 not hold a collapsing wall in mid-air.
 
+## Players and the view in `run.gd`
+
+`player_draw_list()` → `[slot, colour, alpha, name]`: every LIVE slot, the
+local one unnamed in `TEAM_HUES[0]` (the solo hue), teammates in
+`slot_hue(s)` under a name tag (`ThemeDB.fallback_font`), an ABSENT slot at
+`ABSENT_ALPHA 0.35` where it parked, a DEAD slot skipped. `view_slot`
+(`_refresh_view` each frame, `cycle_spectate`) is the local slot while LIVE,
+else the spectate target; the camera, `_visible_world_rect` and
+`_depth_sort` follow it. Presentation only: never hashed. Gated by
+`test_draw_order`, `test_hud`, `test_input`.
+
 ## Rendering in `run.gd`
 
 Four `MultiMeshInstance2D` (`_mm_enemy _mm_proj _mm_shard _mm_botnet`) built by
@@ -182,8 +211,9 @@ because any one alone is ambiguous at a glance.
 
 | File | Purpose |
 |---|---|
-| `run_tests.sh` | the runner — 37 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
-| `screenshot.gd` | shared headless capture harness |
+| `run_tests.sh` | the runner — 52 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
+| `determinism_probe.gd` | four-slot run at the enemy cap, `tick hash` per tick; diff its output across arm64 / x86_64 |
+| `screenshot.gd` | shared capture harness — needs a WINDOW; `--headless` has no texture and every shot tool exits 1 |
 | `shot_cards` | drives `ui._input` with ACTION events; not in `SUITES`, so only `test_input` guards its action names |
 | `shot_collapse shot_fx shot_gate shot_iso shot_meta shot_props shot_seam shot_slots` | one-scene screenshot scripts |
 | `fps_probe.gd`, `fps_collapse.gd` | interactive frame-time probes (the gate lives in `tests/perf_milestone0.gd`) |

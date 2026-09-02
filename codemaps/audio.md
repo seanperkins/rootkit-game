@@ -1,4 +1,4 @@
-> Generated: 2026-09-01 | Token-lean format for LLM context
+> Generated: 2026-09-02 | Token-lean format for LLM context
 
 # Audio and feel
 
@@ -15,23 +15,20 @@ run.gd ──emit(id)──> feel.sfx ──drained by──> sfx.gd ──> Syn
 run.gd <──threat()── music.gd ──> Synth.build(note spec)
 ```
 
-## `scripts/run/feel.gd` (128) — `Feel`, PURE `RefCounted`
+## `scripts/run/feel.gd` (102) — `Feel`, PURE `RefCounted`
 
-Shake trauma, the hitstop deadline, the damage-number pool, the outbound event
-list. No scene tree, no engine calls.
+Shake trauma, the damage-number pool, the outbound event list. No scene tree,
+no engine calls, no clock.
 
-**It never writes `Engine.time_scale`.** It reports a scale; `run.gd` applies it.
-A `RefCounted` touching an engine singleton would not be pure — and the split
-puts the failure that actually matters (a stranded time scale) where only a test
-driving `run.gd` can catch it. `test_feel` asserts the arithmetic; `test_run`
-asserts the engine was restored.
+**Hitstop is not here any more.** It is part of the deterministic tick:
+`run.hitstop_ticks` (`SessionRules.HITSTOP_TICKS = 4`) freezes the world for
+a fixed number of ticks above the guard, the same ticks on every peer.
+Nothing writes `Engine.time_scale`; `test_determinism_rules` greps for it.
 
 | Const | Value | Note |
 |---|---|---|
 | `MAX_OFFSET` | 26.0 | peak camera displacement at trauma 1.0 |
 | `TRAUMA_DECAY` | 1.6 | per second |
-| `HITSTOP_SCALE` | 0.05 | |
-| `HITSTOP_MS` | 60 | WALL clock — `time_scale` scales the frame delta |
 | `NUMBER_CAP` | 24 | oldest evicted |
 | `NUMBER_LIFE` | 0.75 | pruned in `step` |
 
@@ -42,9 +39,8 @@ axes, which would put the diagonal outside it) and is injectable for tests. The
 `shake` preference multiplies the composed offset in `run.gd`, outside the
 square.
 
-API: `add_trauma`, `shake_offset`, `start_hitstop(now_ms, ms)`, `time_scale`,
-`release_hitstop(now_ms) -> bool`, `add_number`, `emit(id)`, `drain_sfx`,
-`step(unscaled_dt)`, `set_noise(callable)`.
+API: `add_trauma`, `shake_offset`, `add_number`, `emit(id)`, `drain_sfx`,
+`step(unscaled_dt)`, `set_noise(callable)`. `NUMBER_RISE 42.0`.
 
 ## `scripts/audio/synth.gd` (353) — `Synth`, PURE `RefCounted`
 
@@ -155,5 +151,5 @@ shell and the pause panel.
 
 ## Suites
 
-`test_feel`, `test_synth`, `test_audio_events`, plus the `Engine.time_scale`
+`test_feel`, `test_synth`, `test_audio_events`, plus the hitstop-tick
 cases in `test_run`.

@@ -1,4 +1,4 @@
-> Generated: 2026-09-01 | Token-lean format for LLM context
+> Generated: 2026-09-02 | Token-lean format for LLM context
 
 # Data tables and persistence
 
@@ -111,7 +111,13 @@ the single payload slot. Magnitudes come from worked worst cases — `nice` matc
 the whole maxed `bus_speed` shop line (+60), so one module is never worth more
 than 1,950 salvage of upgrades.
 
-## `scripts/meta/save_game.gd` (313) — `SaveGame`
+## `data/session_rules.gd` — `SessionRules`
+
+Every constant two peers must agree on — tick, players, delay, timeouts,
+windows, the leash, packet and snapshot bounds, the port. Tabled in
+`codemaps/net.md`.
+
+## `scripts/meta/save_game.gd` (426) — `SaveGame`
 
 `VERSION = 3`. Static, cached in `_cache`. `use_fresh_state()` / `use_test_paths()`
 exist for the suites.
@@ -121,14 +127,28 @@ exist for the suites.
   "buffs": { "cpu_cycles": 0, "cooling": 0, "memory": 0, "firewall": 0,
              "encryption": 0, "bus_speed": 0, "addressing": 0, "bandwidth": 0 },
   "prefs": { "volume_master": 0.8, "volume_sfx": 0.8, "volume_music": 0.5,
-             "shake": 1.0, "damage_numbers": 1.0 } }
+             "shake": 1.0, "damage_numbers": 1.0,
+             "display_name": "", "last_address": "" } }
 ```
 
 v2 files need **no migration**: `_sanitise` rebuilds from `_default()` and
 overlays what it can read, so an absent `prefs` simply arrives at its defaults.
 
 `load_state`, `save_state`, `prefs()`, `set_pref(key, value)`,
-`bank(salvage, kills, flips)` **accumulates**.
+`set_string_pref / string_pref / sanitise_string_pref` (`PREF_STRINGS`:
+`display_name` printable ≤ `NAME_MAX` 24, `last_address` hostname characters ≤
+`ADDRESS_MAX` 64 — clamped on write AND read), `bank(salvage, kills, flips)`
+**accumulates**.
+
+### Session counters — what crosses the wire instead of a save
+
+`session_counters()` = `{buffs, kills, flips}` sanitised by
+`sanitise_session_counters(raw)`; the descriptor carries one per slot.
+`player_sheet_from / multipliers_from / unlocked_modules_from(counters)` are
+the pure derivations every peer runs for every slot, so no process reads
+another player's save and no two peers can disagree about a starting build.
+`player_sheet()` / `multipliers()` / `unlocked_modules()` are the local-save
+conveniences over the same folds.
 
 ### `save.json` is hostile input, and the guards are specific
 

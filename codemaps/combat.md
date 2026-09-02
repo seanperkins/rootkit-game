@@ -1,11 +1,11 @@
-> Generated: 2026-09-01 | Token-lean format for LLM context
+> Generated: 2026-09-02 | Token-lean format for LLM context
 
 # Combat, terrain and the run loop
 
 ## `scripts/core/flow_field.gd` (130) — `FlowField`, boss pathing
 
-BFS flooded from the player over a window that follows them — same shape as
-`Grid`, same reason. `RADIUS 24` cells (1536 px), `SIDE 49`, `UNREACHED 1<<28`.
+BFS flooded from ONE slot over a window that follows it — same shape as
+`Grid`, same reason. The run holds four (`_flow[slot]`), one per LIVE slot. `RADIUS 24` cells (1536 px), `SIDE 49`, `UNREACHED 1<<28`.
 
 **Bosses only.** A hundred grunts shouldering round a corner is what a swarm
 looks like; one large object stuck on a wall while the player circles it is the
@@ -26,11 +26,13 @@ entirely for the part of a subnet with no boss in it.
 `needs_rebuild(terrain, at)` is true only on a player CELL crossing.
 Covered by `tests/test_flow.gd`.
 
-## `scripts/core/grid.gd` (172) — `Grid`
+## `scripts/core/grid.gd` (242) — `Grid`
 
-Uniform spatial grid, counting-sort (CSR) into flat packed arrays; rebuild
-allocates nothing after warm-up. **A window that follows the player**, not a
-map-sized structure — `GRID_WINDOW = 3200.0`.
+Uniform spatial grid, counting-sort into flat packed arrays; the rebuild is
+O(entities) (`_cell_count` + a `_touched` list, prefix over touched cells only)
+and allocates nothing after warm-up. **A window over the party's bounding
+box**, not a map-sized structure — `GRID_WINDOW = 3200.0` solo, up to
+`SessionRules.MAX_WINDOW = 7200` for a party held by the 4000 leash.
 
 ```gdscript
 enum Pop { ENEMY, PROJECTILE, BOTNET, SHARD, PLAYER, MAX }
@@ -43,15 +45,15 @@ M_ENEMY M_PROJECTILE M_BOTNET M_SHARD M_ALL(0x7FFFFFFF)
 
 | API | Note |
 |---|---|
-| `_init(origin, size, cell_size, capacity)` | |
-| `set_centre(c)` / `in_window(p)` | called once per tick before rebuild |
+| `_init(origin, max_size, cell_size, capacity)` | sized for `MAX_WINDOW` once |
+| `set_window(rect)` / `set_centre(c)` / `in_window(p)` / `live_cell_count()` | the party window, set once per tick before rebuild |
 | `rebuild(pos_arrays, counts, …)` | one counting sort over every population |
 | `query_radius_into(point, r, buf, mask=M_ALL)` | filters **during** the cell walk, so a 24 px steering query does not wade through every shard |
 
-Trade, stated in-file: an entity further than ½ window from the player is not in
-the grid, so a projectile out there passes through enemies.
+Trade, stated in-file: an entity outside the window is not in the grid, so a
+projectile out there passes through enemies.
 
-## `scripts/combat/population.gd` (75) — `Population`
+## `scripts/combat/population.gd` (118) — `Population`
 
 One packed-array entity population; no nodes, no physics.
 `ALIVE=0 DEAD=1 FLIPPED=2`.
@@ -66,7 +68,7 @@ generation state`, plus `capacity`, `count`, `_next_generation`.
   entity.
 - `integrate(dt)` — `vel += force*dt; pos += vel*dt`.
 
-## `scripts/combat/hit_queue.gd` (196) — `HitQueue`
+## `scripts/combat/hit_queue.gd` (203) — `HitQueue`
 
 ```gdscript
 enum Kind { DAMAGE, CORRUPTION }        enum Outcome { NONE, DEAD, FLIPPED }
@@ -75,6 +77,8 @@ OPEN = 0   MARKED = 1   CLOSED = 2
 
 Event arrays: `kind source_exploit target target_generation amount`, `count`.
 Adjudication arrays: `adjudication outcome killer_exploit flipper_exploit`.
+`dropped` counts appends refused at capacity — the queue is sized
+`EVENT_BUDGET * MAX_PLAYERS` and the perf gate requires zero.
 Hit log for ON_HIT: `hit_exploit hit_target hit_count`.
 
 | API | Note |
@@ -92,7 +96,7 @@ resolve dead in pass 1 (drops emitted, ON_KILL fired) and flip in pass 2.
 ON_HIT = per hit landed on an open target regardless of survival;
 ON_KILL = per adjudicated DEAD; ON_DAMAGE_TAKEN = per damage the player takes.
 
-## `scripts/run/terrain.gd` (862) — `Terrain`
+## `scripts/run/terrain.gd` (949) — `Terrain`
 
 One grid for the **whole campaign**: all arenas end to end plus a corridor per gap.
 
@@ -124,32 +128,59 @@ dist_from_gate max_dist voided _collapse_order _collapse_idx`.
 | connectivity | `_fill_unreachable` (fills sealed regions rather than carving), `_reach`, `reachable_fraction`, `_carve_to` |
 | queries | `cell_xy`, `cell_index`, `in_bounds`, `is_solid`, `zone_at`, `gate_blocks`, `has_line_of_sight`, `nearest_open` |
 | movement | `slide(from, delta)`, `avoid(at, heading)` (`LOOK_AHEAD 46`, `AVOID_FORCE 90`) |
-| gate | `gate()`, `has_gate()`, `open_gate()`, `_rebuild_blocks` |
-| collapse | `build_distance_field()`, `_build_collapse_order()` (farthest from the gate first), `collapse_to(threshold)`, `is_void(p)`, `route_from(p, limit=400)` |
+| gate | `gate()`, `has_gate()`, `open_gate()`, `_rebuild_blocks`, `gate_open_flags()` / `set_gate_open_flags()` (snapshot) |
+| collapse | `build_distance_field()`, `_build_collapse_order()` (farthest from the gate first), `collapse_to(threshold)`, `is_void(p)`, `route_from(p, limit=400)`; corridor phase `corridor_collapse_len`, `CORRIDOR_COLLAPSE_TICKS 600`, `_clear_collapse_state`, `restore_collapse(idx)` (snapshot) |
 | temp zones | `add_temp_zone`, `step_temp_zones`, `temp_zone_at`, `clear_temp_zones`, `temp_zone_count` |
 
-## `scripts/run/spawn_director.gd` (176) — `SpawnDirector`
+## `scripts/run/spawn_director.gd` (192) — `SpawnDirector`
 
 ```gdscript
 enum Formation { RING, STREAM, FLANK, BURST }
 SUBNET_SECONDS 300.0   CAMPAIGN_SUBNETS 3
-HP_PER_SUBNET 1.55     HP_OVER_SUBNET 0.45
+HP_PER_SUBNET 1.55     HP_OVER_SUBNET 0.45   HP_PER_EXTRA_PLAYER 0.50
 MINIBOSS_TIMES [60, 120, 180, 240]
 MINIBOSS_IDS   [fork_bomb, packet_filter, null_ptr, kernel_panic]
 ```
 
 `hp_mult(subnet, elapsed)` scales enemy integrity on **both** axes — a rank buys
 damage linearly, so constant HP meant everything one-shot forever past 34 damage.
-`threshold_mult(subnet)` does the same for corruption thresholds.
+`threshold_mult(subnet)` does the same for corruption thresholds;
+`party_hp_mult(live)` adds 0.5 per extra LIVE slot and `rate_mult` scales the
+wave rate with the party. Seeded from the session descriptor, never
+`randomize()`.
 Also: `step(dt, origin, radius) -> Array`, `due_minibosses(dt)`,
 `should_spawn_boss()`, `reset()` (zeroes `spawned`, hence run.gd's
 `_spawned_before`), `_place(formation, origin, radius)`.
 
-## `scripts/run/run.gd` (3057) — the run
+## `scripts/run/run.gd` (5585) — the run
 
-Signals: `level_up_offered(cards)`, `run_ended(won, salvage)`, `stats_changed()`.
-`enum Phase { FIGHTING, CLEARED }` — one fact replacing the old
-`paused`/`won`/`_advance_pending` triple. The director steps in FIGHTING only.
+Signals: `level_up_offered(cards)`, `fusion_offered(matches)`,
+`offer_waiting(unresolved)`, `run_ended(won, salvage)`, `stats_changed()`.
+`enum Phase { FIGHTING, CLEARED }`. The director steps in FIGHTING only. The
+tick order and the session half (ring, recovery, endings, parking) are in
+`codemaps/architecture.md` and `codemaps/net.md`; this section is the world.
+
+### Slots — every player field is a `MAX_PLAYERS` array
+
+`enum SlotState { LIVE, DEAD, ABSENT }`, `slot_state`, `local_slot`.
+`player_pos player_prev_pos player_render_pos player_vel player_health
+player_iframe player_shield _parked_health pickup_radius kills flips inputs
+_low_armed _banked _sheet _unlocked loadouts`, allocated in `_allocate_slots`,
+brought LIVE from the descriptor in `_derive_roster`. `resolved` is
+slot-strided (`GID_STRIDE`): `_gid(slot, ei)`, `_owner_slot(gid)`,
+`_resolved(gid)`, `_slot_exploits(slot)`, `_decode_exploit`. A reader that
+wants "the player" must say which: `_eff_*(slot)`, `_damage_player(slot, amt)`,
+`_die(slot)`, `_offer_cards(slot, …)`, `_block_payout(holder)`.
+
+**Plurality census** (`test_plurality`): DEAD and ABSENT slots are skipped by
+every rule. `_live_slots`, `_nearest_live(p)`, `_party_bounds`,
+`_party_centroid`, `_next_live_cycle` (`_cycle_cursor`), `_leash(slot, p)`
+(`SessionRules.LEASH` per axis against every other LIVE slot). Each enemy
+picks `_enemy_target[i]` ONCE per tick in `_behave` from the per-tick
+`_live_pos/_live_of` cache; spawn rings, the block anchor and stragglers use
+the nearest LIVE slot; wards, ON_KILL/ON_FLIP/ON_HIT and lifesteal credit the
+OWNING slot; the gate waits for every LIVE slot; `_botnet_cap()` is shared.
+`view_slot` is presentation only (camera, culling, depth bands, spectating).
 
 ### Rendering / projection
 `to_iso(p)` / `from_iso(s)` with `ISO_K = 0.82`; `_depth_sort` over
@@ -158,11 +189,11 @@ built by `_build_renderers` / `_make_mm`, refreshed by `_update_renderers`.
 `_draw` adds ground quads, `_void_runs`, `_route_points`, fx lines and rings
 (`_fx_line`, `_fx_ring`, `FX_LIFE = 0.13`).
 
-### Player
-`player_pos player_vel player_health player_shield player_iframe (IFRAMES 0.5)
-alive won subnet level xp salvage kills flips pending_levels paused`.
-`_sheet` is seeded in `_ready` (a declaration initialiser runs before the save is
-read). Effective stats: `_eff_integrity _eff_armor _eff_defense _eff_clock_speed`,
+### Player state per slot
+`IFRAMES 0.5`; run-wide `alive won subnet level xp salvage pending_levels paused
+user_paused hitstop_ticks`. `_sheet[slot]` derives from the descriptor's
+counters, never from another peer's save. Effective stats:
+`_eff_integrity(slot) _eff_armor _eff_defense _eff_clock_speed`,
 each taking `_ward_max(key)` — wards fold as **MAX across exploits, never a sum**.
 `player_shield` is absorb, not integrity: spent before armour and defence.
 `_low_armed` latches ON_LOW_INTEGRITY to the **crossing** (`LOW_INTEGRITY_FRACTION
@@ -234,11 +265,19 @@ in the entity grid: the only thing it can hit is the player, so detection is one
 distance test per shot.
 
 ### Progression and campaign
-`_gain_xp` / `_xp_for(lvl)` (`XP_SLOWDOWN 1.8`), `_offer_cards`, `choose_card`,
-`decline_card`, `_recompile`, `_bank_progress(with_salvage)` (incremental — the
-save *accumulates*, so handing it running totals would triple-count),
+`_gain_xp` / `_xp_for(lvl)` (`XP_SLOWDOWN 1.8`); offers are per-slot lockstep
+INPUT state (`OfferKind {LEVEL, SEEDED, RANK_ONLY, FUSION}`, `_offer_seq/
+_offer_open/_offer_queue`, rounds via `_round_open`/`pending_levels`,
+`CHOICE_TIMEOUT_TICKS` deadlines); `choose_card / decline_card / choose_fusion /
+decline_fusion` only STAGE `_local_choice`, applied when the tick consumes it.
+`_recompile(slot=-1)`, `_bank_slot(slot, with_salvage)` (the `_banked`
+watermark moves on every peer; only the local slot writes the save),
 `_advance_subnet` (`SUBNET_CLEAR_HEAL 0.30`), `_hp_mult`, `_refresh_thresholds`,
-`time_left`, `spawned_total`, `_die`.
+`time_left`, `spawned_total`, `_die(slot)` → `_terminal(LOSS)` when none LIVE.
+Collapse has an arena phase then a corridor phase
+(`Terrain.CORRIDOR_COLLAPSE_TICKS`, `_corridor_collapse_ticks`).
 Botnet defaults: `BOTNET_BASE_CAP 8`, `BOTNET_BASE_LIFETIME 12.0`,
 `BOTNET_BASE_RATIO 0.6`.
-`input_override` lets headless tests drive the player instead of the keyboard.
+`input_override` lets headless drivers steer the local slot through the same
+poll a device uses; `external_drive` disables the engine physics callback so a
+harness owns the tick.

@@ -1,4 +1,4 @@
-> Generated: 2026-09-01 | Token-lean format for LLM context
+> Generated: 2026-09-02 | Token-lean format for LLM context
 
 # Build layer — `scripts/build/` (pure)
 

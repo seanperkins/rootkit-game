@@ -21,6 +21,11 @@ rendering driver: `get_texture()` is null and every `tools/shot_*.gd` now exits 
 saying so. Run them windowed; from a sandboxed shell that also needs
 window-server access, which the Bash sandbox denies.
 
+**`test_transport_loopback` needs real UDP on 127.0.0.1**, which the Bash
+sandbox denies (`enet_socket_send` errors). Run it, and the full runner, with
+the sandbox disabled. `tools/determinism_probe.gd` prints one `tick hash` per
+tick; its output must be byte-identical across arm64 and x86_64.
+
 **Always use `tools/run_tests.sh`, never call a suite by hand and trust it.** A
 GDScript runtime error aborts only the function it happens in: the engine prints
 `SCRIPT ERROR`, `_initialize` carries on, and a suite whose assertions never ran
@@ -31,7 +36,7 @@ suite claims about itself.
 ## Architecture
 
 `codemaps/` describes the shape — `architecture.md`, `audio.md`, `build.md`,
-`combat.md`, `data.md`, `ui.md`. **Read those before a change that spans files.**
+`combat.md`, `data.md`, `net.md`, `ui.md`. **Read those before a change that spans files.**
 They are generated; do not hand-edit them, and put anything worth keeping here
 instead.
 
@@ -69,6 +74,21 @@ that architecture depends on, each of which has been broken at least once:
 - **The whole 3-subnet campaign is one terrain grid**, plotted before the first
   frame. `terrain.current` is the only thing that changes; nothing is generated
   under the player and nothing teleports.
+- **Solo is a one-slot session.** Every per-player field is a `MAX_PLAYERS`
+  array indexed by slot; `slot_state` says LIVE/DEAD/ABSENT; a reader that
+  wants "the player" must say which slot by a census rule (nearest LIVE,
+  owner, every LIVE, block holder) — `local_slot` and `view_slot` are for
+  presentation only. Every RNG, sheet and starting build derives from the
+  session descriptor, never from a save; `save.json` is read only to build
+  the local slot's counters and to bank the local slot's own deltas.
+- **Roster changes apply at the tick they name, never on arrival.** ABSENT
+  before consuming T, PRESENT after consuming R, on every peer alike. Only the
+  host's END ends a session; a local death or win is a CANDIDATE that holds the
+  world below the guard while the ring keeps consuming above it. The host is
+  the authority in a desync, and a snapshot is primitives only, validated
+  field by field before a single write. Simulation state lives in the
+  manifest (`STATE_FIELDS`) or is classified in `NOT_IN_MANIFEST`;
+  `test_manifest` fails on a var in neither.
 
 ## Invariants that break quietly
 
