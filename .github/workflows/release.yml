@@ -169,6 +169,7 @@ jobs:
             -s -k "$KEYCHAIN_PW" "$KC"
 
       - name: Export
+        if: env.HAS_SIGNING == 'true'
         run: |
           set -euo pipefail
           mkdir -p build/macos
@@ -177,6 +178,7 @@ jobs:
           [ -d build/macos/ROOTKIT.app ] || { echo "export produced no app" >&2; exit 1; }
 
       - name: Sign
+        if: env.HAS_SIGNING == 'true'
         env:
           CERT_IDENTITY: ${{ secrets.MACOS_IDENTITY }}
         run: |
@@ -189,22 +191,33 @@ jobs:
           echo "signed as: $(codesign -dv --verbose=2 build/macos/ROOTKIT.app 2>&1 | grep Authority)"
 
       - name: Notarise and staple
+        if: env.HAS_SIGNING == 'true'
         env:
-          APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
-          APPLE_ID_PW: ${{ secrets.MACOS_APPLE_ID_PASSWORD }}
-          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          # Key id and issuer name a key but authorize nothing without the
+          # .p8, so they are checked in here — the same convention as
+          # sound-mural-app's Fastfile. Only the key content is a secret.
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
         run: |
           set -euo pipefail
+          if [ -z "${ASC_KEY_CONTENT:-}" ]; then
+            echo "::error::Secret ASC_KEY_CONTENT is unset. See tools/configure_macos_ci.sh."
+            exit 1
+          fi
+          # BSD base64 on macOS has no --decode; python3 is on every runner.
+          printf '%s' "$ASC_KEY_CONTENT" | python3 -c \
+            "import base64,sys;sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" \
+            > "$RUNNER_TEMP/AuthKey.p8"
           ditto -c -k --sequesterRsrc --keepParent build/macos/ROOTKIT.app "$RUNNER_TEMP/notary.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notary.zip" \
-            --apple-id "$APPLE_ID" --password "$APPLE_ID_PW" \
-            --team-id "$TEAM_ID" --wait
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id 4XBH56T7RS \
+            --issuer 22e2fb14-d32b-4837-92b0-6280da32716d --wait
           xcrun stapler staple build/macos/ROOTKIT.app
           xcrun stapler validate build/macos/ROOTKIT.app
           spctl --assess --type execute -v build/macos/ROOTKIT.app
 
       - name: Package and publish
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.HAS_SIGNING == 'true' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
