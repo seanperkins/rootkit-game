@@ -8,8 +8,12 @@ class_name RelayRooms extends RefCounted
 
 const MAX_MEMBERS := 4
 ## A creator that never sends anything is cut after this; a room with no
-## members at all after SessionRules.ROOM_IDLE_MS.
-const CREATE_GRACE_MS := 30000
+## members at all after SessionRules.ROOM_IDLE_MS. The same ten minutes as
+## the idle rule, NOT a short grace: a host waiting alone in the lobby sends
+## nothing at all until a friend joins — flush_relay has no records to carry —
+## and at 30 s this cut every host whose friend took longer than that to type
+## the code. It read in the shell as "lost the relay", over and over.
+const CREATE_GRACE_MS := SessionRules.ROOM_IDLE_MS
 ## Refusal reasons, as the wire carries them.
 const UNKNOWN := "unknown"
 const FULL := "full"
@@ -56,6 +60,7 @@ func disconnect_peer(peer: int) -> Array:
 			room_of_peer.erase(p)
 			member_of_peer.erase(p)
 		rooms.erase(code)
+		print("relay: room %s closed — host peer %d left" % [code, peer])
 	else:
 		actions.append(["send", int(room["host"]), 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
 			RelayFrame.encode_op({"op": "left", "member": member})])
@@ -105,6 +110,7 @@ func expire(now_ms: int) -> Array:
 		if members.size() <= 1 and int(room["last_ms"]) == int(room["created_ms"]) \
 				and idle > CREATE_GRACE_MS:
 			# A creator that never sent anything: cut it, which closes the room.
+			print("relay: room %s cut — its creator sent nothing for %d ms" % [code, idle])
 			actions.append_array(_cut(int(room["host"])))
 		elif members.is_empty() and idle > SessionRules.ROOM_IDLE_MS:
 			rooms.erase(code)
@@ -129,6 +135,7 @@ func _op(peer: int, op: Dictionary, now_ms: int) -> Array:
 			rooms[code] = {"host": peer, "members": {1: peer}, "created_ms": now_ms, "last_ms": now_ms}
 			room_of_peer[peer] = code
 			member_of_peer[peer] = 1
+			print("relay: room %s opened by peer %d" % [code, peer])
 			return [["send", peer, 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
 				RelayFrame.encode_op({"op": "room", "code": code, "member": 1, "members": [1]})]]
 		"join":
@@ -170,6 +177,7 @@ func _op(peer: int, op: Dictionary, now_ms: int) -> Array:
 
 func _refuse(peer: int, reason: String) -> Array:
 	refused += 1
+	print("relay: refused peer %d — %s" % [peer, reason])
 	return [["send", peer, 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
 		RelayFrame.encode_op({"op": "refused", "reason": reason})], ["drop", peer]]
 

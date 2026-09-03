@@ -154,8 +154,12 @@ func expiry_and_hygiene() -> void:
 	_check("a room dies with its host", r.rooms.has(code), false)
 	r.connect_peer(11, 0)
 	r.handle(11, CH, MODE, _op({"op": "create", "protocol": SessionRules.RELAY_PROTOCOL}), 1000)
-	var silent := r.expire(1000 + 30000 + 1)
-	_check("a creator that goes silent for 30 s is dropped", _drops(silent), [11])
+	# A host alone in the lobby sends nothing until someone joins, so a short
+	# grace cut every host whose friend was slow to type the code.
+	var waiting := r.expire(1000 + 120000)
+	_check("a creator still waiting alone after two minutes is kept", _drops(waiting), [])
+	var silent := r.expire(1000 + RelayRooms.CREATE_GRACE_MS + 1)
+	_check("a creator silent past the idle limit is dropped", _drops(silent), [11])
 	r.connect_peer(12, 0)
 	var junk := r.handle(12, CH, MODE, _op({"op": "kick", "member": 1}), 0)
 	_check("an op before create/join drops the sender", _drops(junk), [12])
