@@ -62,13 +62,21 @@ func manifest_parse_is_strict() -> void:
 	_check("on the right platform", entry.get("sig"), "AAAA")
 	_check("a missing platform refuses", UpdateFeed.parse_manifest(_manifest("linux"), "macos").is_empty(), true)
 	_check("garbage refuses", UpdateFeed.parse_manifest("not json", "macos").is_empty(), true)
+	_check("no entries refuse",
+		UpdateFeed.parse_manifest(JSON.stringify({"entries": {}}), "macos").is_empty(), true)
 	var no_ver := _entry()
 	no_ver.erase("version")
 	_check("an entry without a version refuses",
 		UpdateFeed.parse_manifest(_with(no_ver), "macos").is_empty(), true)
 	var empty_v := _entry({"version": ""})
-	_check("an entry without its own version refuses",
+	_check("an empty entry version refuses",
 		UpdateFeed.parse_manifest(_with(empty_v), "macos").is_empty(), true)
+	# The manifest's top level and the entry's version can DISAGREE (a merged
+	# feed from a newer tag carrying an older platform entry); the parse must
+	# report the entry's — that is what the client compares against.
+	var split := JSON.stringify({"version": "0.9.0", "entries": {"macos": _entry({"version": "0.4.1"})}})
+	_check("the entry's own version wins over the top-level one",
+		str(UpdateFeed.parse_manifest(split, "macos").get("version", "")), "0.4.1")
 	_check("a non-hex sha refuses",
 		UpdateFeed.parse_manifest(_with(_entry({"sha256": "Z".repeat(64)})), "macos").is_empty(), true)
 	_check("a short sha refuses",
