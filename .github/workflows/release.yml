@@ -99,7 +99,7 @@ jobs:
           curl -sSL -o /tmp/godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
           unzip -q /tmp/godot.zip -d /tmp/godot
           sudo mv /tmp/godot/Godot.app /Applications/Godot.app
-          echo "/Applications/Godot.app/Contents/MacOS" >> "$GITHUB_PATH"
+          sudo ln -sf "/Applications/Godot.app/Contents/MacOS/Godot" /usr/local/bin/godot
           curl -sSL -o /tmp/templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
           mkdir -p "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable"
           unzip -q /tmp/templates.tpz -d /tmp/templates
