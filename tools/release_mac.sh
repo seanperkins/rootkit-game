@@ -15,6 +15,10 @@ set -euo pipefail
 TAG="${1:?usage: tools/release_mac.sh vX.Y.Z}"
 IDENTITY="${IDENTITY:-Developer ID Application: Sean Perkins (HH3SJBAS42)}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool-profile}"
+# Named explicitly: the default keychain on this machine flips to a
+# fastlane temp keychain that other projects recreate, and a profile stored
+# there vanishes with it.
+NOTARY_KEYCHAIN="${NOTARY_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/macos/ROOTKIT.app"
 ZIP="$ROOT/build/ROOTKIT-$TAG-macos.zip"
@@ -49,7 +53,8 @@ codesign --verify --deep --strict "$APP"
 
 # Notarise a zip of the app, then staple the ticket to the app itself.
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROOT/build/notary.zip"
-xcrun notarytool submit "$ROOT/build/notary.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun notarytool submit "$ROOT/build/notary.zip" --keychain-profile "$NOTARY_PROFILE" \
+  --keychain "$NOTARY_KEYCHAIN" --wait
 rm -f "$ROOT/build/notary.zip"
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
