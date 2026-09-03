@@ -839,6 +839,15 @@ func _on_peer_joined(_id: int) -> void:
 func _begin_reconnect() -> void:
 	if _session.role != NetworkSession.Role.CLIENT or _session.ended:
 		return
+	if _transport != null and _transport.relayed and _transport.relay_error == "closed":
+		# The host closed the room: there is nothing to rejoin and no host
+		# migration. Ten refused rejoins would end here anyway, half a
+		# minute later, with the shell's "the host closed the room" lost
+		# under a "lost the relay".
+		_session.reconnecting = false
+		_session.ended = true
+		emit_signal("run_ended", false, 0)
+		return
 	_session.reconnecting = true
 	_reconnect_frames = 0
 	_reconnect_attempts += 1

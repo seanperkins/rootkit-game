@@ -77,6 +77,8 @@ var relay_error := ""
 var _relay_address := ""
 var _relay_port := 0
 var _relay_up := false           # the ENet link to the relay
+var _polling := false            # inside poll(): listeners must not replace the peer
+var _rejoin_pending := false     # a rejoin asked for from inside poll(), dialed after the drain
 var _room_up := false            # the room answered
 
 func host(port: int, p_session: NetworkSession) -> Error:
@@ -188,13 +190,29 @@ func rejoin() -> Error:
 	if relayed:
 		if code == "":
 			return ERR_UNCONFIGURED
-		var saved := code
-		close()
-		return _dial_relay(session, false, saved, _relay_address, _relay_port)
+		if relay_error == "closed":
+			# The host closed the room. A rejoin with that code can only be
+			# refused, and there is no host migration.
+			return ERR_UNAVAILABLE
+		if _polling:
+			# Called from a listener inside poll() — the run's reconnect fires
+			# from peer_left, which peer_disconnected raises from inside
+			# peer.poll(). Replacing the peer there throws away every packet
+			# it had queued but not yet handed over, and the relay's "closed"
+			# op arrives exactly that way: just ahead of the disconnect it
+			# announces. Dial after the drain instead.
+			_rejoin_pending = true
+			return OK
+		return _rejoin_relay_now()
 	if _address == "":
 		return ERR_UNCONFIGURED
 	close()
 	return join(_address, _port, session)
+
+func _rejoin_relay_now() -> Error:
+	var saved := code
+	close()
+	return _dial_relay(session, false, saved, _relay_address, _relay_port)
 
 ## Cut one peer. Parking does this so a link that merely hiccupped cannot keep
 ## driving a slot nobody applies; so does input from a peer that never said
@@ -310,8 +328,14 @@ func send_snapshot(to: int, tick: int, bytes: PackedByteArray) -> void:
 func poll() -> void:
 	if peer == null:
 		return
+	if peer.get_connection_status() == MultiplayerPeer.CONNECTION_DISCONNECTED:
+		# A link that never connected — a refused rejoin, a dead address —
+		# raises no signal and errors on every poll. The run's retry frames
+		# make the next attempt; there is nothing to pump here.
+		return
+	_polling = true
 	peer.poll()
-	while peer.get_available_packet_count() > 0:
+	while peer != null and peer.get_available_packet_count() > 0:
 		var from := peer.get_packet_peer()
 		var channel := peer.get_packet_channel()
 		var bytes := peer.get_packet()
@@ -325,6 +349,13 @@ func poll() -> void:
 			_handle(int(parts[0]), channel, parts[1])
 		else:
 			_handle(from, channel, bytes)
+	_polling = false
+	if _rejoin_pending:
+		_rejoin_pending = false
+		# The drain may have delivered the relay's "closed": then the room
+		# is gone and the rejoin the disconnect asked for has no target.
+		if relay_error != "closed":
+			_rejoin_relay_now()
 
 ## The relay talking to this end: the room answer, roster changes, refusals.
 func _relay_op(op: Dictionary) -> void:

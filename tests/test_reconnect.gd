@@ -20,7 +20,8 @@ const CASES := ["a_live_return_restores_beside_the_party_and_resumes",
 	"a_dead_return_stays_a_spectator_and_reports",
 	"a_latched_live_return_suppresses_no_live_endings",
 	"an_existing_no_live_barrier_is_cleared_by_the_flagged_resync",
-	"an_aborted_return_judges_no_live_again"]
+	"an_aborted_return_judges_no_live_again",
+	"a_closed_room_ends_the_run_instead_of_reconnecting"]
 
 func _initialize() -> void:
 	print("ROOTKIT — reconnect\n")
@@ -30,6 +31,7 @@ func _initialize() -> void:
 	await a_latched_live_return_suppresses_no_live_endings()
 	await an_existing_no_live_barrier_is_cleared_by_the_flagged_resync()
 	await an_aborted_return_judges_no_live_again()
+	await a_closed_room_ends_the_run_instead_of_reconnecting()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -302,3 +304,28 @@ func an_aborted_return_judges_no_live_again() -> void:
 	h.teardown()
 	await process_frame
 	finished["an_aborted_return_judges_no_live_again"] = true
+
+## Relayed, the host closing the room reaches a client as the relay's
+## "closed" op. There is nothing to rejoin and no host migration, so the run
+## ends there — not after ten refused rejoins and half a minute of
+## "reconnecting…".
+func a_closed_room_ends_the_run_instead_of_reconnecting() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 2, DELAY, 20260902)
+	var client: Node2D = h.runs[1]
+	var t := Transport.new()
+	root.add_child(t)
+	t.relayed = true
+	t.relay_error = "closed"
+	client.attach_transport(t)
+	var endings := []
+	client.run_ended.connect(func(won, salvage): endings.append([won, salvage]))
+	client._on_peer_left(Transport.HOST_PEER)
+	_check("the run ended", client._session.ended, true)
+	_check("as a loss with nothing banked", endings, [[false, 0]])
+	_check("without entering reconnect", client._session.reconnecting, false)
+	_check("and without a rejoin attempt", client._reconnect_attempts, 0)
+	t.queue_free()
+	h.teardown()
+	await process_frame
+	finished["a_closed_room_ends_the_run_instead_of_reconnecting"] = true

@@ -9,7 +9,8 @@ var failures := 0
 var finished := {}
 const PORT := 43218
 const CASES := ["a_room_is_created_and_joined", "the_lobby_handshake_crosses_the_relay",
-	"records_cross_both_ways", "a_leaving_joiner_is_reported", "closing_the_host_closes_the_room"]
+	"records_cross_both_ways", "a_leaving_joiner_is_reported", "closing_the_host_closes_the_room",
+	"a_rejoin_asked_for_inside_the_close_still_reads_closed"]
 
 var relay := RelayServer.new()
 var host_t: Transport
@@ -33,6 +34,7 @@ func _initialize() -> void:
 	records_cross_both_ways()
 	a_leaving_joiner_is_reported()
 	closing_the_host_closes_the_room()
+	a_rejoin_asked_for_inside_the_close_still_reads_closed()
 	relay.stop()
 	print("")
 	for c in CASES:
@@ -174,3 +176,45 @@ func closing_the_host_closes_the_room() -> void:
 	_check("and knows why", client_t.relay_error, "closed")
 	client_t.close()
 	finished["closing_the_host_closes_the_room"] = true
+
+## The run reconnects from peer_left, which the transport raises from inside
+## peer.poll() when the link drops. Re-dialing right there replaced the peer
+## before its queued packets were read, and the relay's "closed" op is queued
+## exactly then — just ahead of the disconnect it announces — so the run read
+## "lost", rejoined a dead room ten times and ended half a minute later.
+func a_rejoin_asked_for_inside_the_close_still_reads_closed() -> void:
+	hs = NetworkSession.create(_descriptor(), 0, NetworkSession.Role.HOST)
+	hs.lockstep = _ring()
+	host_t = Transport.new()
+	root.add_child(host_t)
+	# A member, not a local: a lambda captures a local by value.
+	host_code = ""
+	host_t.room_ready.connect(func(c): host_code = c)
+	host_t.peer_joined.connect(func(id): host_t.bind_peer(id, 1))
+	host_t.host_relayed(hs, "127.0.0.1", PORT)
+	var t0 := Time.get_ticks_msec()
+	while host_code == "" and Time.get_ticks_msec() - t0 < 3000:
+		_pump(10)
+	cs = NetworkSession.create(_descriptor(), 1, NetworkSession.Role.CLIENT)
+	cs.lockstep = _ring()
+	client_t = Transport.new()
+	root.add_child(client_t)
+	var saw := []
+	var errs := []
+	client_t.peer_joined.connect(func(id): saw.append(id))
+	# What the run does: rejoin at once, from inside the signal.
+	client_t.peer_left.connect(func(_id): errs.append(client_t.rejoin()))
+	client_t.join_relayed(host_code, cs, "127.0.0.1", PORT)
+	t0 = Time.get_ticks_msec()
+	while saw.is_empty() and Time.get_ticks_msec() - t0 < 3000:
+		_pump(10)
+	_check("the joiner is in the new room", saw, [Transport.HOST_PEER])
+	var refused_before: int = relay.rooms.refused
+	host_t.close()
+	_pump(1500)
+	_check("the joiner read the relay's closed, not a lost link", client_t.relay_error, "closed")
+	_check_true("the rejoin asked for inside the signal was accepted quietly", not errs.is_empty())
+	_check("and no rejoin was dialed at a dead room", relay.rooms.refused - refused_before, 0)
+	_check("a rejoin after a close is refused locally", client_t.rejoin(), ERR_UNAVAILABLE)
+	client_t.close()
+	finished["a_rejoin_asked_for_inside_the_close_still_reads_closed"] = true
