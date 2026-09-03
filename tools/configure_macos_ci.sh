@@ -37,19 +37,29 @@ trap 'rm -rf "$TMP"' EXIT
 # --- re-wrap under a generated passphrase ------------------------------------
 VLT_PW=$(openssl rand -hex 24)
 # Keychain Access exports a legacy RC2/3DES p12; OpenSSL 3.x refuses it
-# without -legacy. Try modern first, then retry with -legacy on the INPUT
-# side only (the re-export is written with modern algorithms).
-if ! openssl pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes 2>"$TMP/rw.err" \
-  | openssl pkcs12 -export -passout "pass:$VLT_PW" \
-      -out "$TMP/macos-signing.p12" 2>"$TMP/rw2.err"; then
-  if ! openssl pkcs12 -legacy -in "$P12" -passin "pass:$P12PW" -nodes 2>"$TMP/rw.err" \
-    | openssl pkcs12 -export -passout "pass:$VLT_PW" \
-        -out "$TMP/macos-signing.p12" 2>"$TMP/rw2.err"; then
-    echo "could not re-wrap the p12 — openssl said:" >&2
-    cat "$TMP/rw.err" "$TMP/rw2.err" >&2
+# without -legacy (sound-mural's docs hit this exact trap). Try modern
+# first, then retry with -legacy on the INPUT side only. Both stages use
+# FILES: OpenSSL 3.6's pkcs12 -export cannot read a PEM stream from
+# stdin ("Could not find certificates from -in file from <stdin>"), so a
+# pipe shape fails on a perfectly good p12.
+if ! openssl pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes \
+  -out "$TMP/raw.pem" 2>"$TMP/rw.err"; then
+  if ! openssl pkcs12 -legacy -in "$P12" -passin "pass:$P12PW" -nodes \
+    -out "$TMP/raw.pem" 2>"$TMP/rw.err"; then
+    echo "could not read the p12 — openssl said:" >&2
+    cat "$TMP/rw.err" >&2
     exit 1
   fi
   echo "re-wrapped with -legacy (Keychain Access legacy p12)"
+fi
+# sound-mural's measured table: macOS security import accepts only
+# -legacy -macalg sha1 on a real PKCS#12; openssl-3 defaults and bare
+# -legacy both fail with "MAC verification failed" even WITH a password.
+if ! openssl pkcs12 -legacy -macalg sha1 -export -in "$TMP/raw.pem" \
+  -passout "pass:$VLT_PW" -out "$TMP/macos-signing.p12" 2>"$TMP/rw2.err"; then
+  echo "could not re-export the p12 — openssl said:" >&2
+  cat "$TMP/rw2.err" >&2
+  exit 1
 fi
 
 # --- verify WHAT was exported before anything is pushed ----------------------
