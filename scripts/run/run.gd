@@ -768,6 +768,13 @@ func player_draw_list() -> Array:
 ## _ready builds a one-slot solo session so offline play needs no setup.
 func configure_session(session: NetworkSession) -> void:
 	_session = session
+	_netlog.configure(session.local_slot, _ROLE_NAMES.get(session.role, "?"))
+
+## Session diagnostics, off unless `--netlog` was passed. Reports what the tick
+## already computed and is never read back by it: see NOT_IN_MANIFEST.
+var _netlog := NetLog.new()
+const _ROLE_NAMES := {NetworkSession.Role.SOLO: "solo",
+	NetworkSession.Role.HOST: "host", NetworkSession.Role.CLIENT: "client"}
 
 ## The live transport, handed over by the lobby before _ready and reparented
 ## under this node. Polled ABOVE the world guard only; nothing below it, and
@@ -1072,6 +1079,8 @@ func host_detect_desync() -> int:
 		_terminate()
 		return -1
 	var r := lockstep.executed + lockstep.delay + Protocol.BOUNDARY_MARGIN
+	_netlog.desync(d, targets)
+	_netlog.resync(r, lockstep.executed)
 	_session.announce_resync(r, targets)
 	if _transport != null:
 		_transport.send_control(Protocol.Message.RESYNC, r, {"clears_end": false})
@@ -1080,8 +1089,10 @@ func host_detect_desync() -> int:
 ## Any peer: a boundary was announced. Records past it are retained by the
 ## transport until the boundary resolves.
 func announce_resync(r: int) -> void:
-	if _session.announce_resync(r) and _transport != null:
-		_transport.arm_boundary(r)
+	if _session.announce_resync(r):
+		_netlog.resync(r, lockstep.executed)
+		if _transport != null:
+			_transport.arm_boundary(r)
 
 ## Host: serialise for the active boundary once it has executed exactly through
 ## R and holds the window. Returns the snapshot bytes when produced this call,
@@ -1097,6 +1108,7 @@ func host_try_snapshot() -> PackedByteArray:
 	_session.resync_sent = true
 	last_snapshot = bytes
 	last_snapshot_tick = r
+	_netlog.snapshot_sent(r, bytes.size(), _session.resync_targets)
 	# A returning peer joins the relay set in the SAME frame the state is
 	# serialised, so no relayed record falls between the snapshot and the
 	# first relay it receives.
@@ -1116,7 +1128,9 @@ func host_try_snapshot() -> PackedByteArray:
 ## with every retained record merged; a refused one leaves the run untouched.
 func apply_snapshot(bytes: PackedByteArray, r: int) -> bool:
 	if not restore_state(bytes, r):
+		_netlog.snapshot_applied(r, false)
 		return false
+	_netlog.snapshot_applied(r, true)
 	if _transport != null:
 		_transport.release_boundary()
 	_session.clear_resync()
@@ -1335,6 +1349,11 @@ func _default_solo_session() -> NetworkSession:
 	var desc := NetworkSession.validate_descriptor(
 		NetworkSession.solo_descriptor(profile, DEFAULT_SEED))
 	return NetworkSession.create(desc, 0, NetworkSession.Role.SOLO)
+
+## The session's numbers, once. Here rather than at the six run_ended sites:
+## the run leaves the tree however it ended, including an abandon.
+func _exit_tree() -> void:
+	_netlog.summary(tick)
 
 func _ready() -> void:
 	if _session == null:
@@ -1814,8 +1833,12 @@ func _physics_process(_dt: float) -> void:
 		return
 	if not lockstep.ready(lockstep.executed) or _holding_for_snapshot():
 		_stalled_ticks += 1
+		# Guarded here, not inside: lockstep.missing allocates.
+		if _netlog.enabled:
+			_netlog.stalled(lockstep.executed, lockstep.missing(lockstep.executed))
 		return
 	_stalled_ticks = 0
+	_netlog.stepped(lockstep.executed)
 	tick = lockstep.executed
 	lockstep.take(tick, _rec_moves, _rec_cards, _rec_targets, _rec_offers, _rec_aims)
 	_apply_records()
@@ -5274,6 +5297,7 @@ func _build_manifest() -> void:
 			"_execute_immune_type": "constant per enemy type",
 			"_pending_fusions": "presentation: derived from _offer_open by _emit_local_offer",
 			"_stalled_ticks": "transport liveness, local",
+			"_netlog": "diagnostics: reports the tick, never read by it",
 			"_local_choice": "local staged input, not yet a record",
 			"_rec_moves": "take buffer", "_rec_aims": "take buffer", "_rec_cards": "take buffer",
 			"_rec_targets": "take buffer", "_rec_offers": "take buffer",
