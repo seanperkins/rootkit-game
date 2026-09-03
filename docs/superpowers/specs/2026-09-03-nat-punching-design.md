@@ -170,10 +170,13 @@ already does.
   receiver's mapping is already gone — the packet is delivered nowhere and
   ENet's timeout outlives the record's usefulness. The transport therefore
   retains a bounded window (`DIRECT_REPLAY_MAX = Lockstep.RING`, one
-  record ring per link) of tick-addressed INPUT/CHECKSUM/RELAY packets sent
+  record ring per link) of tick-addressed INPUT and RELAY packets sent
   direct, and replays it over the still-live relay before the socket is
-  destroyed. The lockstep ring refuses the duplicate by `(slot, tick)`, so
-  the replay is lossless at the seam; control, snapshot and broadcast
+  destroyed. CHECKSUM packets are deliberately NOT retained: they are
+  unreliable and self-healing (a lost one is replaced by the next), and
+  each retained checksum would evict an unrecoverable INPUT from the
+  shared window. The lockstep ring refuses the duplicate by `(slot, tick)`,
+  so the replay is lossless at the seam; control, snapshot and broadcast
   messages are never replayed, because they are not duplicate-idempotent.
   Replayed stale ticks are treated as benign (not malformed, not restaged),
   since a legitimate replay flood must not trip the bad-packet cutoff.

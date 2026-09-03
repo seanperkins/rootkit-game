@@ -359,13 +359,15 @@ func send_input(tick: int, move: Vector2, card: int, target: int, offer: int,
 
 ## This peer's periodic checksum. Unreliable: a lost one is replaced by the
 ## next, and a stale one is refused by the retained window on arrival. The host
-## bundles its own into the relay instead.
+## bundles its own into the relay instead. NOT replayable: it self-heals, and
+## keeping it in the bounded direct window would evict an INPUT record that
+## cannot be recovered at the path seam.
 func send_checksum(tick: int, hash_value: int) -> void:
 	if is_host:
 		_relay_checksums.append([session.local_slot, tick, hash_value])
 		return
 	_put(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE,
-		Protocol.encode_checksum(_session_id(), tick, hash_value), true)
+		Protocol.encode_checksum(_session_id(), tick, hash_value))
 
 ## The host's once-per-tick relay: ONE reliable bundle to every client carrying
 ## every record and checksum staged since the last flush. Never a forward per

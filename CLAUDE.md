@@ -156,12 +156,12 @@ the site; this is the index.
 - **The relay and client ship the same `RELAY_PROTOCOL`.** A punched leg is a
   per-host↔client direct socket with the relay as the always-live fallback.
   The path seam replays a bounded one-ring window of tick-addressed records:
-  client INPUT, client CHECKSUM and host RELAY bundles — never
-  CONTROL/SNAPSHOT, which are not duplicate-idempotent (BROADCAST is a
-  target, not a kind; it is expanded per bound client). Duplicate Lockstep
+  client INPUT and host RELAY bundles — never CONTROL/SNAPSHOT, which are
+  not duplicate-idempotent, and never CHECKSUM, which self-heals and would
+  evict an unrecoverable INPUT from the shared window. Duplicate Lockstep
   submissions are benign wherever a record arrives twice, and the host
-  re-forwards (stages) only newly stored INPUT/CHECKSUM. `transport.gd` is
-  still the only ENet-touching class; the tick still reads records only.
+  re-forwards (stages) only newly stored INPUT. `transport.gd` is still
+  the only ENet-touching class; the tick still reads records only.
 - **`SaveGame.MILESTONES` is the single source for the unlock ladder.** The shop's
   requirement text reads it via `milestone_text`; do not hardcode a second copy.
 - **`save.json` is user-editable and treated as hostile.** The `maxf(0.0, …)`

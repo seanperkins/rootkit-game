@@ -135,11 +135,11 @@ client-to-client.
 |---|---|
 | raw-punch + `connect_to_host` + `direct_hello`/`direct_ack` | `socket_send` retried every `PUNCH_RETRY_MS` 100 ms, then the link's SOLE outgoing connect; `direct_hello`/`direct_ack` (carrying the relay-issued key) then authenticate at the ENet layer — an off-path attacker who never saw the relay traffic cannot finish the handshake, even though the key rides the plaintext `punch` op; `direct_to(member)` is true only once matched, `PUNCH_TIMEOUT_MS` bounds an unfinished attempt |
 | `disconnect_direct(member_id)` | forces one link down (diagnostics, `tools/probe_punch.gd`) without dropping the logical peer/slot; counted in `direct_fallbacks`/`direct_sent`/`direct_received` |
-| `DIRECT_REPLAY_MAX := Lockstep.RING` (128) | `_remember_direct` records REPLAYABLE sends only (INPUT/CHECKSUM/host RELAY bundles, never CONTROL/SNAPSHOT); on a failed send or `disconnect_direct`, `_destroy_link(t, true)` → `_replay_direct` resends the window over the still-live relay before teardown — the one-sided-loss seam |
+| `DIRECT_REPLAY_MAX := Lockstep.RING` (128) | `_remember_direct` records REPLAYABLE sends only (client INPUT and host RELAY bundles — never CONTROL/SNAPSHOT, and never CHECKSUM: it self-heals and would evict an unrecoverable INPUT from the shared window); on a failed send or `disconnect_direct`, `_destroy_link(t, true)` → `_replay_direct` resends the window over the still-live relay before teardown — the one-sided-loss seam |
 
-The receiver restages a replayed record only when `Lockstep.submit` /
-`submit_checksum` newly stored it (`bool`); a stale replay is a benign
-duplicate (`_input_stale`), a far-future/invalid tick still refused.
+The host restages a replayed INPUT only when `Lockstep.submit` newly
+stored it (`bool`); a stale replay is a benign duplicate (`_input_stale`),
+a far-future/invalid tick still refused.
 Direct packet peers share the usual `set_timeout(PEER_TIMEOUT_MS, ...)`.
 
 ## `scripts/net/network_session.gd` (451) — `NetworkSession`, PURE

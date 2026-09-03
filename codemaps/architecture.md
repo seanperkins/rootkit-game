@@ -165,10 +165,11 @@ socket and hole-punch it; `direct_hello`/`direct_ack` (carrying that key)
 authenticate the leg before `direct_to(member)` reports it live. The relay
 stays open as fallback: a dying direct leg (timeout, send failure,
 `disconnect_direct`) replays its bounded window — up to `Lockstep.RING`
-(128) records, replayable kinds only (client INPUT, client CHECKSUM, host
-RELAY bundles; never CONTROL/SNAPSHOT — BROADCAST is a TARGET, not a
-kind) — over the relay before the socket dies, so
-the ring never sees a gap. `transport.gd` remains the only class touching
+(128) records, replayable kinds only (client INPUT and host RELAY bundles;
+never CONTROL/SNAPSHOT — BROADCAST is a target, not a kind — and never
+CHECKSUM, which self-heals and would evict an INPUT from the window) —
+over the relay before the socket dies, so the ring never sees a gap.
+`transport.gd` remains the only class touching
 ENet, still never below the world guard. `codemaps/net.md` tables the wire
 constants; `tools/probe_punch.gd` proves a punched star (one leg forced
 down and falling back, another staying direct) against a live relay.
