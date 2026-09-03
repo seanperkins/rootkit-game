@@ -1,5 +1,7 @@
 # ROOTKIT
 
+[![ci](https://github.com/seanperkins/rootkit-game/actions/workflows/ci.yml/badge.svg)](https://github.com/seanperkins/rootkit-game/actions/workflows/ci.yml)
+
 A bullet heaven where the build system is the hacking. You are a rogue process
 in a corporate network; you move, everything else fires itself, and your power
 comes from compiling exploits out of typed modules.

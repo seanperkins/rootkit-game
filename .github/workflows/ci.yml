@@ -1,0 +1,212 @@
+name: ci
+
+# Everything that can be checked without a window or a signing identity, on
+# every push and pull request. Before this, release.yml was the only workflow
+# and it fires on a version tag, so a broken suite or a broken export preset
+# stayed invisible until release day. The macOS export preset already did
+# exactly that once: "import ETC2/ASTC so the universal macOS export is
+# allowed" landed on a tag, after the release build failed.
+#
+# What is NOT here, and why:
+#   - the perf gate (perf_milestone0) — it declines to judge a contended
+#     machine, and a shared runner is always contended, so it would report
+#     INCONCLUSIVE forever. Run it locally: tools/run_tests.sh with no --fast.
+#   - the tools/shot_*.gd screenshots — they need a real window, and --headless
+#     selects the dummy rendering driver where get_texture() is null.
+#   - the macOS export — it is signed and notarised from a Mac by
+#     tools/release_mac.sh, which needs a Developer ID in a keychain.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A second push to the same branch makes the first one's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here writes to the repo. release.yml asks for contents: write because
+# it uploads to a release; this only reads.
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7"
+
+jobs:
+  suites:
+    name: test suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: editor
+        with:
+          path: ~/.godot-bin
+          key: godot-editor-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Install Godot
+        if: steps.editor.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -sSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          mkdir -p "$HOME/.godot-bin"
+          mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" "$HOME/.godot-bin/godot"
+
+      - name: Put Godot on PATH
+        run: |
+          chmod +x "$HOME/.godot-bin/godot"
+          echo "$HOME/.godot-bin" >> "$GITHUB_PATH"
+
+      - run: godot --version
+
+      # Import first: a suite run against an unimported project reimports
+      # mid-suite and prints its progress into the output the runner greps.
+      - name: Import
+        run: godot --headless --import || true
+
+      # test_transport_loopback and test_relay open real UDP sockets on
+      # 127.0.0.1. A runner allows that; a sandboxed local shell often does not.
+      - name: Suites
+        run: tools/run_tests.sh --fast
+
+  determinism:
+    name: determinism (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: editor
+        with:
+          path: ~/.godot-bin
+          key: godot-editor-${{ env.GODOT_VERSION }}-linux-${{ matrix.arch }}
+
+      - name: Install Godot
+        if: steps.editor.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -sSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.${{ matrix.arch }}.zip"
+          unzip -q godot.zip
+          mkdir -p "$HOME/.godot-bin"
+          mv "Godot_v${GODOT_VERSION}-stable_linux.${{ matrix.arch }}" "$HOME/.godot-bin/godot"
+
+      - name: Put Godot on PATH
+        run: |
+          chmod +x "$HOME/.godot-bin/godot"
+          echo "$HOME/.godot-bin" >> "$GITHUB_PATH"
+
+      - name: Import
+        run: godot --headless --import || true
+
+      # One tick hash per tick from the full state manifest. Only the probe's
+      # own lines are kept: the engine banner and any driver chatter around
+      # them is not part of the claim and does differ between machines.
+      - name: Probe
+        run: |
+          set -euo pipefail
+          godot --headless -s res://tools/determinism_probe.gd \
+            | grep -E '^(# determinism probe|[0-9]+ -?[0-9]+$)' > probe.txt
+          wc -l probe.txt
+          head -3 probe.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ matrix.arch }}
+          path: probe.txt
+
+  determinism-match:
+    name: determinism matches across architectures
+    needs: determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: probe-*
+
+      # Lockstep rests on two machines agreeing tick for tick, so the artefact
+      # that claim is reproduced from is a byte-identical diff, not a summary.
+      - name: Diff the two probes
+        run: |
+          set -euo pipefail
+          diff probe-x86_64/probe.txt probe-arm64/probe.txt
+          echo "identical: $(wc -l < probe-x86_64/probe.txt) lines"
+
+  export:
+    name: export smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: editor
+        with:
+          path: ~/.godot-bin
+          key: godot-editor-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Install Godot
+        if: steps.editor.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -sSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          mkdir -p "$HOME/.godot-bin"
+          mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" "$HOME/.godot-bin/godot"
+
+      - name: Put Godot on PATH
+        run: |
+          chmod +x "$HOME/.godot-bin/godot"
+          echo "$HOME/.godot-bin" >> "$GITHUB_PATH"
+
+      # 1.2 GB, and the version never moves within a branch, so it is cached
+      # rather than downloaded per pull request.
+      - uses: actions/cache@v4
+        id: templates
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ env.GODOT_VERSION }}
+
+      - name: Install export templates
+        if: steps.templates.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -sSL -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q templates.tpz -d templates
+          mv templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Import
+        run: godot --headless --import || true
+
+      # The presets, not the release. release.yml packages and uploads on a
+      # tag; this only answers whether the project still exports at all, which
+      # is the half that used to be found on release day.
+      - name: Export
+        run: |
+          set -euo pipefail
+          mkdir -p build/windows build/linux
+          godot --headless --export-release windows build/windows/ROOTKIT.exe
+          godot --headless --export-release linux build/linux/ROOTKIT.x86_64
+          ls -la build/windows build/linux
+
+      - name: The binaries are real
+        run: |
+          set -euo pipefail
+          test -s build/linux/ROOTKIT.x86_64
+          test -s build/windows/ROOTKIT.exe
+          test -s build/windows/ROOTKIT.pck
