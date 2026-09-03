@@ -31,7 +31,8 @@ const FILES := {
 
 const CASES := ["every_var_is_classified_once", "flags_have_real_consumers",
 	"a_busy_run_round_trips", "fighting_restore_clears_collapse",
-	"arrival_state_is_snapshot_only", "the_worst_case_fits"]
+	"arrival_state_is_snapshot_only", "the_worst_case_fits",
+	"presentation_flash_is_not_hashed", "presentation_aging_never_changes_the_hash"]
 
 func _initialize() -> void:
 	print("ROOTKIT — state manifest\n")
@@ -42,6 +43,8 @@ func _initialize() -> void:
 	await fighting_restore_clears_collapse()
 	await arrival_state_is_snapshot_only()
 	await the_worst_case_fits()
+	await presentation_flash_is_not_hashed()
+	await presentation_aging_never_changes_the_hash()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -289,3 +292,43 @@ func the_worst_case_fits() -> void:
 	_check_true("the worst case is under SNAPSHOT_MAX",
 		bytes.size() < SessionRules.SNAPSHOT_MAX)
 	await _done(r, "the_worst_case_fits")
+
+## The hit-flash is presentation: set in the tick, decayed in _age_fx under
+## _present with the VARIABLE frame delta, so it decays by wall-clock time and
+## differs across peers. It must not touch the state hash, or every co-op
+## session desyncs the moment two peers' frame timing drifts. This is the
+## regression for that bug.
+func presentation_flash_is_not_hashed() -> void:
+	var r := await _run()
+	var b = r.enemy_types[EnemyTable.ICE]
+	r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
+	var h0: int = r._state_hash()
+	# A hit lights the enemy...
+	r._hit_flash[0] = 1.0
+	_check("lighting an enemy does not change the hash", r._state_hash(), h0)
+	# ...and it decays by real frame time in _age_fx, at a rate that differs
+	# per peer. That must not change the hash either.
+	r._age_fx(0.123)
+	_check("decaying the flash does not change the hash", r._state_hash(), h0)
+	_check_true("_hit_flash is classified as presentation, not hashed",
+		(r.NOT_IN_MANIFEST["run"] as Dictionary).has("_hit_flash"))
+	await _done(r, "presentation_flash_is_not_hashed")
+
+## The general guard: presentation runs above the world guard on the VARIABLE
+## frame delta, which differs across peers, so NOTHING it ages may sit in the
+## hashed state. Age a busy run's whole presentation layer by a big, arbitrary
+## delta and the simulation hash must not move. _hit_flash broke this and
+## desynced every co-op session; this catches the next such leak whatever its
+## name.
+func presentation_aging_never_changes_the_hash() -> void:
+	var r := await _run()
+	_make_busy(r)
+	# Land some hits so the flash and effect layers are actually populated.
+	for e in mini(r.enemies.count, 6):
+		r._hit_flash[e] = 1.0
+	var h0: int = r._state_hash()
+	# A big variable delta, the kind a stalled peer applies, aged repeatedly.
+	for _i in 5:
+		r._age_fx(0.25)
+	_check("aging presentation effects does not change the hash", r._state_hash(), h0)
+	await _done(r, "presentation_aging_never_changes_the_hash")

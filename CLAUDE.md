@@ -89,6 +89,17 @@ that architecture depends on, each of which has been broken at least once:
   field by field before a single write. Simulation state lives in the
   manifest (`STATE_FIELDS`) or is classified in `NOT_IN_MANIFEST`;
   `test_manifest` fails on a var in neither.
+- **Presentation aged above the guard must NEVER be in the HASH manifest.**
+  `_present` runs on the VARIABLE frame delta, which differs across peers, so
+  anything `_age_fx` (or any presentation code) decays by wall-clock time
+  diverges peer to peer. If such a field is hashed, the checksum compare reads
+  a false desync and every co-op session breaks the moment two peers' frame
+  timing drifts — the divergence wanders tick to tick, so it looks like a
+  transport bug, not a manifest one. `_hit_flash` was hashed and did exactly
+  this. A presentation field belongs in `NOT_IN_MANIFEST`, even a per-entity
+  parallel array that `_relocate_enemy`/`_spawn_enemy_state` still maintain for
+  rendering. `test_manifest` pins it: aging a busy run's whole presentation
+  layer must not move `_state_hash`.
 
 ## Invariants that break quietly
 

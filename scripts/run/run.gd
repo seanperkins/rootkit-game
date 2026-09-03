@@ -5224,8 +5224,14 @@ func _build_manifest() -> void:
 				"type_index", "radius", "generation", "state"]:
 			f.append([pk, prop, SH, pk, []])
 	# --- per-entity parallel arrays on the run --------------------------------
+	# _hit_flash is NOT here: it is presentation (a white hit-flash, read only
+	# by _draw), decayed in _age_fx under _present with the VARIABLE frame delta,
+	# so it decays by wall-clock time and differs across peers. Hashing it made
+	# every co-op session desync the moment two peers' frame timing drifted —
+	# see NOT_IN_MANIFEST. It stays a per-enemy parallel array (relocated on
+	# despawn, reset on spawn) purely so the flash tracks the right enemy.
 	for prop in ["_worm_id", "_worm_seg", "_spawn_hp", "_slow_left", "_slow_factor",
-			"_knock", "_split_gen", "_rewarded", "_hit_flash", "_arriving",
+			"_knock", "_split_gen", "_rewarded", "_arriving",
 			"_submerged", "_ai_phase", "_ai_timer", "_ai_aim"]:
 		f.append(["run", prop, SH, "enemies", []])
 	for prop in ["_proj_owner", "_proj_pierce", "_proj_last", "_proj_dist_left",
@@ -5315,6 +5321,7 @@ func _build_manifest() -> void:
 			"_route_cell": "local presentation; reset so the route recomputes",
 			"feel": "presentation", "_shake_pref": "preference",
 			"_numbers_pref": "preference", "_falling": "presentation",
+			"_hit_flash": "presentation: a per-enemy white hit-flash, read only by _draw and decayed in _age_fx under _present with the variable frame delta — must never be hashed or snapshotted",
 			"_beam_hits": "beam selection scratch, presentation-free but never carried",
 			"_beam_keys": "beam selection scratch",
 			"_vignette": "presentation", "_fx": "presentation",
