@@ -1,4 +1,4 @@
-extends Control
+class_name SettingsPanel extends Control
 
 ## The settings screen, shared by the shell and the in-run pause panel.
 ##
@@ -38,9 +38,15 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	visible = false
 
+	# OPAQUE, and the shell's own background colour rather than black. This is
+	# a modal over another menu — the pause panel and the shop column both stay
+	# in the tree underneath it — so anything the scrim lets through is one
+	# screen's text drawn across another's. The colour is the project's clear
+	# colour, which is what the shell already paints; not a third literal.
 	var scrim := ColorRect.new()
 	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	scrim.color = Color(0, 0, 0, 0.86)
+	scrim.color = ProjectSettings.get_setting(
+		"rendering/environment/defaults/default_clear_color")
 	add_child(scrim)
 
 	var col := VBoxContainer.new()
