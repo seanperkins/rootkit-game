@@ -41,8 +41,8 @@ func integrity_seeded() -> void:
 	root.add_child(run)
 	await process_frame
 	run.input_override = Vector2.ZERO
-	_check("memory r10 starts the run at 180", run.player_health[run.local_slot], 180.0)
-	_check("effective max integrity is 180", run._eff_integrity(run.local_slot), 180.0)
+	_check("memory r10 starts the run at 208", run.player_health[run.local_slot], 208.0)
+	_check("effective max integrity is 208", run._eff_integrity(run.local_slot), 208.0)
 	run.queue_free()
 	await process_frame
 	_clear_buffs()
@@ -54,7 +54,7 @@ func pickup_radius_seeded() -> void:
 	root.add_child(run)
 	await process_frame
 	run.input_override = Vector2.ZERO
-	_check("bandwidth r10 gives pickup radius 90", run.pickup_radius[run.local_slot], 90.0)
+	_check("bandwidth r10 gives pickup radius 140", run.pickup_radius[run.local_slot], 140.0)
 	run.queue_free()
 	await process_frame
 	_clear_buffs()

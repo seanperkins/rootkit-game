@@ -30,9 +30,10 @@ the end.
 
 ## Task 3 — the second socket in the transport
 
-- `Transport` relay mode: create `_punch_peer` bound to `PUNCH_PORT`,
-  able to both accept and dial. Self-report the LAN candidate in
-  `create`/`join`.
+- `Transport` relay mode: create `_punch: ENetConnection` via
+  `create_host_bound("0.0.0.0", PUNCH_PORT, MAX_PLAYERS, CHANNELS)` and, on a
+  `punch` op, `connect_to_host` each candidate. Self-report the LAN candidate
+  in `create`/`join`. (Feasibility proven — see "Proven approach".)
 - On a `punch` op, start a simultaneous-open attempt to every candidate of
   every listed member; mark `_direct[member]` when a handshake completes;
   send `punched`.
@@ -65,12 +66,27 @@ the end.
   clients and the new relay refuse each other — ship the relay and the
   client together.
 
+## Proven approach (de-risked 2026-09-03)
+
+The direct link uses the LOW-LEVEL `ENetConnection`, NOT `ENetMultiplayerPeer`.
+A probe confirmed simultaneous open works: two `ENetConnection`s, each
+`create_host_bound("0.0.0.0", PUNCH_PORT, ...)` and each
+`connect_to_host(peer_ip, peer_port, channels)`, both receive
+`EVENT_CONNECT` from `service()` within a few hundred ms, and a packet sent
+on the returned `ENetPacketPeer` arrives via `EVENT_RECEIVE`. The high-level
+`ENetMultiplayerPeer` does NOT surface such a connection through
+`peer_connected` (it enforces a server/client role), so it cannot be used
+for the punch. The transport already does raw `put_packet`/`get_packet`, so
+a second `ENetConnection` carrying `RelayFrame.route`-framed record bytes
+drops in alongside the relay socket: `poll()` services it and hands its
+packets up through the same `_handle` path, keyed by member id.
+
 ## Risks
 
-- **Godot's ENet wrapper and one bound socket doing both listen and dial.**
-  If `ENetMultiplayerPeer` will not, drop to `ENetConnection` on a single
-  bound `PacketPeerUDP`/socket via the lower-level API. Prove this in Task
-  3 before building on it.
+- **Symmetric NATs** will not punch; they stay relayed. Acceptable.
+- **The protocol bump is a hard cut**: the deployed relay and released
+  clients must move together, or every link is `refused: bad`. Coordinate
+  the relay deploy with the client release.
 - **Symmetric NATs** will not punch; they stay relayed. Acceptable.
 - **The protocol bump is a hard cut**: the deployed relay and released
   clients must move together, or every link is `refused: bad`. Coordinate
