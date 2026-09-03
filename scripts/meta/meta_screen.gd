@@ -67,6 +67,7 @@ func _ready() -> void:
 
 	col.add_child(_label("ROOTKIT", 30, FG))
 	col.add_child(_label("rogue process // corporate network // subnet 01", 14, DIM))
+	col.add_child(_label("v%s" % _build(), 12, DIM))
 	col.add_child(_spacer(18))
 
 	_salvage = _label("", 18, HOT)
@@ -483,6 +484,13 @@ func _spacer(h: int) -> Control:
 	var c := Control.new()
 	c.custom_minimum_size = Vector2(0, h)
 	return c
+
+## The build number: release_mac.sh stamps the git tag into
+## application/config/version, so this reads the tag in release builds and the
+## project file's value in dev.
+func _build() -> String:
+	var v: Variant = ProjectSettings.get_setting("application/config/version")
+	return "dev" if v == null else String(v)
 
 func _refresh() -> void:
 	var d := SaveGame.load_state()
