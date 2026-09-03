@@ -40,6 +40,11 @@ var _link: VBoxContainer
 var _name_edit: LineEdit
 var _addr_edit: LineEdit
 var _host_btn: Button
+var _host_lan_btn: Button
+var _code_label: Label
+var _copy_btn: Button
+## When a relay link that has not answered yet gives up (ticks msec), 0 = none.
+var _link_deadline := 0
 var _join_btn: Button
 var _leave_btn: Button
 var _start_btn: Button
@@ -150,7 +155,7 @@ func _build_link() -> void:
 	_link.position = Vector2(780, 52)
 	_link.add_theme_constant_override("separation", 8)
 	add_child(_link)
-	_link.add_child(_label("LINK  ::  online co-op, direct address", 14, DIM))
+	_link.add_child(_label("LINK  ::  online co-op", 14, DIM))
 	_link.add_child(_spacer(6))
 
 	_link.add_child(_label("handle", 12, DIM))
@@ -161,12 +166,12 @@ func _build_link() -> void:
 	_name_edit.placeholder_text = "display name"
 	_link.add_child(_name_edit)
 
-	_link.add_child(_label("host address", 12, DIM))
+	_link.add_child(_label("room code or address", 12, DIM))
 	_addr_edit = LineEdit.new()
 	_addr_edit.custom_minimum_size = Vector2(300, 30)
 	_addr_edit.max_length = SessionRules.ADDRESS_MAX
 	_addr_edit.text = SaveGame.string_pref("last_address")
-	_addr_edit.placeholder_text = "127.0.0.1"
+	_addr_edit.placeholder_text = "room code or address"
 	_link.add_child(_addr_edit)
 
 	var row := HBoxContainer.new()
@@ -177,6 +182,11 @@ func _build_link() -> void:
 	_host_btn.custom_minimum_size = Vector2(120, 34)
 	_host_btn.pressed.connect(_host)
 	row.add_child(_host_btn)
+	_host_lan_btn = Button.new()
+	_host_lan_btn.text = "  host LAN  "
+	_host_lan_btn.custom_minimum_size = Vector2(120, 34)
+	_host_lan_btn.pressed.connect(_host_lan)
+	row.add_child(_host_lan_btn)
 	_join_btn = Button.new()
 	_join_btn.text = "  join  "
 	_join_btn.custom_minimum_size = Vector2(120, 34)
@@ -198,6 +208,25 @@ func _build_link() -> void:
 	_link_status.custom_minimum_size = Vector2(440, 0)
 	_link_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_link.add_child(_link_status)
+	# The room code, large enough to read aloud, with a copy button; both
+	# empty until the relay answers a host.
+	_code_label = _label("", 22, FG)
+	_link.add_child(_code_label)
+	_copy_btn = Button.new()
+	_copy_btn.text = "  copy code  "
+	_copy_btn.custom_minimum_size = Vector2(120, 30)
+	_copy_btn.visible = false
+	_copy_btn.pressed.connect(func(): DisplayServer.clipboard_set(_transport.code if _transport != null else ""))
+	_link.add_child(_copy_btn)
+
+## Six characters from the code alphabet route through the relay; anything
+## else is a direct address.
+func _wants_relay(text: String) -> bool:
+	return RelayFrame.is_code(text)
+
+## One extra tick of input delay for the hop through the relay.
+func _delay_for(relay: bool) -> int:
+	return SessionRules.RELAY_DELAY if relay else SessionRules.DEFAULT_DELAY
 
 ## Whatever the fields say, as the save will keep it: sanitised on write.
 func _profile() -> Dictionary:
@@ -208,6 +237,14 @@ func _profile() -> Dictionary:
 		"counters": SaveGame.session_counters()}
 
 func _host() -> void:
+	_start_hosting(true)
+
+func _host_lan() -> void:
+	_start_hosting(false)
+
+## Host through the relay (a room code friends type) or directly on
+## DEFAULT_PORT (LAN, or a forwarded port).
+func _start_hosting(relay: bool) -> void:
 	if _transport != null:
 		return
 	var profile := _profile()
@@ -215,22 +252,40 @@ func _host() -> void:
 	# the simulation, so a real random source is fine.
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
-	_session = NetworkSession.host_lobby(profile, rng.randi() | 1, rng.randi())
+	_session = NetworkSession.host_lobby(profile, rng.randi() | 1, rng.randi(), _delay_for(relay))
 	_transport = Transport.new()
 	add_child(_transport)
-	var err := _transport.host(SessionRules.DEFAULT_PORT, _session)
+	var err: Error
+	if relay:
+		err = _transport.host_relayed(_session)
+	else:
+		err = _transport.host(SessionRules.DEFAULT_PORT, _session)
 	if err != OK:
-		_link_status.text = "could not bind port %d (%s)" % [SessionRules.DEFAULT_PORT,
-			error_string(err)]
+		if relay:
+			_link_status.text = "the relay is not reachable (%s)" % error_string(err)
+		else:
+			_link_status.text = "could not bind port %d (%s)" % [SessionRules.DEFAULT_PORT,
+				error_string(err)]
 		_transport.queue_free()
 		_transport = null
 		_session = null
 		return
 	_transport.peer_left.connect(_on_peer_left)
-	_link_status.text = "hosting on port %d — ./intrude starts when everyone is in" \
-		% SessionRules.DEFAULT_PORT
+	if relay:
+		_transport.room_ready.connect(_on_room_ready)
+		_link_status.text = "asking the relay for a room…"
+		_link_deadline = Time.get_ticks_msec() + 5000
+	else:
+		_link_status.text = "hosting on port %d — ./intrude starts when everyone is in" \
+			% SessionRules.DEFAULT_PORT
 	_set_link_buttons(true)
 	_refresh_players()
+
+func _on_room_ready(code: String) -> void:
+	_code_label.text = "room  %s" % code
+	_copy_btn.visible = true
+	_link_deadline = 0
+	_link_status.text = "hosting through the relay — friends join with the code; ./intrude starts when everyone is in"
 
 func _join() -> void:
 	if _transport != null:
@@ -240,7 +295,12 @@ func _join() -> void:
 	_transport = Transport.new()
 	add_child(_transport)
 	var addr := SaveGame.string_pref("last_address")
-	var err := _transport.join(addr, SessionRules.DEFAULT_PORT, _session)
+	var relay := _wants_relay(addr)
+	var err: Error
+	if relay:
+		err = _transport.join_relayed(addr, _session)
+	else:
+		err = _transport.join(addr, SessionRules.DEFAULT_PORT, _session)
 	if err != OK:
 		_link_status.text = "could not start a link to %s (%s)" % [addr, error_string(err)]
 		_transport.queue_free()
@@ -249,7 +309,11 @@ func _join() -> void:
 		return
 	_transport.peer_joined.connect(_on_connected_to_host)
 	_transport.peer_left.connect(_on_peer_left)
-	_link_status.text = "connecting to %s…" % addr
+	_link_deadline = Time.get_ticks_msec() + 5000
+	if relay:
+		_link_status.text = "joining room %s…" % RelayFrame.normalise_code(addr)
+	else:
+		_link_status.text = "connecting to %s…" % addr
 	_set_link_buttons(true)
 
 func _leave() -> void:
@@ -263,6 +327,9 @@ func _leave() -> void:
 	_transport.queue_free()
 	_transport = null
 	_session = null
+	_link_deadline = 0
+	_code_label.text = ""
+	_copy_btn.visible = false
 	_link_status.text = "no link — ./intrude runs solo"
 	_players.text = ""
 	_set_link_buttons(false)
@@ -270,6 +337,7 @@ func _leave() -> void:
 
 func _set_link_buttons(linked: bool) -> void:
 	_host_btn.disabled = linked
+	_host_lan_btn.disabled = linked
 	_join_btn.disabled = linked
 	_leave_btn.disabled = not linked
 	_name_edit.editable = not linked
@@ -302,6 +370,20 @@ func _on_peer_left(id: int) -> void:
 
 func _process(_dt: float) -> void:
 	if _transport == null or _session == null:
+		return
+	# _leave() resets the status line, so the reason is written after it.
+	if _link_deadline > 0 and Time.get_ticks_msec() > _link_deadline and not _transport.connected():
+		var why := "the relay did not answer" if _transport.relayed \
+			else "no answer from %s" % SaveGame.string_pref("last_address")
+		_leave()
+		_link_status.text = why
+		return
+	if _transport.relayed and _transport.relay_error != "":
+		var reason: String = {"unknown": "no room with that code", "full": "that room is full",
+			"closed": "the host closed the room", "bad": "the relay refused the link (version mismatch?)",
+			"lost": "lost the relay"}.get(_transport.relay_error, _transport.relay_error)
+		_leave()
+		_link_status.text = reason
 		return
 	_transport.poll()
 	while not _session.inbox.is_empty():

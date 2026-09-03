@@ -11,7 +11,8 @@ var finished := {}
 const CASES := ["host_owns_slot_zero_and_assigns_the_lowest_free",
 	"start_freezes_the_roster", "a_client_applies_welcome_then_start",
 	"solo_builds_the_same_shape", "string_prefs_are_hostile_safe",
-	"control_bodies_round_trip_and_reject_bad_shapes"]
+	"control_bodies_round_trip_and_reject_bad_shapes",
+	"the_link_column_offers_relay_and_lan"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lobby\n")
@@ -23,6 +24,7 @@ func _initialize() -> void:
 	solo_builds_the_same_shape()
 	string_prefs_are_hostile_safe()
 	control_bodies_round_trip_and_reject_bad_shapes()
+	await the_link_column_offers_relay_and_lan()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -169,3 +171,23 @@ func control_bodies_round_trip_and_reject_bad_shapes() -> void:
 	_check("a non-dictionary body is refused",
 		Protocol.decode_control(M.ABSENT, 1, var_to_bytes([1, 2])).is_empty(), true)
 	finished["control_bodies_round_trip_and_reject_bad_shapes"] = true
+
+## The one text field takes a code or an address: six alphabet characters
+## route through the relay, anything else is a direct address. Hosting
+## defaults to the relay and shows the code with a copy button; "host LAN"
+## keeps the direct server.
+func the_link_column_offers_relay_and_lan() -> void:
+	var m: Node = load("res://scenes/main.tscn").instantiate()
+	root.add_child(m)
+	await process_frame
+	_check("there is a host button", m._host_btn != null, true)
+	_check("and a host LAN button", m._host_lan_btn != null, true)
+	_check("and a copy button, hidden until a code exists", m._copy_btn.visible, false)
+	_check("the field says what it takes", m._addr_edit.placeholder_text, "room code or address")
+	_check("a code routes to the relay", m._wants_relay("abc234"), true)
+	_check("an address routes direct", m._wants_relay("192.168.1.20"), false)
+	_check("the relay lobby uses the relay delay", m._delay_for(true), SessionRules.RELAY_DELAY)
+	_check("the LAN lobby keeps the default", m._delay_for(false), SessionRules.DEFAULT_DELAY)
+	m.queue_free()
+	await process_frame
+	finished["the_link_column_offers_relay_and_lan"] = true
