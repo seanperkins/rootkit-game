@@ -153,6 +153,13 @@ the site; this is the index.
   for emit sites rather than keeping a list — **an id reached through a lookup
   table is invisible to that grep**, so a new table of ids must be added to the
   suite's indirect-site scan the way `HIT_SOUNDS` was.
+- **The relay and client ship the same `RELAY_PROTOCOL`.** A punched leg is a
+  per-host↔client direct socket with the relay as the always-live fallback.
+  The path seam replays a bounded one-ring window of tick-addressed records
+  (INPUT, CHECKSUM, host RELAY bundles — never CONTROL/SNAPSHOT/BROADCAST,
+  which are not duplicate-idempotent), and the host restages a replayed
+  record only when `Lockstep.submit` newly stored it. `transport.gd` is
+  still the only ENet-touching class; the tick still reads records only.
 - **`SaveGame.MILESTONES` is the single source for the unlock ladder.** The shop's
   requirement text reads it via `milestone_text`; do not hardcode a second copy.
 - **`save.json` is user-editable and treated as hostile.** The `maxf(0.0, …)`

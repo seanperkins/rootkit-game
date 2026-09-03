@@ -1,4 +1,4 @@
-> Generated: 2026-09-02 | Token-lean format for LLM context
+> Generated: 2026-09-03 | Token-lean format for LLM context
 
 # Data tables and persistence
 
@@ -113,8 +113,25 @@ than 1,950 salvage of upgrades.
 ## `data/session_rules.gd` — `SessionRules`
 
 Every constant two peers must agree on — tick, players, delay, timeouts,
-windows, the leash, packet and snapshot bounds, the port. Tabled in
-`codemaps/net.md`.
+windows, the leash, packet and snapshot bounds, the port — plus, since the
+relay+punch cycle, the relay and NAT-punch protocol. Full table in
+`codemaps/net.md`; the wire versions: `PROTOCOL := 3` (simulation/input-record
+format — five exploit rows) and `RELAY_PROTOCOL := 2` (adds the punch op set;
+a relay and a client on different values refuse each other cleanly).
+
+| Relay/punch const | Value | Relay/punch const | Value |
+|---|---|---|---|
+| `RELAY_PORT` | 43211 | `RELAY_DELAY` | 5 (extra input-delay tick) |
+| `PUNCH_DISCOVERY_PORT` | 43212 | `PUNCH_TIMEOUT_MS` | 3000 |
+| `RELAY_OP_MAX` | 512 bytes/op | `RELAY_MAX_CONNECTIONS` | 64 |
+| `ROOM_IDLE_MS` | 600000 (10 min) | `CODE_LENGTH` | 6 |
+| `CODE_ALPHABET` | 32 chars, no 0/O/1/I | | |
+
+**Data-security note:** the punch key and the room-join tokens are minted by
+`RelayRooms._mint_secret()` — 16 bytes from `Crypto.generate_random_bytes`,
+hex-encoded (128-bit CSPRNG) — deliberately NOT `_rng`, the seedable
+`RandomNumberGenerator` that draws room codes, so authentication material
+can never be predicted from an observed or leaked room-code sequence.
 
 ## `scripts/meta/save_game.gd` (423) — `SaveGame`
 

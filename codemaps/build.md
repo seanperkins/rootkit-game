@@ -1,4 +1,4 @@
-> Generated: 2026-09-02 | Token-lean format for LLM context
+> Generated: 2026-09-03 | Token-lean format for LLM context
 
 # Build layer — `scripts/build/` (pure)
 
@@ -133,3 +133,67 @@ erroring.
 
 Keeping the two groups apart is what makes the "player stat sold in the shop,
 silently delivered as an exploit stat" class of bug structurally impossible.
+
+# Release / CI — `.github/workflows/release.yml`
+
+Trigger: `push` tags `v*`, or `workflow_dispatch` (rehearses signing
+without publishing; either job may run first/again via `--clobber`).
+
+| Job | Runner | Produces |
+|---|---|---|
+| `build` | ubuntu-latest | `ROOTKIT-$TAG-windows.zip`, `-linux.zip` |
+| `macos` | macos-latest | `ROOTKIT-$TAG-macos.zip`, signed+notarised+stapled |
+
+## `macos` job — export, sign, notarise, staple
+
+- Install Godot, `ln -sf .../Godot /usr/local/bin/godot` (`$GITHUB_PATH`
+  writes land only in *later* steps, not the rest of this one).
+- Stamp tag into `config/version`; snap `export_presets.cfg`'s
+  `xcode/sdk_name` to `xcodebuild -showsdks`'s SDK (preset pins an older one).
+- Clone private `seanperkins/rootkit-macos-certs` over read-only deploy key
+  `MACOS_CERTS_DEPLOY_KEY` (`ssh-keyscan` + `IdentitiesOnly yes`).
+- Decrypt `macos-signing.p12` (`MACOS_CERT_PASSWORD`) into a fresh temp
+  keychain; `list-keychains -d user -s "$KC" …` adds it to the **user
+  search list** (codesign resolves off the list, not just
+  `default-keychain -s`, else invisible) + `set-key-partition-list`.
+- Export (`godot --export-release macos`), sign (`codesign --options
+  runtime --entitlements tools/macos.entitlements --sign "$MACOS_IDENTITY"`,
+  default `Developer ID Application: Sean Perkins (HH3SJBAS42)`), verify.
+- Notarise+staple: `ASC_KEY_CONTENT` (base64 `.p8`, python3-decoded — BSD
+  `base64` has no `--decode`) → `notarytool submit --key-id 4XBH56T7RS
+  --issuer 22e2fb14-d32b-4837-92b0-6280da32716d --wait`, then staple+spctl.
+- Package+publish: zip, `gh release upload … --clobber`.
+- Cleanup (`if: always()`): deletes deploy key, cloned vault, decoded
+  `.p8`, temp keychain, whichever step failed.
+
+**Guards**: `HAS_SIGNING` is job `env` (`secrets` isn't readable from
+`if:`); every `macos` step gates on it, self-skipping until the vault is
+configured. `build`'s Publish and `macos`'s Package-and-publish also
+require `startsWith(github.ref, 'refs/tags/v')`.
+
+## `tools/configure_macos_ci.sh` — one-time vault setup
+
+Input: `.p12` exported by hand via Keychain Access (`security export` CLI
+has **no identity filter**).
+
+- Re-wraps under a fresh 24-byte-hex passphrase before the vault sees it;
+  file-based throughout (OpenSSL 3.6 `pkcs12 -export` can't read PEM stdin).
+- Read: modern `pkcs12 -nodes` first, retries `-legacy` on input (Keychain
+  exports legacy RC2/3DES). Export: `-legacy -macalg sha1` always — the
+  only encoding `security import` accepts; bare `-legacy`/openssl-3
+  defaults fail with "MAC verification failed".
+- Verifies before push: `crl2pkcs7 | pkcs7 -print_certs` for
+  `"Developer ID Application"` + a `PRIVATE KEY` block, locally, not in CI.
+- Deploy-key idempotence: `gh repo deploy-key list … --jq 'length'` — `gh`
+  exits 0 on an empty list, so a naive `$?` check skips a fresh vault.
+- OpenSSL 3.x preflight (`OPENSSL="${OPENSSL:-openssl}"`) — `/usr/bin/openssl`
+  is LibreSSL, no `-legacy`.
+- Sets 4 secrets: `MACOS_CERTS_DEPLOY_KEY`, `MACOS_CERT_PASSWORD`,
+  `ASC_KEY_CONTENT` (base64 `.p8`), `MACOS_IDENTITY`.
+
+## Test runner — `tools/run_tests.sh`
+
+58 suites + perf gate (`perf_milestone0`, unless `--fast`) = 59 headless
+runs. `test_relay_frame/_rooms`, `test_relay`, `test_transport_punch` are
+the real-UDP group (real sockets on 127.0.0.1, Bash sandbox denies them —
+run sandbox off). `tools/probe_punch.gd` is a **manual** probe, not in `SUITES`.

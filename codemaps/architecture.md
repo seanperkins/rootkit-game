@@ -1,4 +1,4 @@
-> Generated: 2026-09-02 | Token-lean format for LLM context
+> Generated: 2026-09-03 | Token-lean format for LLM context
 
 # ROOTKIT — Architecture
 
@@ -153,6 +153,39 @@ Perf gate (`tests/perf_milestone0.gd`): the real `_physics_process` over a
 full autopiloted run with FOUR slots pinned at the full leash and worst-case
 builds on all of them — p95 normalised ~9.8 ms against an 11 ms budget.
 Load-relative: it times a fixed workload first and scales the budget.
+
+## Online co-op: relay + NAT punch
+
+Every peer, host included, keeps ONE ENet link to the room relay: room
+registry, code→session signal path, always-live fallback. Star topology
+only — the relay refuses a client naming another client. Per host↔client
+leg, once both directions register a reflexive candidate, the relay mints
+a 128-bit CSPRNG key for both ends, which open a SEPARATE direct ENet
+socket and hole-punch it; `direct_hello`/`direct_ack` (carrying that key)
+authenticate the leg before `direct_to(member)` reports it live. The relay
+stays open as fallback: a dying direct leg (timeout, send failure,
+`disconnect_direct`) replays its bounded window — up to `Lockstep.RING`
+(128) records, replayable kinds only (INPUT, host RELAY bundles; never
+CONTROL/SNAPSHOT/BROADCAST) — over the relay before the socket dies, so
+the ring never sees a gap. `transport.gd` remains the only class touching
+ENet, still never below the world guard. `codemaps/net.md` tables the wire
+constants; `tools/probe_punch.gd` proves a punched star (one leg forced
+down and falling back, another staying direct) against a live relay.
+
+## CI / release pipeline
+
+`.github/workflows/release.yml` runs on `v*` tags and `workflow_dispatch`
+(no-publish rehearsal). Job `build` (ubuntu-latest) exports Windows +
+Linux and publishes to the tag's Release. Job `macos` (macos-latest)
+exports, code-signs, notarises and staples the `.app`; every step gates
+on job env `HAS_SIGNING` (`secrets.MACOS_CERTS_DEPLOY_KEY != ''`, hoisted
+into `env:` since a step `if:` can't read `secrets`), and Publish is also
+gated on the tag ref — a rehearsal dispatch signs but never publishes.
+Signing material (password-encrypted `.p12`, Apple API key) lives in the
+private `seanperkins/rootkit-macos-certs` repo, cloned via a read-only
+deploy key; `tools/release_mac.sh` is the same path run locally,
+`tools/configure_macos_ci.sh` the one-time provisioning script.
+`codemaps/build.md` has the step-by-step and every secret name.
 
 ## Per-area detail
 
