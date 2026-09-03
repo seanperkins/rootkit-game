@@ -99,6 +99,15 @@ const RELAY_PROTOCOL := 1
 const RELAY_OP_MAX := 512
 const RELAY_MAX_CONNECTIONS := 64
 const ROOM_IDLE_MS := 600000
+## NAT hole punching (phase two). The relay's reflexive-discovery endpoint;
+## a peer's punch socket connects to it so the relay observes that socket's
+## public mapping and hands it to the other members. The punch socket itself
+## binds an OS-assigned port (three processes on one machine must coexist).
+## RELAY_PROTOCOL bumps to 2 only at the coordinated relay+client release, so
+## a punch-capable client and a non-punch relay refuse each other cleanly.
+const PUNCH_DISCOVERY_PORT := 43212
+## A punch that has not completed a handshake by this stays relayed.
+const PUNCH_TIMEOUT_MS := 3000
 const CODE_LENGTH := 6
 ## No 0/O/1/I: a code is read aloud and typed by a friend.
 const CODE_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

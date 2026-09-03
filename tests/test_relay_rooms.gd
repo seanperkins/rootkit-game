@@ -13,6 +13,7 @@ func _init() -> void:
 	refusals()
 	leaving_and_closing()
 	expiry_and_hygiene()
+	punch_candidate_exchange()
 	print("")
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
@@ -166,3 +167,63 @@ func expiry_and_hygiene() -> void:
 	r.connect_peer(13, 0)
 	var garbage := r.handle(13, CH, MODE, PackedByteArray([RelayFrame.RELAY_PEER, 1, 2]), 0)
 	_check("undecodable bytes drop the sender", _drops(garbage), [13])
+
+## Reflexive discovery: each member's punch socket registers its observed
+## public host:port by token, and once two members have one the relay hands
+## each the other's candidates so both ends can punch. The token, not a claimed
+## member id, ties a registration to a member.
+func punch_candidate_exchange() -> void:
+	var r := RelayRooms.new(9)
+	r.connect_peer(10, 0)
+	var made := r.handle(10, CH, MODE, _op({"op": "create", "protocol": SessionRules.RELAY_PROTOCOL,
+		"local_host": "192.168.1.5", "local_port": 50001}), 0)
+	var t1: String = _first_op(made).get("token", "")
+	var code: String = _first_op(made).get("code", "")
+	_check("create returns a punch token", t1.length() > 0, true)
+	r.connect_peer(11, 0)
+	var joined := r.handle(11, CH, MODE, _op({"op": "join", "code": code,
+		"protocol": SessionRules.RELAY_PROTOCOL, "local_host": "192.168.1.6", "local_port": 50002}), 0)
+	var t2: String = _first_op(joined).get("token", "")
+	_check("join returns a punch token", t2.length() > 0 and t2 != t1, true)
+
+	# One member's reflexive alone: nobody can punch yet.
+	var a := r.register_reflexive(t1, "1.2.3.4", 6001)
+	_check("one reflexive alone emits no punch", a.size(), 0)
+	# The second completes a pair: each member is handed the other's candidate.
+	var b := r.register_reflexive(t2, "5.6.7.8", 6002)
+	var to1 := _sends_to(b, 10)
+	var to2 := _sends_to(b, 11)
+	_check("member 1 gets a punch op", to1.size(), 1)
+	_check("member 2 gets a punch op", to2.size(), 1)
+	var p1: Dictionary = RelayFrame.decode_op(to1[0][4])
+	var p2: Dictionary = RelayFrame.decode_op(to2[0][4])
+	_check("member 1 is told member 2's reflexive",
+		[int(p1["peers"][0]), str(p1["peers"][1]), int(p1["peers"][2])], [2, "5.6.7.8", 6002])
+	_check("and member 2's LAN candidate",
+		[str(p1["peers"][3]), int(p1["peers"][4])], ["192.168.1.6", 50002])
+	_check("member 2 is told member 1's reflexive",
+		[int(p2["peers"][0]), str(p2["peers"][1]), int(p2["peers"][2])], [1, "1.2.3.4", 6001])
+
+	# Idempotent: re-registering the same reflexive does not re-send a settled pair.
+	var again := r.register_reflexive(t2, "5.6.7.8", 6002)
+	_check("a settled pair is not re-punched", again.size(), 0)
+	# A bad token is ignored.
+	_check("an unknown token registers nothing", r.register_reflexive("NOPE", "9.9.9.9", 1).size(), 0)
+	# A punched report is accepted and forwards nothing.
+	_check("a punched report is quiet", r.handle(10, CH, MODE, _op({"op": "punched", "member": 2}), 0).size(), 0)
+
+	# A malformed LAN candidate is dropped, not trusted as a route.
+	var r2 := RelayRooms.new(9)
+	r2.connect_peer(20, 0)
+	var m2 := r2.handle(20, CH, MODE, _op({"op": "create", "protocol": SessionRules.RELAY_PROTOCOL,
+		"local_host": "1.2.3.4; rm -rf /", "local_port": 999999}), 0)
+	var tk: String = _first_op(m2).get("token", "")
+	var cd: String = _first_op(m2).get("code", "")
+	r2.connect_peer(21, 0)
+	var j2 := r2.handle(21, CH, MODE, _op({"op": "join", "code": cd, "protocol": SessionRules.RELAY_PROTOCOL}), 0)
+	var tk2: String = _first_op(j2).get("token", "")
+	r2.register_reflexive(tk, "2.2.2.2", 7001)
+	var pb := r2.register_reflexive(tk2, "3.3.3.3", 7002)
+	var told: Dictionary = RelayFrame.decode_op(_sends_to(pb, 21)[0][4])
+	_check("a malformed LAN host is dropped", str(told["peers"][3]), "")
+	_check("and a malformed LAN port is dropped", int(told["peers"][4]), 0)

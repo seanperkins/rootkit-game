@@ -4,6 +4,12 @@ class_name RelayServer extends RefCounted
 ## relay file that touches ENet; every decision is RelayRooms' (pure, tested).
 
 var peer: ENetMultiplayerPeer = null
+## The punch reflexive-discovery endpoint: a peer's punch socket connects here
+## so the relay observes that socket's public host:port and hands it to the
+## other members. A SEPARATE socket from the game relay above; low-level
+## ENetConnection because that is what does simultaneous open on the client
+## side (see docs/superpowers/plans/2026-09-03-nat-punching.md).
+var discovery: ENetConnection = null
 var rooms := RelayRooms.new()
 var _last_report_ms := 0
 ## Peers to cut once a final op has had time to leave: [peer, at_ms].
@@ -18,12 +24,26 @@ func start(port: int) -> Error:
 		return err
 	peer.peer_connected.connect(_on_connected)
 	peer.peer_disconnected.connect(_on_disconnected)
+	discovery = ENetConnection.new()
+	var derr := discovery.create_host_bound("*", SessionRules.PUNCH_DISCOVERY_PORT,
+		SessionRules.RELAY_MAX_CONNECTIONS, RelayServer.PUNCH_CHANNELS)
+	if derr != OK:
+		push_warning("relay: punch discovery could not bind UDP %d (%s); punching off"
+			% [SessionRules.PUNCH_DISCOVERY_PORT, error_string(derr)])
+		discovery = null
+	else:
+		print("relay: punch discovery on UDP %d" % SessionRules.PUNCH_DISCOVERY_PORT)
 	return OK
+
+const PUNCH_CHANNELS := 2
 
 func stop() -> void:
 	if peer != null:
 		peer.close()
 	peer = null
+	if discovery != null:
+		discovery.destroy()
+	discovery = null
 
 func _on_connected(id: int) -> void:
 	# The same silence tolerance the game gives a peer, so a member that
@@ -47,6 +67,7 @@ func poll(now_ms: int) -> void:
 		var mode := peer.get_packet_mode()
 		var bytes := peer.get_packet()
 		_perform(rooms.handle(from, channel, mode, bytes, now_ms))
+	_poll_discovery()
 	_perform(rooms.expire(now_ms))
 	var i := 0
 	while i < _drop_later.size():
@@ -61,6 +82,35 @@ func poll(now_ms: int) -> void:
 	if now_ms - _last_report_ms >= 60000:
 		_last_report_ms = now_ms
 		print("relay: %s" % [rooms.stats()])
+
+## Service the discovery endpoint: every "discover" packet carries a punch
+## token and arrives FROM the peer's punch socket, so its source host:port is
+## exactly the reflexive mapping the other members must punch to. Registering
+## it may complete a pair, whose punch ops go over the GAME relay (peer), not
+## here — _perform handles those. The peer is also told its own mapping.
+func _poll_discovery() -> void:
+	if discovery == null:
+		return
+	while true:
+		var ev := discovery.service(0)
+		var type: int = ev[0]
+		if type == ENetConnection.EVENT_NONE:
+			break
+		if type != ENetConnection.EVENT_RECEIVE:
+			continue
+		var dpeer: ENetPacketPeer = ev[1]
+		var bytes: PackedByteArray = dpeer.get_packet()
+		if not RelayFrame.is_op(bytes):
+			continue
+		var op := RelayFrame.decode_op(bytes)
+		if str(op.get("op", "")) != "discover":
+			continue
+		var token := str(op.get("token", ""))
+		var host := dpeer.get_remote_address()
+		var port := dpeer.get_remote_port()
+		_perform(rooms.register_reflexive(token, host, port))
+		dpeer.send(0, RelayFrame.encode_op({"op": "reflexive", "host": host, "port": port}),
+			ENetPacketPeer.FLAG_RELIABLE)
 
 func _perform(actions: Array) -> void:
 	if peer == null:

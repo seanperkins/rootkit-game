@@ -59,10 +59,14 @@ func arms_and_decays() -> void:
 	var idx := _with(run, &"broadcast", &"interval", [&"sandbox"])
 	var mag: float = run.resolved[idx].ward_defense
 	var dur: float = run.resolved[idx].ward_duration
+	# The player sheet carries defense of its own now (PlayerStats.BASE), and
+	# _eff_defense is sheet PLUS the ward max — so the ward's contribution is
+	# what this measures, not the whole read.
+	var base: float = run._sheet[run.local_slot][&"defense"]
 
 	for tick in 120:
 		run._physics_process(DT)
-	_check("firing arms the ward", run._eff_defense(run.local_slot), mag)
+	_check("firing arms the ward", run._eff_defense(run.local_slot), base + mag)
 
 	# Stop it re-arming, then let the live timer run out. Zeroing the duration
 	# rather than the timer is what makes this a decay test rather than a
@@ -70,7 +74,7 @@ func arms_and_decays() -> void:
 	run.resolved[idx].ward_duration = 0.0
 	for tick in int((dur + 1.0) / DT):
 		run._physics_process(DT)
-	_check("an expired ward contributes nothing", run._eff_defense(run.local_slot), 0.0)
+	_check("an expired ward contributes nothing", run._eff_defense(run.local_slot), base)
 	run.queue_free()
 	await process_frame
 
@@ -92,9 +96,10 @@ func max_across_exploits() -> void:
 	var a := _with(run, &"broadcast", &"interval", [&"sandbox"])
 	_with(run, &"chain", &"interval", [&"sandbox"])
 	var mag: float = run.resolved[a].ward_defense
+	var base: float = run._sheet[run.local_slot][&"defense"]
 	for tick in 120:
 		run._physics_process(DT)
-	_check("two exploits take the max, not the sum", run._eff_defense(run.local_slot), mag)
+	_check("two exploits take the max, not the sum", run._eff_defense(run.local_slot), base + mag)
 	run.queue_free()
 	await process_frame
 

@@ -64,7 +64,7 @@ func hostile_inputs() -> void:
 
 func sheet_merge() -> void:
 	var s := PlayerStats.sheet({&"integrity": 80.0, &"armor": 6.0})
-	_check("sheet adds integrity", s[&"integrity"], 180.0)
+	_check("sheet adds integrity", s[&"integrity"], 208.0)
 	_check("sheet adds armor", s[&"armor"], 6.0)
 	_check("sheet keeps untouched base", s[&"clock_speed"], 220.0)
 	_check("sheet ignores unknown keys",

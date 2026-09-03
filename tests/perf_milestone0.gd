@@ -136,11 +136,33 @@ var _cap_ticks := 0.0
 ## 352.7, mean hits/tick 2.53, kills/tick 0.211, at cap 19%. The hit and
 ## kill bands widened to 25% at the same time (see the check below); the
 ## enemy band stays at 3%.
-const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout"
-const BASELINE_END_TICK := 24000
-const BASELINE_MEAN_ENEMIES := 352.7
-const BASELINE_MEAN_HITS := 2.53
-const BASELINE_KILLS_PER_TICK := 0.211
+##
+## Re-pinned 2026-09-02 with the first-subnet difficulty retune. Five levers
+## moved at once, all of them the game's balance rather than this gate's
+## workload: the four overlapping wave rows cut (peak concurrent solo spawn
+## rate 9.4 -> 6.6/s, 1690 -> 1288 spawns a subnet), `HP_ROWS` 1.40 -> 1.15,
+## `PlayerStats.BASE` integrity 100 -> 128 with defense 0 -> 15 and pickup
+## radius 30 -> 80, `MINIBOSS_TIMES` opened at 80 s instead of 60, and ICE
+## 700 -> 550 integrity. Measured on this tree: DIED at tick 21957 (366 s),
+## mean live enemies 304.1, mean hits/tick 1.65, kills/tick 0.241, at cap 5%.
+##
+## Every floor moves DOWN, with the reason the rule demands. The field is
+## thinner BY DESIGN — thinning it was the point, and a solo player met 9.4
+## spawns a second against a board that clears a handful. The outcome moves
+## from the 24000 cap to a death at 21957 for the opposite reason: the party
+## now clears subnet 01 fast enough to spend most of the run in subnet 02,
+## where `HP_PER_SUBNET` 1.55 compounds, so the fixture dies further into the
+## CAMPAIGN than it used to get. It is not a lighter game measured as a
+## faster one: p95 8.439 ms against the 9.833 ms scaled budget on the same
+## machine, and the stress block above is unchanged by any of this.
+##
+## A "died" pin carries the 90% survival slack (19761 ticks), which is the
+## allowance for exactly how chaotic a death tick is.
+const BASELINE_OUTCOME := "died"   # "won", "died" or "timeout"
+const BASELINE_END_TICK := 21957
+const BASELINE_MEAN_ENEMIES := 304.1
+const BASELINE_MEAN_HITS := 1.65
+const BASELINE_KILLS_PER_TICK := 0.241
 
 ## The autopilot's hysteresis band and nudge cadence — see _kite. Measured
 ## on the pre-pass tree: a 120/190 band died at tick 10182 and 150/190 at
