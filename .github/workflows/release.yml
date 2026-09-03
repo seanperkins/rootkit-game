@@ -1,13 +1,19 @@
 name: release
 
 # Windows and Linux builds for a version tag, attached to the GitHub Release
-# for that tag. The macOS build is signed and notarised locally by
-# tools/release_mac.sh; both sides create the release if it is missing and
-# upload with --clobber, so either can run first or again.
+# for that tag. The macOS build is signed, notarised and stapled on a hosted
+# runner when MACOS_CERT_P12 is configured (set it with
+# tools/configure_macos_ci.sh); tools/release_mac.sh remains the local
+# fallback. Both sides create the release if it is missing and upload with
+# --clobber, so either can run first or again.
+#
+# `workflow_dispatch` rehearses the signing/notarisation pipeline without
+# publishing: all Publish steps are guarded to tag runs.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -62,6 +68,7 @@ jobs:
           ls -la build/*.zip
 
       - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -70,3 +77,106 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --title "ROOTKIT $TAG" --generate-notes
           gh release upload "$TAG" "build/ROOTKIT-$TAG-windows.zip" "build/ROOTKIT-$TAG-linux.zip" --clobber
+
+  macos:
+    # The same export/sign/notarise/staple path tools/release_mac.sh runs
+    # locally, on a hosted runner. Self-skips until the secrets are set
+    # (tools/configure_macos_ci.sh); local release_mac.sh stays the fallback.
+    if: ${{ secrets.MACOS_CERT_P12 != '' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and its export templates
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -sSL -o /tmp/godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          sudo mv /tmp/godot/Godot.app /Applications/Godot.app
+          echo "/Applications/Godot.app/Contents/MacOS" >> "$GITHUB_PATH"
+          curl -sSL -o /tmp/templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q /tmp/templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable/"
+          godot --version
+
+      - name: Stamp the version from the tag
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i '' "s|^config/version=.*|config/version=\"$VERSION\"|" project.godot
+          grep '^config/version=' project.godot
+          # The export preset pins an old SDK name newer runner Xcodes no
+          # longer ship; snap it to whatever this host has.
+          SDK=$(xcodebuild -showsdks | grep -o 'macosx[0-9.]*' | head -1)
+          sed -i '' "s|^xcode/sdk_name=.*|xcode/sdk_name=\"$SDK\"|" export_presets.cfg
+          echo "sdk_name=$SDK"
+
+      - name: Import the signing identity
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASS: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # BSD base64 on macOS has no --decode; python3 is on every runner.
+          printf '%s' "$CERT_B64" | python3 -c \
+            "import base64,sys;sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" \
+            > /tmp/macos-signing.p12
+          KC="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PW=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PW" "$KC"
+          security default-keychain -s "$KC"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KC"
+          security import /tmp/macos-signing.p12 -k "$KC" -P "$CERT_PASS" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PW" "$KC"
+
+      - name: Export
+        run: |
+          set -euo pipefail
+          mkdir -p build/macos
+          godot --headless --import || true
+          godot --headless --export-release macos build/macos/ROOTKIT.app
+          [ -d build/macos/ROOTKIT.app ] || { echo "export produced no app" >&2; exit 1; }
+
+      - name: Sign
+        env:
+          CERT_IDENTITY: ${{ secrets.MACOS_IDENTITY }}
+        run: |
+          set -euo pipefail
+          ID="${CERT_IDENTITY:-Developer ID Application: Sean Perkins (HH3SJBAS42)}"
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements tools/macos.entitlements \
+            --sign "$ID" build/macos/ROOTKIT.app
+          codesign --verify --deep --strict build/macos/ROOTKIT.app
+          echo "signed as: $(codesign -dv --verbose=2 build/macos/ROOTKIT.app 2>&1 | grep Authority)"
+
+      - name: Notarise and staple
+        env:
+          APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+          APPLE_ID_PW: ${{ secrets.MACOS_APPLE_ID_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent build/macos/ROOTKIT.app "$RUNNER_TEMP/notary.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notary.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_ID_PW" \
+            --team-id "$TEAM_ID" --wait
+          xcrun stapler staple build/macos/ROOTKIT.app
+          xcrun stapler validate build/macos/ROOTKIT.app
+          spctl --assess --type execute -v build/macos/ROOTKIT.app
+
+      - name: Package and publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/macos/ROOTKIT.app "build/ROOTKIT-$TAG-macos.zip"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "ROOTKIT $TAG" --generate-notes
+          gh release upload "$TAG" "build/ROOTKIT-$TAG-macos.zip" --clobber
