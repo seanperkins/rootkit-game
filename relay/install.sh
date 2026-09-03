@@ -5,6 +5,8 @@
 set -euo pipefail
 GODOT_VERSION="4.7"
 DEST=/opt/rootkit-relay
+RELAY_PORT=43211
+PUNCH_PORT=43212
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
 apt-get update -qq >/dev/null && apt-get install -y -qq unzip curl ufw rsync >/dev/null
@@ -50,7 +52,8 @@ install -m 644 "$SRC/relay/rootkit-relay.service" /etc/systemd/system/rootkit-re
 systemctl daemon-reload
 systemctl enable rootkit-relay >/dev/null
 systemctl restart rootkit-relay
-ufw allow 43211/udp >/dev/null
+ufw allow "$RELAY_PORT/udp" >/dev/null
+ufw allow "$PUNCH_PORT/udp" >/dev/null
 ufw allow OpenSSH >/dev/null
 ufw --force enable >/dev/null
 sleep 2

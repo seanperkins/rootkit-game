@@ -7,11 +7,14 @@ var _server := RelayServer.new()
 
 func _initialize() -> void:
 	var port := SessionRules.RELAY_PORT
+	var punch_port := SessionRules.PUNCH_DISCOVERY_PORT
 	var args := OS.get_cmdline_user_args()
 	for i in args.size():
 		if args[i] == "--port" and i + 1 < args.size():
 			port = int(args[i + 1])
-	var err := _server.start(port)
+		elif args[i] == "--punch-port" and i + 1 < args.size():
+			punch_port = int(args[i + 1])
+	var err := _server.start(port, punch_port)
 	if err != OK:
 		push_error("relay: could not bind UDP %d (%s)" % [port, error_string(err)])
 		quit(1)

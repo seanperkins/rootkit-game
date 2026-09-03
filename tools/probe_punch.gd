@@ -1,0 +1,311 @@
+extends SceneTree
+## Probe NAT hole punching against the live relay: host + two joiners, the
+## star this feature builds (host <-> each client; never client-client).
+## Real UDP, the live relay, real ENet, real Transport — no mocks. Not a
+## suite; a manual check after a relay deploy, the same shape as
+## tools/probe_relay.gd.
+##
+## All-in-one process (default — every ring is visible from one script, the
+## most thorough single-run check):
+##   godot --headless -s res://tools/probe_punch.gd [-- --address IP]
+##
+## Three separate OS processes — the case punching actually exists for:
+## loopback has no NAT to traverse, so only a cross-machine run proves
+## anything beyond the wiring. The room code is exchanged by hand, exactly
+## like real players would read it aloud:
+##   godot --headless -s res://tools/probe_punch.gd -- --role host [--address IP]
+##     -> prints the room code
+##   godot --headless -s res://tools/probe_punch.gd -- --role client --slot 1 --code XXXXXX [--address IP]
+##   godot --headless -s res://tools/probe_punch.gd -- --role client --slot 2 --code XXXXXX [--address IP]
+## Each standalone process proves only ITS OWN half of the star: its direct
+## link(s) come up, a record crosses, the link to member 2 is forced down
+## with disconnect_direct, and a record still crosses it — now over the
+## relay fallback — while the other link (member 3) stays direct throughout.
+## Every wait below is bounded; the process exits 1 on the first phase that
+## does not hold within its bound, 0 once every phase this role can observe
+## has passed.
+
+const ROOM_WAIT_MS := 6000
+const JOIN_WAIT_MS := 10000
+const PUNCH_WAIT_MS := 8000
+const RECORD_WAIT_MS := 3000
+const FALLBACK_WAIT_MS := 4000
+const SETTLE_WAIT_MS := 500
+## The one link this probe deliberately forces down, per the acceptance
+## shape (host <-> each client proven direct; exactly one link torn down
+## and proven to fall back). The other client member (3) stays direct
+## throughout, proving path selection is per-destination.
+const TARGET_MEMBER := 2
+
+var ADDR := SessionRules.RELAY_ADDRESS
+var relay_port := SessionRules.RELAY_PORT
+var punch_port := SessionRules.PUNCH_DISCOVERY_PORT
+var role := "all"
+var arg_code := ""
+var arg_slot := 0
+var ok := true
+
+# Signal-handler state (class-level so lambdas mutate it in place, never a
+# captured-and-reassigned local).
+var code := ""
+var host_members := []
+var saw1 := []
+var saw2 := []
+
+func _desc() -> Dictionary:
+	var rows := []
+	for s in 3:
+		rows.append({"slot": s, "name": "p%d" % s, "counters": SaveGame.session_counters()})
+	return NetworkSession.validate_descriptor({"protocol": SessionRules.PROTOCOL,
+		"session_id": 93, "seed": 1, "delay": 2, "choice_timeout": 0, "roster": rows})
+
+## Host slot 0, two clients slots 1 and 2, slot 3 unused.
+func _ring() -> Lockstep:
+	var ls := Lockstep.new(SessionRules.MAX_PLAYERS, 2)
+	ls.mark_absent(3)
+	ls.prime(0, 1)
+	return ls
+
+func _has(ls: Lockstep, slot: int, tick: int) -> bool:
+	var cell: int = tick & (Lockstep.RING - 1)
+	return ls._tick_tag[cell] == tick and (ls._have[cell] & (1 << slot)) != 0
+
+## Pump every listed transport until `cond` is true or `timeout_ms` elapses;
+## always polls at least once more before the final check, so a packet that
+## arrived in the last few ms of the window still counts.
+func _wait(timeout_ms: int, transports: Array, cond: Callable) -> bool:
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < timeout_ms:
+		for t in transports:
+			if t != null:
+				t.poll()
+		if cond.call():
+			return true
+		OS.delay_msec(5)
+	for t in transports:
+		if t != null:
+			t.poll()
+	return cond.call()
+
+func _fail(msg: String) -> void:
+	ok = false
+	print("FAIL: ", msg)
+
+# ------------------------------------------------------------- all-in-one --
+
+func _run_all() -> void:
+	var hs := NetworkSession.create(_desc(), 0, NetworkSession.Role.HOST); hs.lockstep = _ring()
+	var host_t := Transport.new(); root.add_child(host_t)
+	host_t.room_ready.connect(func(c): code = c)
+	host_t.peer_joined.connect(func(id): host_members.append(id); host_t.bind_peer(id, id - 1))
+	print("host_relayed: ", error_string(host_t.host_relayed(hs, ADDR, relay_port, punch_port)))
+	if not _wait(ROOM_WAIT_MS, [host_t], func(): return code != ""):
+		_fail("no room code (relay error '%s')" % host_t.relay_error)
+		host_t.close(); return
+	print("room code: ", code)
+
+	var c1s := NetworkSession.create(_desc(), 1, NetworkSession.Role.CLIENT); c1s.lockstep = _ring()
+	var client1_t := Transport.new(); root.add_child(client1_t)
+	client1_t.peer_joined.connect(func(id): saw1.append(id); client1_t.bind_peer(Transport.HOST_PEER, 0))
+	print("client1 join_relayed: ", error_string(client1_t.join_relayed(code, c1s, ADDR, relay_port, punch_port)))
+
+	var c2s := NetworkSession.create(_desc(), 2, NetworkSession.Role.CLIENT); c2s.lockstep = _ring()
+	var client2_t := Transport.new(); root.add_child(client2_t)
+	client2_t.peer_joined.connect(func(id): saw2.append(id); client2_t.bind_peer(Transport.HOST_PEER, 0))
+	print("client2 join_relayed: ", error_string(client2_t.join_relayed(code, c2s, ADDR, relay_port, punch_port)))
+
+	var all_t := [host_t, client1_t, client2_t]
+	if not _wait(JOIN_WAIT_MS, all_t, func(): return host_members.size() >= 2 and not saw1.is_empty() and not saw2.is_empty()):
+		_fail("join incomplete: host saw %s, client1 saw %s, client2 saw %s" % [host_members, saw1, saw2])
+		host_t.close(); client1_t.close(); client2_t.close(); return
+	print("host saw %s, client1 saw %s, client2 saw %s" % [host_members, saw1, saw2])
+	if not (host_members.has(2) and host_members.has(3)):
+		_fail("expected members 2 and 3, host saw %s" % [host_members])
+		host_t.close(); client1_t.close(); client2_t.close(); return
+
+	# Which client transport landed which member id is the relay's call, not
+	# join order.
+	var target_t: Transport = client1_t if client1_t.member == TARGET_MEMBER else client2_t
+	var other_t: Transport = client2_t if target_t == client1_t else client1_t
+	var target_ls: Lockstep = c1s.lockstep if target_t == client1_t else c2s.lockstep
+	var other_ls: Lockstep = c2s.lockstep if target_t == client1_t else c1s.lockstep
+	var other_member := 5 - TARGET_MEMBER   # the only other member id in {2, 3}
+	var target_slot := TARGET_MEMBER - 1
+	var other_slot := other_member - 1
+
+	if not _wait(PUNCH_WAIT_MS, all_t, func(): return host_t.direct_to(TARGET_MEMBER) and host_t.direct_to(other_member) and target_t.direct_to(Transport.HOST_PEER) and other_t.direct_to(Transport.HOST_PEER)):
+		_fail("direct link missing: host->m%d=%s host->m%d=%s target->host=%s other->host=%s" % [
+			TARGET_MEMBER, host_t.direct_to(TARGET_MEMBER), other_member, host_t.direct_to(other_member),
+			target_t.direct_to(Transport.HOST_PEER), other_t.direct_to(Transport.HOST_PEER)])
+		host_t.close(); client1_t.close(); client2_t.close(); return
+	print("PASS: host<->member%d and host<->member%d both direct" % [TARGET_MEMBER, other_member])
+
+	target_t.send_input(2, Vector2(0.2, 0.0), -1, -1, -1)
+	other_t.send_input(2, Vector2(0.3, 0.0), -1, -1, -1)
+	host_t.send_input(2, Vector2(-0.2, 0.0), -1, -1, -1); host_t.flush_relay(2)
+	if not _wait(RECORD_WAIT_MS, all_t, func(): return _has(hs.lockstep, target_slot, 2) and _has(hs.lockstep, other_slot, 2) and _has(target_ls, 0, 2) and _has(other_ls, 0, 2)):
+		_fail("tick-2 records missing: host[t]=%s host[o]=%s target[host]=%s other[host]=%s" % [
+			_has(hs.lockstep, target_slot, 2), _has(hs.lockstep, other_slot, 2),
+			_has(target_ls, 0, 2), _has(other_ls, 0, 2)])
+		host_t.close(); client1_t.close(); client2_t.close(); return
+	print("PASS: records crossed both links at tick 2")
+
+	host_t.disconnect_direct(TARGET_MEMBER)
+	target_t.disconnect_direct(Transport.HOST_PEER)
+	_wait(SETTLE_WAIT_MS, all_t, func(): return false)
+
+	target_t.send_input(4, Vector2(0.4, 0.0), -1, -1, -1)
+	other_t.send_input(4, Vector2(0.5, 0.0), -1, -1, -1)
+	host_t.send_input(4, Vector2(-0.4, 0.0), -1, -1, -1); host_t.flush_relay(4)
+	if not _wait(FALLBACK_WAIT_MS, all_t, func(): return _has(hs.lockstep, target_slot, 4) and _has(hs.lockstep, other_slot, 4) and _has(target_ls, 0, 4) and _has(other_ls, 0, 4)):
+		_fail("post-disconnect_direct tick-4 records missing: host[t]=%s host[o]=%s target[host]=%s other[host]=%s" % [
+			_has(hs.lockstep, target_slot, 4), _has(hs.lockstep, other_slot, 4),
+			_has(target_ls, 0, 4), _has(other_ls, 0, 4)])
+		host_t.close(); client1_t.close(); client2_t.close(); return
+	print("PASS: records still crossed both links at tick 4")
+
+	if host_t.direct_to(TARGET_MEMBER) or target_t.direct_to(Transport.HOST_PEER):
+		_fail("member%d's link still reports direct after disconnect_direct" % TARGET_MEMBER)
+	else:
+		print("PASS: host<->member%d fell back to the relay and still delivered" % TARGET_MEMBER)
+	if not (host_t.direct_to(other_member) and other_t.direct_to(Transport.HOST_PEER)):
+		_fail("member%d's link fell back too — only member %d's should have" % [other_member, TARGET_MEMBER])
+	else:
+		print("PASS: host<->member%d stayed direct, untouched" % other_member)
+
+	host_t.close(); client1_t.close(); client2_t.close()
+
+# ------------------------------------------------------------------- host --
+
+func _run_host() -> void:
+	var hs := NetworkSession.create(_desc(), 0, NetworkSession.Role.HOST); hs.lockstep = _ring()
+	var host_t := Transport.new(); root.add_child(host_t)
+	host_t.room_ready.connect(func(c): code = c)
+	host_t.peer_joined.connect(func(id): host_members.append(id); host_t.bind_peer(id, id - 1))
+	print("host_relayed: ", error_string(host_t.host_relayed(hs, ADDR, relay_port, punch_port)))
+	if not _wait(ROOM_WAIT_MS, [host_t], func(): return code != ""):
+		_fail("no room code (relay error '%s')" % host_t.relay_error)
+		host_t.close(); return
+	print("room code: %s — pass this to the two `--role client` processes" % code)
+	if not _wait(JOIN_WAIT_MS, [host_t], func(): return host_members.size() >= 2):
+		_fail("only %d of 2 clients joined" % host_members.size())
+		host_t.close(); return
+	print("host saw members %s" % [host_members])
+	var other_member := 5 - TARGET_MEMBER
+	if not (host_members.has(TARGET_MEMBER) and host_members.has(other_member)):
+		_fail("expected members 2 and 3, saw %s" % [host_members])
+		host_t.close(); return
+
+	if not _wait(PUNCH_WAIT_MS, [host_t], func(): return host_t.direct_to(TARGET_MEMBER) and host_t.direct_to(other_member)):
+		_fail("direct link missing: member%d=%s member%d=%s" % [
+			TARGET_MEMBER, host_t.direct_to(TARGET_MEMBER), other_member, host_t.direct_to(other_member)])
+		host_t.close(); return
+	print("PASS: host<->member%d and host<->member%d both direct" % [TARGET_MEMBER, other_member])
+
+	host_t.send_input(2, Vector2(-0.2, 0.0), -1, -1, -1); host_t.flush_relay(2)
+	var target_slot := TARGET_MEMBER - 1
+	var other_slot := other_member - 1
+	if not _wait(RECORD_WAIT_MS, [host_t], func(): return _has(hs.lockstep, target_slot, 2) and _has(hs.lockstep, other_slot, 2)):
+		_fail("tick-2 records missing from the clients: m%d=%s m%d=%s" % [
+			TARGET_MEMBER, _has(hs.lockstep, target_slot, 2), other_member, _has(hs.lockstep, other_slot, 2)])
+		host_t.close(); return
+	print("PASS: records from both clients crossed at tick 2")
+
+	host_t.disconnect_direct(TARGET_MEMBER)
+	_wait(SETTLE_WAIT_MS, [host_t], func(): return false)
+	host_t.send_input(4, Vector2(-0.4, 0.0), -1, -1, -1); host_t.flush_relay(4)
+	if not _wait(FALLBACK_WAIT_MS, [host_t], func(): return _has(hs.lockstep, target_slot, 4) and _has(hs.lockstep, other_slot, 4)):
+		_fail("post-disconnect_direct tick-4 records missing: m%d=%s m%d=%s" % [
+			TARGET_MEMBER, _has(hs.lockstep, target_slot, 4), other_member, _has(hs.lockstep, other_slot, 4)])
+		host_t.close(); return
+	print("PASS: records still crossed both links at tick 4")
+
+	if host_t.direct_to(TARGET_MEMBER):
+		_fail("host<->member%d still reports direct after disconnect_direct" % TARGET_MEMBER)
+	else:
+		print("PASS: host<->member%d fell back to the relay and still delivered" % TARGET_MEMBER)
+	if not host_t.direct_to(other_member):
+		_fail("host<->member%d fell back too — only member %d's link should have" % [other_member, TARGET_MEMBER])
+	else:
+		print("PASS: host<->member%d stayed direct, untouched" % other_member)
+	host_t.close()
+
+# ----------------------------------------------------------------- client --
+
+func _run_client() -> void:
+	if arg_code == "":
+		_fail("client role requires -- --code XXXXXX (the host's room code)")
+		return
+	var slot := arg_slot if arg_slot > 0 else 1
+	var cs := NetworkSession.create(_desc(), slot, NetworkSession.Role.CLIENT); cs.lockstep = _ring()
+	var client_t := Transport.new(); root.add_child(client_t)
+	client_t.peer_joined.connect(func(id): saw1.append(id); client_t.bind_peer(Transport.HOST_PEER, 0))
+	print("join_relayed: ", error_string(client_t.join_relayed(arg_code, cs, ADDR, relay_port, punch_port)))
+	if not _wait(JOIN_WAIT_MS, [client_t], func(): return not saw1.is_empty()):
+		_fail("never saw the host (relay error '%s')" % client_t.relay_error)
+		client_t.close(); return
+	if not _wait(PUNCH_WAIT_MS, [client_t], func(): return client_t.direct_to(Transport.HOST_PEER)):
+		_fail("direct link to the host never came up")
+		client_t.close(); return
+	print("PASS: member%d<->host direct (this process is member %d)" % [client_t.member, client_t.member])
+
+	client_t.send_input(2, Vector2(0.2, 0.0), -1, -1, -1)
+	if not _wait(RECORD_WAIT_MS, [client_t], func(): return _has(cs.lockstep, 0, 2)):
+		_fail("no record from the host at tick 2")
+		client_t.close(); return
+	print("PASS: record from the host crossed at tick 2")
+
+	var is_target := client_t.member == TARGET_MEMBER
+	if is_target:
+		client_t.disconnect_direct(Transport.HOST_PEER)
+		_wait(SETTLE_WAIT_MS, [client_t], func(): return false)
+		print("member%d forced its direct link down" % client_t.member)
+
+	client_t.send_input(4, Vector2(-0.2, 0.0), -1, -1, -1)
+	if not _wait(FALLBACK_WAIT_MS, [client_t], func(): return _has(cs.lockstep, 0, 4)):
+		_fail("no record from the host at tick 4 (%s)" %
+			("after disconnect_direct" if is_target else "on the untouched link"))
+		client_t.close(); return
+
+	if is_target:
+		if client_t.direct_to(Transport.HOST_PEER):
+			_fail("member%d still reports direct after disconnect_direct" % client_t.member)
+		else:
+			print("PASS: member%d fell back to the relay and still delivered" % client_t.member)
+	else:
+		if not client_t.direct_to(Transport.HOST_PEER):
+			_fail("member%d fell back too — only member %d's link should have" % [client_t.member, TARGET_MEMBER])
+		else:
+			print("PASS: member%d stayed direct, untouched" % client_t.member)
+	client_t.close()
+
+# --------------------------------------------------------------- dispatch --
+
+func _initialize() -> void:
+	var args := OS.get_cmdline_user_args()
+	for i in args.size():
+		match args[i]:
+			"--address":
+				if i + 1 < args.size(): ADDR = args[i + 1]
+			"--relay-port":
+				if i + 1 < args.size(): relay_port = int(args[i + 1])
+			"--punch-port":
+				if i + 1 < args.size(): punch_port = int(args[i + 1])
+			"--role":
+				if i + 1 < args.size(): role = args[i + 1]
+			"--code":
+				if i + 1 < args.size(): arg_code = args[i + 1]
+			"--slot":
+				if i + 1 < args.size(): arg_slot = int(args[i + 1])
+	if ADDR == "":
+		print("no relay address: set SessionRules.RELAY_ADDRESS or pass -- --address IP")
+		quit(1); return
+	SaveGame.use_fresh_state()
+	match role:
+		"host": _run_host()
+		"client": _run_client()
+		"all": _run_all()
+		_:
+			print("unknown --role '%s' (want host, client or all)" % role)
+			quit(1); return
+	quit(0 if ok else 1)

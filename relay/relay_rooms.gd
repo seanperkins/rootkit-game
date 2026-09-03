@@ -26,6 +26,7 @@ var member_of_peer: Dictionary = {} # peer -> member id
 var _connected: Dictionary = {}     # peer -> true
 var token_peer: Dictionary = {}     # punch token -> relay peer id (reflexive discovery)
 var _rng := RandomNumberGenerator.new()
+var _crypto := Crypto.new()
 var forwarded := 0
 var refused := 0
 
@@ -56,8 +57,7 @@ func disconnect_peer(peer: int) -> Array:
 		if int(token_peer[tok]) == peer:
 			token_peer.erase(tok)
 	if rooms.has(code):
-		var _r: Dictionary = rooms[code]
-		if _r.has("cands"): (_r["cands"] as Dictionary).erase(member)
+		_clear_punch_state(rooms[code], member)
 	if not rooms.has(code):
 		return actions
 	var room: Dictionary = rooms[code]
@@ -145,10 +145,10 @@ func _op(peer: int, op: Dictionary, now_ms: int) -> Array:
 				return _refuse(peer, BAD)
 			var code := _fresh_code()
 			rooms[code] = {"host": peer, "members": {1: peer}, "created_ms": now_ms,
-				"last_ms": now_ms, "tokens": {}, "cands": {}, "punch_sent": {}}
+				"last_ms": now_ms, "tokens": {}, "cands": {}, "keys": {}}
 			room_of_peer[peer] = code
 			member_of_peer[peer] = 1
-			var tok := _mint_token(code, 1, peer, op)
+			var tok := _mint_token(code, 1, peer)
 			print("relay: room %s opened by peer %d" % [code, peer])
 			return [["send", peer, 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
 				RelayFrame.encode_op({"op": "room", "code": code, "member": 1,
@@ -172,7 +172,7 @@ func _op(peer: int, op: Dictionary, now_ms: int) -> Array:
 			room_of_peer[peer] = code
 			member_of_peer[peer] = id
 			room["last_ms"] = now_ms
-			var tok := _mint_token(code, id, peer, op)
+			var tok := _mint_token(code, id, peer)
 			var ids := members.keys()
 			ids.sort()
 			return [["send", peer, 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
@@ -199,19 +199,14 @@ func _op(peer: int, op: Dictionary, now_ms: int) -> Array:
 
 ## A per-member punch token, unguessable, that the member's punch socket
 ## presents to the discovery endpoint so its reflexive mapping can be tied to
-## the right member without trusting a claimed member id. The optional LAN
-## candidate the member self-reports rides in `create`/`join` and is stored now.
-func _mint_token(code: String, member: int, peer: int, op: Dictionary) -> String:
-	var tok := ""
-	for _i in 16:
-		tok += SessionRules.CODE_ALPHABET[_rng.randi_range(0, SessionRules.CODE_ALPHABET.length() - 1)]
+## the right member without trusting a claimed member id. Candidates are no
+## longer seeded here: each direct socket is dedicated to one target and
+## self-reports its LAN address in the discovery datagram, not in `create`/`join`.
+func _mint_token(code: String, member: int, peer: int) -> String:
+	var tok := _mint_secret()
 	var room: Dictionary = rooms[code]
 	(room["tokens"] as Dictionary)[tok] = member
 	token_peer[tok] = peer
-	var cand := {"host": "", "port": 0,
-		"local_host": _clean_host(str(op.get("local_host", ""))),
-		"local_port": _clean_port(op.get("local_port", 0))}
-	(room["cands"] as Dictionary)[member] = cand
 	return tok
 
 func _clean_host(h: String) -> String:
@@ -226,11 +221,18 @@ func _clean_port(p) -> int:
 	var n := int(p)
 	return n if n > 0 and n <= 65535 else 0
 
-## The discovery endpoint observed a punch socket's public host:port and read
-## its token. Tie it to the member, and once two or more members have a
-## reflexive mapping, hand each member the others' candidates so both ends can
-## punch. Returns the actions (punch ops on the members' relay connections).
-func register_reflexive(token: String, host: String, port: int) -> Array:
+## A direct socket registered its reflexive host:port (observed by the
+## discovery endpoint) and self-reported local host:port, for the leg it
+## dials toward `target`. Star topology only: one of (member, target) must be
+## the host (member 1) and the other an existing client member — anything else
+## (an unknown token, an absent target, a client naming another client, self)
+## is ignored quietly. Candidates are stored by the DIRECTED (member, target)
+## pair; once both directions of a host↔client leg are known, a shared
+## per-pair handshake secret is minted and a `punch` op naming the other side
+## goes to both members over the existing relay link. Re-registering after a
+## pair has settled is a no-op — idempotent, no duplicate `punch`.
+func register_reflexive(token: String, target: int, host: String, port: int,
+		local_host: String = "", local_port: int = 0) -> Array:
 	if not token_peer.has(token):
 		return []
 	var peer := int(token_peer[token])
@@ -241,46 +243,68 @@ func register_reflexive(token: String, host: String, port: int) -> Array:
 		return []
 	var room: Dictionary = rooms[code]
 	var member := int((room["tokens"] as Dictionary).get(token, -1))
-	if member < 0:
-		return []
-	var cands: Dictionary = room["cands"]
-	if not cands.has(member):
-		cands[member] = {"host": "", "port": 0, "local_host": "", "local_port": 0}
-	cands[member]["host"] = _clean_host(host)
-	cands[member]["port"] = _clean_port(port)
-	return _emit_punch(code)
-
-## For every member with a known reflexive mapping, send it the candidates of
-## every OTHER such member. Idempotent: a member is not re-sent a pairing it
-## already has (tracked in room.punch_sent) so a late joiner does not re-punch
-## settled pairs.
-func _emit_punch(code: String) -> Array:
-	var room: Dictionary = rooms[code]
 	var members: Dictionary = room["members"]
+	if member < 0 or not members.has(member):
+		return []
+	var client_id := -1
+	if member == 1:
+		if target == 1 or not members.has(target):
+			return []
+		client_id = target
+	elif target == 1:
+		client_id = member
+	else:
+		return []   # no client-client candidates
+	var keys: Dictionary = room["keys"]
+	if keys.has(client_id):
+		return []   # settled: idempotent re-registration
 	var cands: Dictionary = room["cands"]
-	var sent: Dictionary = room["punch_sent"]
-	var ready := []
-	for m in members.keys():
-		if cands.has(m) and str(cands[m]["host"]) != "":
-			ready.append(int(m))
-	var actions := []
-	for m in ready:
-		# FLAT array, groups of 5: [member, host, port, local_host, local_port, ...].
-		# The op codec carries only flat primitives, never nested arrays.
-		var flat := []
-		for n in ready:
-			if n == m:
-				continue
-			var key := "%d-%d" % [m, n]
-			if sent.has(key):
-				continue
-			var c: Dictionary = cands[n]
-			flat.append_array([n, str(c["host"]), int(c["port"]), str(c["local_host"]), int(c["local_port"])])
-			sent[key] = true
-		if not flat.is_empty():
-			actions.append(["send", int(members[m]), 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
-				RelayFrame.encode_op({"op": "punch", "peers": flat})])
-	return actions
+	cands["%d>%d" % [member, target]] = {
+		"host": _clean_host(host), "port": _clean_port(port),
+		"local_host": _clean_host(local_host), "local_port": _clean_port(local_port),
+	}
+	if not cands.has("%d>%d" % [target, member]):
+		return []   # only one direction of this leg so far
+	var key := _mint_key()
+	keys[client_id] = key
+	var host_cand: Dictionary = cands["%d>%d" % [1, client_id]]
+	var client_cand: Dictionary = cands["%d>%d" % [client_id, 1]]
+	return [
+		["send", int(members[1]), 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
+			RelayFrame.encode_op({"op": "punch", "member": client_id,
+				"host": str(client_cand["host"]), "port": int(client_cand["port"]),
+				"local_host": str(client_cand["local_host"]), "local_port": int(client_cand["local_port"]),
+				"key": key})],
+		["send", int(members[client_id]), 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
+			RelayFrame.encode_op({"op": "punch", "member": 1,
+				"host": str(host_cand["host"]), "port": int(host_cand["port"]),
+				"local_host": str(host_cand["local_host"]), "local_port": int(host_cand["local_port"]),
+				"key": key})],
+	]
+
+func _mint_key() -> String:
+	return _mint_secret()
+
+## Authentication material must not share the observable, seedable room-code
+## RNG. Sixteen CSPRNG bytes encoded as hex give each token 128 bits without
+## alphabet modulo bias.
+func _mint_secret() -> String:
+	return _crypto.generate_random_bytes(16).hex_encode()
+
+## Drop every directed candidate and settled pairing that involves `member`,
+## so a member id freed by disconnect and reused by a later joiner starts
+## clean and can punch anew rather than inheriting a stale settled pair.
+func _clear_punch_state(room: Dictionary, member: int) -> void:
+	var cands: Dictionary = room["cands"]
+	for k in cands.keys().duplicate():
+		var parts: PackedStringArray = (k as String).split(">")
+		if int(parts[0]) == member or int(parts[1]) == member:
+			cands.erase(k)
+	var keys: Dictionary = room["keys"]
+	if member == 1:
+		keys.clear()
+	else:
+		keys.erase(member)
 
 func _refuse(peer: int, reason: String) -> Array:
 	refused += 1

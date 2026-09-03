@@ -4,19 +4,21 @@ class_name RelayServer extends RefCounted
 ## relay file that touches ENet; every decision is RelayRooms' (pure, tested).
 
 var peer: ENetMultiplayerPeer = null
-## The punch reflexive-discovery endpoint: a peer's punch socket connects here
-## so the relay observes that socket's public host:port and hands it to the
-## other members. A SEPARATE socket from the game relay above; low-level
-## ENetConnection because that is what does simultaneous open on the client
-## side (see docs/superpowers/plans/2026-09-03-nat-punching.md).
-var discovery: ENetConnection = null
+## The punch reflexive-discovery endpoint: a direct socket sends ONE-WAY raw
+## UDP `discover` datagrams here so the relay observes that socket's public
+## host:port and hands it to the paired member. PacketPeerUDP, not an
+## ENetConnection: each direct socket permits exactly one outgoing ENet
+## connect (its handshake to the OTHER member), so discovery cannot ride an
+## ENetConnection of its own on that socket's port — it is a plain datagram,
+## and the relay never replies over it.
+var discovery: PacketPeerUDP = null
 var rooms := RelayRooms.new()
 var _last_report_ms := 0
 ## Peers to cut once a final op has had time to leave: [peer, at_ms].
 var _drop_later: Array = []
 const DROP_GRACE_MS := 250
 
-func start(port: int) -> Error:
+func start(port: int, punch_port: int = SessionRules.PUNCH_DISCOVERY_PORT) -> Error:
 	peer = ENetMultiplayerPeer.new()
 	var err := peer.create_server(port, SessionRules.RELAY_MAX_CONNECTIONS, 2)
 	if err != OK:
@@ -24,25 +26,22 @@ func start(port: int) -> Error:
 		return err
 	peer.peer_connected.connect(_on_connected)
 	peer.peer_disconnected.connect(_on_disconnected)
-	discovery = ENetConnection.new()
-	var derr := discovery.create_host_bound("*", SessionRules.PUNCH_DISCOVERY_PORT,
-		SessionRules.RELAY_MAX_CONNECTIONS, RelayServer.PUNCH_CHANNELS)
+	discovery = PacketPeerUDP.new()
+	var derr := discovery.bind(punch_port)
 	if derr != OK:
 		push_warning("relay: punch discovery could not bind UDP %d (%s); punching off"
-			% [SessionRules.PUNCH_DISCOVERY_PORT, error_string(derr)])
+			% [punch_port, error_string(derr)])
 		discovery = null
 	else:
-		print("relay: punch discovery on UDP %d" % SessionRules.PUNCH_DISCOVERY_PORT)
+		print("relay: punch discovery on UDP %d" % punch_port)
 	return OK
-
-const PUNCH_CHANNELS := 2
 
 func stop() -> void:
 	if peer != null:
 		peer.close()
 	peer = null
 	if discovery != null:
-		discovery.destroy()
+		discovery.close()
 	discovery = null
 
 func _on_connected(id: int) -> void:
@@ -83,34 +82,29 @@ func poll(now_ms: int) -> void:
 		_last_report_ms = now_ms
 		print("relay: %s" % [rooms.stats()])
 
-## Service the discovery endpoint: every "discover" packet carries a punch
-## token and arrives FROM the peer's punch socket, so its source host:port is
-## exactly the reflexive mapping the other members must punch to. Registering
-## it may complete a pair, whose punch ops go over the GAME relay (peer), not
-## here — _perform handles those. The peer is also told its own mapping.
+## Service the discovery endpoint: a "discover" datagram is ONE-WAY, sent by a
+## direct socket dedicated to one target member, so its source host:port
+## (observed here, not self-reported) is exactly that leg's reflexive mapping.
+## Registering it may complete a pair, whose "punch" op goes over the GAME
+## relay (peer), not here — _perform handles that. No reply is sent on this
+## socket: the discovery channel is receive-only.
 func _poll_discovery() -> void:
 	if discovery == null:
 		return
-	while true:
-		var ev := discovery.service(0)
-		var type: int = ev[0]
-		if type == ENetConnection.EVENT_NONE:
-			break
-		if type != ENetConnection.EVENT_RECEIVE:
-			continue
-		var dpeer: ENetPacketPeer = ev[1]
-		var bytes: PackedByteArray = dpeer.get_packet()
+	while discovery.get_available_packet_count() > 0:
+		var bytes: PackedByteArray = discovery.get_packet()
+		var host := discovery.get_packet_ip()
+		var port := discovery.get_packet_port()
 		if not RelayFrame.is_op(bytes):
 			continue
 		var op := RelayFrame.decode_op(bytes)
 		if str(op.get("op", "")) != "discover":
 			continue
 		var token := str(op.get("token", ""))
-		var host := dpeer.get_remote_address()
-		var port := dpeer.get_remote_port()
-		_perform(rooms.register_reflexive(token, host, port))
-		dpeer.send(0, RelayFrame.encode_op({"op": "reflexive", "host": host, "port": port}),
-			ENetPacketPeer.FLAG_RELIABLE)
+		var target := int(op.get("target", -1))
+		var local_host := str(op.get("local_host", ""))
+		var local_port := int(op.get("local_port", 0))
+		_perform(rooms.register_reflexive(token, target, host, port, local_host, local_port))
 
 func _perform(actions: Array) -> void:
 	if peer == null:

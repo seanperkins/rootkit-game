@@ -95,7 +95,7 @@ const RELAY_ADDRESS := "68.183.52.156"
 const RELAY_PORT := 43211
 ## One extra tick of input delay for the hop through the relay.
 const RELAY_DELAY := 5
-const RELAY_PROTOCOL := 1
+const RELAY_PROTOCOL := 2
 const RELAY_OP_MAX := 512
 const RELAY_MAX_CONNECTIONS := 64
 const ROOM_IDLE_MS := 600000

@@ -21,6 +21,39 @@ const CHANNELS := 2
 const CH_INPUT := 0
 const CH_SNAPSHOT := 1
 const HOST_PEER := 1
+## Raw punch discovery is retried because it is deliberately one-way UDP.
+## Direct ENet's connect packet is queued until service(), so raw probes are
+## sent before the first service and alongside it until the handshake lands.
+const DISCOVERY_RETRY_MS := 250
+const PUNCH_RETRY_MS := 100
+## A peer cannot advance more than one lockstep ring ahead of a missing record.
+## Retain that bounded window so one-sided direct failure can replay the seam
+## over the still-live relay; duplicates are rejected by slot and absolute tick.
+const DIRECT_REPLAY_MAX := Lockstep.RING
+
+## One connection per host-client pair. Godot permits one outgoing
+## connect_to_host per ENetConnection; the host therefore owns up to three of
+## these (one per client) and a client owns exactly one (to member 1). This is
+## the existing record-flow star, not a client-to-client mesh.
+class DirectLink extends RefCounted:
+	var target := -1
+	var token := ""
+	var key := ""
+	var conn: ENetConnection = null
+	var packet: ENetPacketPeer = null
+	var remote_host := ""
+	var remote_port := 0
+	var local_host := ""
+	var local_port := 0
+	var deadline_ms := 0
+	var next_discovery_ms := 0
+	var next_punch_ms := 0
+	var dialed := false
+	var inbound_ready := false
+	var direct := false
+	var reported := false
+	var replay: Array = [] # [channel, transfer_mode, immutable bytes]
+	var replay_cursor := 0
 
 signal peer_joined(peer_id: int)
 signal peer_left(peer_id: int)
@@ -80,6 +113,14 @@ var _relay_up := false           # the ENet link to the relay
 var _polling := false            # inside poll(): listeners must not replace the peer
 var _rejoin_pending := false     # a rejoin asked for from inside poll(), dialed after the drain
 var _room_up := false            # the room answered
+## Punching stays beside the relay, never in NetworkSession: address selection
+## is local transport state and cannot enter the deterministic descriptor.
+var _punch_discovery_port := 0
+var _punch_token := ""
+var _links: Dictionary = {}      # target member -> DirectLink
+var direct_sent := 0
+var direct_received := 0
+var direct_fallbacks := 0
 
 func host(port: int, p_session: NetworkSession) -> Error:
 	session = p_session
@@ -110,17 +151,20 @@ func join(address: String, port: int, p_session: NetworkSession) -> Error:
 ## Host through the relay. `address`/`port` default to SessionRules and are
 ## overridable so the relay suite can stand a relay up on loopback.
 func host_relayed(p_session: NetworkSession, address: String = SessionRules.RELAY_ADDRESS,
-		port: int = SessionRules.RELAY_PORT) -> Error:
-	return _dial_relay(p_session, true, "", address, port)
+		port: int = SessionRules.RELAY_PORT,
+		punch_port: int = SessionRules.PUNCH_DISCOVERY_PORT) -> Error:
+	return _dial_relay(p_session, true, "", address, port, punch_port)
 
 func join_relayed(room_code: String, p_session: NetworkSession,
-		address: String = SessionRules.RELAY_ADDRESS, port: int = SessionRules.RELAY_PORT) -> Error:
+		address: String = SessionRules.RELAY_ADDRESS, port: int = SessionRules.RELAY_PORT,
+		punch_port: int = SessionRules.PUNCH_DISCOVERY_PORT) -> Error:
 	if not RelayFrame.is_code(room_code):
 		return ERR_INVALID_PARAMETER
-	return _dial_relay(p_session, false, RelayFrame.normalise_code(room_code), address, port)
+	return _dial_relay(p_session, false, RelayFrame.normalise_code(room_code), address,
+		port, punch_port)
 
 func _dial_relay(p_session: NetworkSession, as_host: bool, room_code: String,
-		address: String, port: int) -> Error:
+		address: String, port: int, punch_port: int) -> Error:
 	if address == "" or address.length() > SessionRules.ADDRESS_MAX:
 		return ERR_UNCONFIGURED
 	session = p_session
@@ -133,6 +177,9 @@ func _dial_relay(p_session: NetworkSession, as_host: bool, room_code: String,
 	_room_up = false
 	_relay_address = address
 	_relay_port = port
+	_punch_discovery_port = punch_port
+	_punch_token = ""
+	_destroy_links()
 	peer = ENetMultiplayerPeer.new()
 	var err := peer.create_client(address, port, CHANNELS)
 	if err != OK:
@@ -168,6 +215,7 @@ func _on_peer_disconnected(id: int) -> void:
 		# The relay itself is gone: every member this end knew is gone with it.
 		_relay_up = false
 		_room_up = false
+		_destroy_links()
 		if relay_error == "":
 			relay_error = "lost"
 		for m in slot_of_peer.keys():
@@ -212,13 +260,15 @@ func rejoin() -> Error:
 func _rejoin_relay_now() -> Error:
 	var saved := code
 	close()
-	return _dial_relay(session, false, saved, _relay_address, _relay_port)
+	return _dial_relay(session, false, saved, _relay_address, _relay_port,
+		_punch_discovery_port)
 
 ## Cut one peer. Parking does this so a link that merely hiccupped cannot keep
 ## driving a slot nobody applies; so does input from a peer that never said
 ## HELLO. Relayed, the cut is a kick op: the id is a member, not a socket.
 func drop_peer(id: int) -> void:
 	dropped_peers.append(id)
+	_destroy_link(id)
 	if relayed:
 		if is_host and _room_up:
 			_put_raw(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
@@ -239,6 +289,8 @@ func bind_peer(peer_id: int, slot: int) -> void:
 	peer_of_slot[slot] = peer_id
 
 func close() -> void:
+	_destroy_links()
+	_punch_token = ""
 	if peer != null:
 		peer.close()
 	peer = null
@@ -249,12 +301,40 @@ func close() -> void:
 
 # ------------------------------------------------------------------ send ---
 
-func _put(target: int, channel: int, mode: int, bytes: PackedByteArray) -> void:
-	if relayed:
-		var to := RelayFrame.BROADCAST if target == MultiplayerPeer.TARGET_PEER_BROADCAST else target
-		_put_raw(HOST_PEER, channel, mode, RelayFrame.route(to, bytes))
+func _put(target: int, channel: int, mode: int, bytes: PackedByteArray,
+		replayable: bool = false) -> void:
+	if not relayed:
+		_put_raw(target, channel, mode, bytes)
 		return
-	_put_raw(target, channel, mode, bytes)
+	if target == MultiplayerPeer.TARGET_PEER_BROADCAST:
+		# A relay broadcast cannot be mixed with direct sends: peers reached
+		# directly would also receive the relay broadcast, and control messages
+		# are not all duplicate-idempotent. Expand it into one path per bound
+		# client, the same shape flush_relay already uses.
+		if is_host:
+			for id in slot_of_peer.keys():
+				_put_member(int(id), channel, mode, bytes, replayable)
+		else:
+			_put_member(HOST_PEER, channel, mode, bytes, replayable)
+		return
+	_put_member(target, channel, mode, bytes, replayable)
+
+func _put_member(target: int, channel: int, mode: int,
+		bytes: PackedByteArray, replayable: bool) -> void:
+	var link: DirectLink = _links.get(target)
+	if link != null and link.direct and link.packet != null:
+		var flags := ENetPacketPeer.FLAG_RELIABLE \
+			if mode == MultiplayerPeer.TRANSFER_MODE_RELIABLE else 0
+		if link.packet.send(channel, bytes, flags) == OK:
+			direct_sent += 1
+			if replayable:
+				_remember_direct(link, channel, mode, bytes)
+			return
+		# The current bytes have not been retained yet, so replay the preceding
+		# window and let this send fall through with the same bytes.
+		direct_fallbacks += 1
+		_destroy_link(target, true)
+	_put_raw(HOST_PEER, channel, mode, RelayFrame.route(target, bytes))
 
 func _put_raw(target: int, channel: int, mode: int, bytes: PackedByteArray) -> void:
 	if peer == null:
@@ -275,7 +355,7 @@ func send_input(tick: int, move: Vector2, card: int, target: int, offer: int,
 		_relay_records.append([session.local_slot, tick, move, card, target, offer, aim])
 		return
 	_put(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
-		Protocol.encode_input(_session_id(), tick, move, card, target, offer, aim))
+		Protocol.encode_input(_session_id(), tick, move, card, target, offer, aim), true)
 
 ## This peer's periodic checksum. Unreliable: a lost one is replaced by the
 ## next, and a stale one is refused by the retained window on arrival. The host
@@ -285,7 +365,7 @@ func send_checksum(tick: int, hash_value: int) -> void:
 		_relay_checksums.append([session.local_slot, tick, hash_value])
 		return
 	_put(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE,
-		Protocol.encode_checksum(_session_id(), tick, hash_value))
+		Protocol.encode_checksum(_session_id(), tick, hash_value), true)
 
 ## The host's once-per-tick relay: ONE reliable bundle to every client carrying
 ## every record and checksum staged since the last flush. Never a forward per
@@ -297,7 +377,7 @@ func flush_relay(tick: int) -> void:
 		return
 	var bytes := Protocol.encode_relay(_session_id(), tick, _relay_records, _relay_checksums)
 	for id in slot_of_peer.keys():
-		_put(int(id), CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE, bytes)
+		_put(int(id), CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE, bytes, true)
 		relays_sent += 1
 	_relay_records.clear()
 	_relay_checksums.clear()
@@ -350,6 +430,8 @@ func poll() -> void:
 		else:
 			_handle(from, channel, bytes)
 	_polling = false
+	if relayed and _room_up:
+		_poll_punch()
 	if _rejoin_pending:
 		_rejoin_pending = false
 		# The drain may have delivered the relay's "closed": then the room
@@ -364,18 +446,24 @@ func _relay_op(op: Dictionary) -> void:
 			_room_up = true
 			member = int(op.get("member", -1))
 			code = str(op.get("code", code))
+			_punch_token = str(op.get("token", ""))
 			if is_host:
 				room_ready.emit(code)
 			else:
 				bad_packets[HOST_PEER] = 0
 				peer_joined.emit(HOST_PEER)
+				_begin_punch(HOST_PEER)
 		"joined":
 			var m := int(op.get("member", -1))
 			if is_host and m >= 2 and m <= SessionRules.MAX_PLAYERS:
 				bad_packets[m] = 0
 				peer_joined.emit(m)
+				_begin_punch(m)
+		"punch":
+			_receive_punch(op)
 		"left":
 			var m2 := int(op.get("member", -1))
+			_destroy_link(m2)
 			peer_left.emit(m2)
 			if slot_of_peer.has(m2):
 				peer_of_slot.erase(int(slot_of_peer[m2]))
@@ -383,6 +471,7 @@ func _relay_op(op: Dictionary) -> void:
 		"closed":
 			relay_error = "closed"
 			_room_up = false
+			_destroy_links()
 			peer_left.emit(HOST_PEER)
 			if slot_of_peer.has(HOST_PEER):
 				peer_of_slot.erase(int(slot_of_peer[HOST_PEER]))
@@ -390,6 +479,212 @@ func _relay_op(op: Dictionary) -> void:
 		"refused":
 			relay_error = str(op.get("reason", "bad"))
 			_room_up = false
+			_destroy_links()
+
+## Start one star leg. The relay room token authenticates this member; `target`
+## makes the same token usable for the host's several dedicated sockets.
+func _begin_punch(target: int) -> void:
+	if not relayed or _punch_token == "" or _punch_discovery_port <= 0:
+		return
+	if (is_host and (target < 2 or target > SessionRules.MAX_PLAYERS)) \
+			or (not is_host and target != HOST_PEER):
+		return
+	_destroy_link(target)
+	var link := DirectLink.new()
+	link.target = target
+	link.token = _punch_token
+	link.conn = ENetConnection.new()
+	# Simultaneous open allocates this side's outgoing peer AND admits the
+	# reciprocal connect while both are handshaking. One slot refuses the
+	# incoming half; two is capacity for one logical link, not two targets.
+	if link.conn.create_host_bound("0.0.0.0", 0, 2, CHANNELS) != OK:
+		return
+	link.local_port = link.conn.get_local_port()
+	link.local_host = _local_candidate()
+	var now := Time.get_ticks_msec()
+	link.deadline_ms = now + SessionRules.PUNCH_TIMEOUT_MS
+	_links[target] = link
+	_send_discovery(link, now)
+
+func _local_candidate() -> String:
+	if _relay_address == "127.0.0.1" or _relay_address == "::1" \
+			or _relay_address == "localhost":
+		return "127.0.0.1"
+	for address in IP.get_local_addresses():
+		var host := str(address)
+		if host.contains(":") or host.begins_with("127."):
+			continue
+		if host.is_valid_ip_address():
+			return host
+	return ""
+
+## One-way on purpose: ENetConnection.socket_send emits from the SAME socket
+## that will dial the peer, but ENet's service loop cannot surface an arbitrary
+## raw UDP reply. The pair candidate comes back over the reliable relay link.
+func _send_discovery(link: DirectLink, now_ms: int) -> void:
+	if link.conn == null or link.dialed:
+		return
+	var op := {"op": "discover", "token": link.token, "target": link.target,
+		"local_host": link.local_host, "local_port": link.local_port}
+	link.conn.socket_send(_relay_address, _punch_discovery_port,
+		RelayFrame.encode_op(op))
+	link.next_discovery_ms = now_ms + DISCOVERY_RETRY_MS
+
+func _receive_punch(op: Dictionary) -> void:
+	var target := int(op.get("member", -1))
+	var link: DirectLink = _links.get(target)
+	if link == null or link.dialed:
+		return
+	var host := str(op.get("host", ""))
+	var port := int(op.get("port", 0))
+	var key := str(op.get("key", ""))
+	if host == "" or host.length() > SessionRules.ADDRESS_MAX \
+			or port <= 0 or port > 65535 or key.length() < 16 \
+			or key.length() > SessionRules.RELAY_OP_MAX:
+		_destroy_link(target)
+		return
+	link.key = key
+	link.remote_host = host
+	link.remote_port = port
+	link.dialed = true
+	var now := Time.get_ticks_msec()
+	link.deadline_ms = now + SessionRules.PUNCH_TIMEOUT_MS
+	link.next_punch_ms = now + PUNCH_RETRY_MS
+	# Open the mapping before connect_to_host queues ENet's SYN. service() below
+	# is what actually transmits the SYN.
+	link.conn.socket_send(host, port, PackedByteArray([0]))
+	link.packet = link.conn.connect_to_host(host, port, CHANNELS, member)
+	if link.packet == null:
+		_destroy_link(target)
+	else:
+		link.packet.set_timeout(SessionRules.PEER_TIMEOUT_MS,
+			SessionRules.PEER_TIMEOUT_MS, SessionRules.PEER_TIMEOUT_MS)
+
+func _poll_punch() -> void:
+	var now := Time.get_ticks_msec()
+	for raw_target in _links.keys():
+		var target := int(raw_target)
+		var link: DirectLink = _links.get(target)
+		if link == null:
+			continue
+		if not link.dialed and now >= link.next_discovery_ms:
+			_send_discovery(link, now)
+		elif link.dialed and not link.direct and now >= link.next_punch_ms:
+			link.conn.socket_send(link.remote_host, link.remote_port,
+				PackedByteArray([0]))
+			link.next_punch_ms = now + PUNCH_RETRY_MS
+		var gone := false
+		while link.conn != null:
+			var event := link.conn.service(0)
+			var kind := int(event[0])
+			if kind == ENetConnection.EVENT_NONE:
+				break
+			if kind == ENetConnection.EVENT_ERROR \
+					or kind == ENetConnection.EVENT_DISCONNECT:
+				gone = true
+				break
+			var packet: ENetPacketPeer = event[1]
+			if kind == ENetConnection.EVENT_CONNECT:
+				link.packet = packet
+				packet.set_timeout(SessionRules.PEER_TIMEOUT_MS,
+					SessionRules.PEER_TIMEOUT_MS, SessionRules.PEER_TIMEOUT_MS)
+				if not _send_direct_op(link, "direct_hello"):
+					gone = true
+					break
+			elif kind == ENetConnection.EVENT_RECEIVE:
+				_direct_packet(link, packet, int(event[3]))
+				if not _links.has(target):
+					gone = true
+					break
+		if gone:
+			_destroy_link(target, true)
+		elif not link.direct and now >= link.deadline_ms:
+			_destroy_link(target)
+
+func _send_direct_op(link: DirectLink, kind: String) -> bool:
+	if link.packet == null:
+		return false
+	var bytes := RelayFrame.encode_op(
+		{"op": kind, "member": member, "key": link.key})
+	return link.packet.send(CH_INPUT, bytes, ENetPacketPeer.FLAG_RELIABLE) == OK
+
+func _direct_packet(link: DirectLink, packet: ENetPacketPeer,
+		channel: int) -> void:
+	var bytes := packet.get_packet()
+	if RelayFrame.is_op(bytes):
+		var op := RelayFrame.decode_op(bytes)
+		var kind := str(op.get("op", ""))
+		if int(op.get("member", -1)) != link.target \
+				or str(op.get("key", "")) != link.key:
+			_destroy_link(link.target)
+			return
+		if kind == "direct_hello":
+			link.inbound_ready = true
+			if not _send_direct_op(link, "direct_ack"):
+				_destroy_link(link.target)
+		elif kind == "direct_ack":
+			link.direct = true
+			if not link.reported:
+				link.reported = true
+				_put_raw(HOST_PEER, CH_INPUT,
+					MultiplayerPeer.TRANSFER_MODE_RELIABLE,
+					RelayFrame.encode_op(
+						{"op": "punched", "member": link.target}))
+		else:
+			_destroy_link(link.target)
+		return
+	if not link.inbound_ready:
+		_destroy_link(link.target)
+		return
+	direct_received += 1
+	_handle(link.target, channel, bytes)
+
+func direct_to(member_id: int) -> bool:
+	var link: DirectLink = _links.get(member_id)
+	return link != null and link.direct
+
+## Diagnostics and the live probe use this to prove the relay fallback. It does
+## not drop the logical peer or its slot binding.
+func disconnect_direct(member_id: int) -> void:
+	if _links.has(member_id):
+		direct_fallbacks += 1
+	_destroy_link(member_id, true)
+
+func _remember_direct(link: DirectLink, channel: int, mode: int,
+		bytes: PackedByteArray) -> void:
+	var entry := [channel, mode, bytes]
+	if link.replay.size() < DIRECT_REPLAY_MAX:
+		link.replay.append(entry)
+		return
+	link.replay[link.replay_cursor] = entry
+	link.replay_cursor = (link.replay_cursor + 1) & (DIRECT_REPLAY_MAX - 1)
+
+func _replay_direct(link: DirectLink) -> void:
+	if peer == null or not relayed or not _room_up:
+		return
+	var n := link.replay.size()
+	for off in n:
+		var idx := (link.replay_cursor + off) % n \
+			if n == DIRECT_REPLAY_MAX else off
+		var entry: Array = link.replay[idx]
+		_put_raw(HOST_PEER, int(entry[0]), int(entry[1]),
+			RelayFrame.route(link.target, entry[2]))
+	link.replay.clear()
+	link.replay_cursor = 0
+
+func _destroy_link(target: int, replay_records: bool = false) -> void:
+	var link: DirectLink = _links.get(target)
+	if link == null:
+		return
+	if replay_records:
+		_replay_direct(link)
+	if link.conn != null:
+		link.conn.destroy()
+	_links.erase(target)
+
+func _destroy_links() -> void:
+	for target in _links.keys():
+		_destroy_link(int(target))
 
 func _context() -> Dictionary:
 	var ls: Lockstep = session.lockstep if session != null else null
@@ -427,12 +722,18 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 				_refuse(from)
 				return
 			var rec := Protocol.decode_input(body)
-			if rec.is_empty() or not Protocol.valid_tick(kind, tick, ctx):
+			if rec.is_empty():
+				_refuse(from)
+				return
+			if not Protocol.valid_tick(kind, tick, ctx):
+				if _input_stale(tick, ctx):
+					return # authenticated replay-window duplicate
 				_refuse(from)
 				return
 			var slot := int(slot_of_peer[from])
-			_accept_record(slot, tick, rec["move"], rec["card"], rec["target"], rec["offer"], rec["aim"])
-			if is_host:
+			var stored := _accept_record(slot, tick, rec["move"], rec["card"],
+				rec["target"], rec["offer"], rec["aim"])
+			if is_host and stored:
 				_relay_records.append([slot, tick, rec["move"], rec["card"],
 					rec["target"], rec["offer"], rec["aim"]])
 		Protocol.Message.RELAY:
@@ -456,13 +757,18 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 				_refuse(from)
 				return
 			var cs := Protocol.decode_checksum(body)
-			if cs.is_empty() or not Protocol.valid_tick(kind, tick, ctx):
+			if cs.is_empty():
+				_refuse(from)
+				return
+			if not Protocol.valid_tick(kind, tick, ctx):
+				if tick < int(ctx.get("executed", 0)) - Lockstep.RING:
+					return # authenticated replay-window duplicate
 				_refuse(from)
 				return
 			var slot := int(slot_of_peer[from])
-			if session.lockstep != null:
-				session.lockstep.submit_checksum(slot, tick, cs["hash"])
-			if is_host:
+			var stored := session.lockstep != null \
+				and session.lockstep.submit_checksum(slot, tick, cs["hash"])
+			if is_host and stored:
 				_relay_checksums.append([slot, tick, cs["hash"]])
 		Protocol.Message.SNAPSHOT:
 			if channel != CH_SNAPSHOT or body.size() > SessionRules.SNAPSHOT_MAX:
@@ -496,11 +802,25 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 const HELD_MAX := Lockstep.RING * SessionRules.MAX_PLAYERS
 
 func _accept_record(slot: int, tick: int, move: Vector2, card: int, target: int,
-		offer: int, aim: Vector2 = Vector2.ZERO) -> void:
-	if session.lockstep != null:
-		session.lockstep.submit(slot, tick, move, card, target, offer, aim)
-	if boundary >= 0 and tick > boundary and _held.size() < HELD_MAX:
+		offer: int, aim: Vector2 = Vector2.ZERO) -> bool:
+	var stored := session.lockstep != null \
+		and session.lockstep.submit(slot, tick, move, card, target, offer, aim)
+	if boundary >= 0 and tick > boundary and _held.size() < HELD_MAX \
+			and not _held_has(slot, tick):
 		_held.append([slot, tick, move, card, target, offer, aim])
+	return stored
+
+func _input_stale(tick: int, ctx: Dictionary) -> bool:
+	var boundary_tick := int(ctx.get("boundary", -1))
+	var lo := boundary_tick + 1 if boundary_tick >= 0 \
+		else int(ctx.get("executed", 0))
+	return tick < lo
+
+func _held_has(slot: int, tick: int) -> bool:
+	for record in _held:
+		if int(record[0]) == slot and int(record[1]) == tick:
+			return true
+	return false
 
 ## Announce a restore boundary: records past it are retained as they arrive.
 func arm_boundary(tick: int) -> void:

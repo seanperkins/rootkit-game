@@ -1,15 +1,16 @@
 # The relay
 
-Online co-op without port forwarding. Every peer, the host included, dials
-this server as an ENet client; the server forwards packets between the
-members of a room and never decodes a game packet. A host gets a
-six-character room code; friends type it in the lobby.
+Online co-op without port forwarding. Every peer, the host included, keeps
+an ENet relay connection to this server. The server exchanges public endpoint
+candidates over UDP 43212 so each host-client pair can punch a lower-latency
+direct path; UDP 43211 remains the seamless fallback and room-control path.
+A host gets a six-character room code; friends type it in the lobby.
 
 - `relay_frame.gd` — the one-byte route and the relay-op codec (pure).
 - `relay_rooms.gd` — rooms, member ids, forwarding decisions (pure, tested
   by `tests/test_relay_rooms.gd`).
 - `relay_server.gd` — the ENet shell around the rooms.
-- `relay_main.gd` — the process: `godot --headless -s relay/relay_main.gd -- --port 43211`.
+- `relay_main.gd` — the process: `godot --headless -s relay/relay_main.gd -- --port 43211 --punch-port 43212`.
 
 ## Deploy
 
@@ -25,18 +26,26 @@ into the game. Run it again after changing anything under `relay/`,
 
 ## Check
 
-From this machine, against the baked address (or `-- --address IP`):
+From this machine, verify the fallback relay:
 
 ```
 godot --headless -s res://tools/probe_relay.gd
 ```
 
-It hosts a room, joins it, passes one record each way and prints the
-timings. On the droplet:
+After the coordinated protocol-2 relay and client deploy, verify punched star
+links plus forced relay fallback (or pass `-- --address IP`):
+
+```
+godot --headless -s res://tools/probe_punch.gd
+```
+
+Use the probe's documented `--role host` / `--role client` mode across two
+real networks; loopback proves wiring, not consumer-NAT traversal.
 
 ```
 ssh -i ~/.ssh/digitalocean root@68.183.52.156 journalctl -u rootkit-relay -f
 ```
 
-It logs `relay: listening on UDP 43211` at start and a stats line once a
+It logs `relay: listening on UDP 43211` and
+`relay: punch discovery on UDP 43212` at start, then a stats line once a
 minute: rooms, members, packets forwarded, refusals.

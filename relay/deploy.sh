@@ -61,5 +61,5 @@ if [ -f "$ROOT/.godot/global_script_class_cache.cfg" ]; then
 fi
 $SSH root@"$IP" 'bash /root/rootkit-src/relay/install.sh'
 echo
-echo "relay is up at $IP:43211"
+echo "relay is up at $IP:43211; punch discovery is up at $IP:43212/udp"
 echo "next: set SessionRules.RELAY_ADDRESS := \"$IP\" and cut a release"

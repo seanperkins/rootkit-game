@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 User=rootkit
 WorkingDirectory=/opt/rootkit-relay/project
-ExecStart=/opt/rootkit-relay/godot --headless --path /opt/rootkit-relay/project -s res://relay/relay_main.gd -- --port 43211
+ExecStart=/opt/rootkit-relay/godot --headless --path /opt/rootkit-relay/project -s res://relay/relay_main.gd -- --port 43211 --punch-port 43212
 Restart=always
 RestartSec=2
 
