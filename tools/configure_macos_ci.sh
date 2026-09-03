@@ -61,7 +61,8 @@ if ! openssl pkcs12 -in "$TMP/macos-signing.p12" -passin "pass:$VLT_PW" -nodes \
   cat "$TMP/verify.err" >&2
   exit 1
 fi
-SUBJ=$(openssl x509 -in "$TMP/verify.pem" -noout -subject)
+SUBJ=$(openssl crl2pkcs7 -nocrl -certfile "$TMP/verify.pem" \
+  | openssl pkcs7 -print_certs -noout)
 case "$SUBJ" in
   *"Developer ID Application"*) ;;
   *) echo "WRONG IDENTITY: $SUBJ" >&2
