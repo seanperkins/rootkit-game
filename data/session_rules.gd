@@ -86,3 +86,19 @@ const ADDRESS_MAX := 64
 
 ## The UDP port a host listens on. One port: direct-IP play, no matchmaking.
 const DEFAULT_PORT := 43210
+
+## The room-code relay. Every peer, host included, dials RELAY_ADDRESS as an
+## ENet client; the relay forwards packets between the members of a room on
+## a one-byte route (relay/relay_frame.gd). A raw IP, baked in: replacing
+## the droplet means a release. Set from relay/deploy.sh's printed address.
+const RELAY_ADDRESS := ""
+const RELAY_PORT := 43211
+## One extra tick of input delay for the hop through the relay.
+const RELAY_DELAY := 5
+const RELAY_PROTOCOL := 1
+const RELAY_OP_MAX := 512
+const RELAY_MAX_CONNECTIONS := 64
+const ROOM_IDLE_MS := 600000
+const CODE_LENGTH := 6
+## No 0/O/1/I: a code is read aloud and typed by a friend.
+const CODE_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
