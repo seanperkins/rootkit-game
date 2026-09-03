@@ -20,7 +20,7 @@ SUITES=(
   test_build test_slots test_fusion test_fusion_run test_blocks test_cadence test_drain test_corruption test_dispatch
   test_triggers test_worms test_wards test_multipliers test_travel
   test_behaviour test_effects test_minibosses test_cards_keyboard test_draw_order
-  test_player_stats test_player_sheet test_meta test_meta_layout test_run
+  test_player_stats test_player_sheet test_meta test_meta_layout test_settings_overlay test_run
   test_feel test_synth test_audio_events test_input test_prefs test_hud test_arrivals test_flow test_interpolation
   test_determinism_rules test_meta_derivation test_lockstep test_plurality test_offers
   test_manifest test_snapshot_hostile test_multiplayer_sim test_transport_loopback

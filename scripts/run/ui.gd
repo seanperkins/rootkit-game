@@ -231,8 +231,7 @@ func _build() -> void:
 
 	# The same panel the shell uses. A second settings screen for the same four
 	# values would be a second thing to keep in sync.
-	_settings = Control.new()
-	_settings.set_script(load("res://scripts/meta/settings_panel.gd"))
+	_settings = SettingsPanel.new()
 	add_child(_settings)
 	_settings.closed.connect(_on_settings_closed)
 	var psettings := Button.new()

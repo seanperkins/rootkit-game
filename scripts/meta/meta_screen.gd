@@ -137,8 +137,7 @@ func _ready() -> void:
 	settings_btn.add_theme_font_size_override("font_size", 15)
 	launch.add_child(settings_btn)
 
-	_settings = Control.new()
-	_settings.set_script(load("res://scripts/meta/settings_panel.gd"))
+	_settings = SettingsPanel.new()
 	add_child(_settings)
 	settings_btn.pressed.connect(_settings.open)
 
