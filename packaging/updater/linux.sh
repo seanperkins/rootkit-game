@@ -37,11 +37,20 @@ if [ ! -f "$STAGE/ROOTKIT.x86_64" ]; then
 fi
 chmod +x "$STAGE/ROOTKIT.x86_64" 2>/dev/null || true
 
-# Clean swap: remove the old contents, move the new ones in.
-rm -rf "$TARGET"/*
-if ! mv "$STAGE"/* "$TARGET"/; then
-  echo "$ME: swap failed" >&2; exit 1
+# Clean swap with a rollback path, mirroring macos.sh: the old contents move
+# aside first, and only a successful move of the new ones destroys them. The
+# staging dir is dot-named, so the glob never touches it. The running helper
+# is at the OS cache, so moving the old copies of "updater.sh" is safe too.
+OLD="$TARGET/.ROOTKIT-old-$$"
+mkdir -p "$OLD"
+if ! mv "$TARGET"/* "$OLD"/; then
+  echo "$ME: could not stage the old contents" >&2; exit 1
 fi
+if ! mv "$STAGE"/* "$TARGET"/; then
+  mv "$OLD"/* "$TARGET"/ 2>/dev/null || true
+  echo "$ME: swap failed; rolled back" >&2; exit 1
+fi
+rm -rf "$OLD"
 rm -rf "$STAGE"
 [ -n "$STATE" ] && rm -f "$STATE"
 rm -f "$ARCHIVE"

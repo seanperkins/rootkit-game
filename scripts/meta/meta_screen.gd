@@ -270,6 +270,12 @@ func _build_link() -> void:
 			updater.update_ready.connect(_on_update_ready)
 			updater.update_state.connect(_on_update_state)
 			updater.update_failed.connect(_on_update_failed)
+		# This menu may be the SECOND one this process (a run just ended): the
+		# autoload kept whatever it found, so re-show it; a fresh process gets
+		# the background check.
+		if updater != null and not updater.available.is_empty():
+			_on_update_ready(updater.available)
+		else:
 			updater.begin_check()
 
 ## Six characters from the code alphabet route through the relay; anything
@@ -330,6 +336,10 @@ func _on_update_state(text: String) -> void:
 	_update_row.visible = true
 
 func _on_update_failed(reason: String) -> void:
+	# A background check failing (offline, blocked CDN) is normal and common;
+	# only failures on a path the player clicked deserve the strip.
+	if not Updater.user_requested:
+		return
 	_update_label.text = reason
 	_update_row.visible = true
 

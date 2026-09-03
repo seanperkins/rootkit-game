@@ -59,15 +59,19 @@ static func parse_manifest(raw: String, platform: String) -> Dictionary:
 	var parsed: Variant = JSON.parse_string(raw)
 	if typeof(parsed) != TYPE_DICTIONARY:
 		return {}
-	var version = parsed.get("version", "")
-	if typeof(version) != TYPE_STRING or version.length() > VERSION_MAX \
-			or (version as String).is_empty():
-		return {}
 	var entries: Variant = parsed.get("entries", null)
 	if typeof(entries) != TYPE_DICTIONARY:
 		return {}
 	var entry: Variant = entries.get(platform, null)
 	if typeof(entry) != TYPE_DICTIONARY:
+		return {}
+	# The version lives IN the entry: a merged feed carries older entries for
+	# platforms a release did not rebuild, and each must compare against its
+	# OWN version — a top-level version would claim the new tag for an entry
+	# that still names the old one.
+	var version = entry.get("version", "")
+	if typeof(version) != TYPE_STRING or version.length() > VERSION_MAX \
+			or (version as String).is_empty():
 		return {}
 	var url = entry.get("url", "")
 	if typeof(url) != TYPE_STRING or url.length() > URL_MAX:

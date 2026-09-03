@@ -43,33 +43,45 @@ func _check(label: String, got, want) -> void:
 func _manifest(platform: String = "macos") -> String:
 	return JSON.stringify({
 		"version": "0.4.1",
-		"entries": {platform: {"url": "https://example.com/a.zip",
-			"sha256": "a".repeat(64), "sig": "AAAA"}}})
+		"entries": {platform: _entry()}})
+
+func _entry(overrides: Dictionary = {}) -> Dictionary:
+	var e := {"version": "0.4.1", "url": "https://x/a.zip",
+		"sha256": "a".repeat(64), "sig": "AAAA"}
+	for k in overrides:
+		e[k] = overrides[k]
+	return e
+
+func _with(e: Dictionary) -> String:
+	return JSON.stringify({"version": "0.4.1", "entries": {"macos": e}})
 
 func manifest_parse_is_strict() -> void:
 	var entry := UpdateFeed.parse_manifest(_manifest(), "macos")
 	_check("a well-formed manifest parses", [entry.get("version"), entry.get("url"),
-		entry.get("sha256")], ["0.4.1", "https://example.com/a.zip", "a".repeat(64)])
+		entry.get("sha256")], ["0.4.1", "https://x/a.zip", "a".repeat(64)])
 	_check("on the right platform", entry.get("sig"), "AAAA")
-	_check("a missing platform refuses", UpdateFeed.parse_manifest(_manifest(), "linux").is_empty(), true)
+	_check("a missing platform refuses", UpdateFeed.parse_manifest(_manifest("linux"), "macos").is_empty(), true)
 	_check("garbage refuses", UpdateFeed.parse_manifest("not json", "macos").is_empty(), true)
-	var no_entry := JSON.stringify({"version": "0.4.1", "entries": {}})
-	_check("no entries refuse", UpdateFeed.parse_manifest(no_entry, "macos").is_empty(), true)
-	var bad_sha := JSON.stringify({"version": "0.4.1", "entries": {
-		"macos": {"url": "https://x/a.zip", "sha256": "Z".repeat(64), "sig": "AAAA"}}})
-	_check("a non-hex sha refuses", UpdateFeed.parse_manifest(bad_sha, "macos").is_empty(), true)
-	var short_sha := JSON.stringify({"version": "0.4.1", "entries": {
-		"macos": {"url": "https://x/a.zip", "sha256": "a".repeat(63), "sig": "AAAA"}}})
-	_check("a short sha refuses", UpdateFeed.parse_manifest(short_sha, "macos").is_empty(), true)
-	var long_url := JSON.stringify({"version": "0.4.1", "entries": {
-		"macos": {"url": "u" + "x".repeat(999), "sha256": "a".repeat(64), "sig": "AAAA"}}})
-	_check("an overlong url refuses", UpdateFeed.parse_manifest(long_url, "macos").is_empty(), true)
-	var no_sig := JSON.stringify({"version": "0.4.1", "entries": {
-		"macos": {"url": "https://x/a.zip", "sha256": "a".repeat(64), "sig": ""}}})
-	_check("a missing signature refuses", UpdateFeed.parse_manifest(no_sig, "macos").is_empty(), true)
-	var num_ver := JSON.stringify({"version": 5, "entries": {
-		"macos": {"url": "https://x/a.zip", "sha256": "a".repeat(64), "sig": "AAAA"}}})
-	_check("a non-string version refuses", UpdateFeed.parse_manifest(num_ver, "macos").is_empty(), true)
+	var no_ver := _entry()
+	no_ver.erase("version")
+	_check("an entry without a version refuses",
+		UpdateFeed.parse_manifest(_with(no_ver), "macos").is_empty(), true)
+	var empty_v := _entry({"version": ""})
+	_check("an entry without its own version refuses",
+		UpdateFeed.parse_manifest(_with(empty_v), "macos").is_empty(), true)
+	_check("a non-hex sha refuses",
+		UpdateFeed.parse_manifest(_with(_entry({"sha256": "Z".repeat(64)})), "macos").is_empty(), true)
+	_check("a short sha refuses",
+		UpdateFeed.parse_manifest(_with(_entry({"sha256": "a".repeat(63)})), "macos").is_empty(), true)
+	_check("an overlong url refuses",
+		UpdateFeed.parse_manifest(_with(_entry({"url": "u" + "x".repeat(999)})), "macos").is_empty(), true)
+	_check("a missing signature refuses",
+		UpdateFeed.parse_manifest(_with(_entry({"sig": ""})), "macos").is_empty(), true)
+	_check("a non-string entry version refuses",
+		UpdateFeed.parse_manifest(_with(_entry({"version": 5})), "macos").is_empty(), true)
+	var old := _entry({"version": "0.4.0"})
+	_check("a merged older entry parses at its own version",
+		str(UpdateFeed.parse_manifest(_with(old), "macos").get("version", "")), "0.4.0")
 	_check("an unknown platform key is empty", UpdateFeed.platform_key("BeOS"), "")
 	_check("the real platforms map", [UpdateFeed.platform_key("macOS"), UpdateFeed.platform_key("Windows"),
 		UpdateFeed.platform_key("Linux")], ["macos", "windows", "linux"])

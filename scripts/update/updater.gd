@@ -115,9 +115,15 @@ func install_now() -> void:
 func install_on_quit() -> void:
 	install_with_relaunch(false)
 
+## Set while the PLAYER asked for an install: background failures (check on
+## the menu, offline) must not light the strip up on every launch.
+var user_requested := false
+
 func install_with_relaunch(relaunch: bool) -> void:
 	if available.is_empty():
+		user_requested = false
 		return
+	user_requested = true
 	if translocated():
 		# The running bundle sits on a read-only mount; the swap must happen
 		# in the real install location. Tell the player to move it first.
@@ -142,6 +148,14 @@ func _download() -> void:
 		return
 	_downloading = true
 	update_state.emit("downloading update…")
+	# download_file streams the body straight to disk (the archive is ~60 MB;
+	# it must never be buffered whole in the request). The bounds are
+	# hostile-feed guards: an entry claiming a giant archive is refused by
+	# body_size_limit before anything is written, and a hung CDN must not
+	# wedge the menu forever.
+	_download_req.download_file = ProjectSettings.globalize_path(_download_path)
+	_download_req.body_size_limit = 512 << 20
+	_download_req.timeout = 90.0
 	var err := _download_req.request(str(available["url"]))
 	if err != OK:
 		_downloading = false
@@ -149,19 +163,17 @@ func _download() -> void:
 		update_failed.emit("cannot start the download")
 
 func _on_download_done(result: int, code: int, _headers: PackedStringArray,
-		body: PackedByteArray) -> void:
+		_body: PackedByteArray) -> void:
 	_downloading = false
-	if result != HTTPRequest.RESULT_SUCCESS or code != 200 or body.is_empty():
+	# With download_file set the body never reaches memory — the file on disk
+	# IS the deliverable, and its existence is the success signal.
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200 \
+			or not FileAccess.file_exists(_download_path):
+		if FileAccess.file_exists(_download_path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(_download_path))
 		busy = false
 		update_failed.emit("the download failed (code %d)" % code)
 		return
-	var f := FileAccess.open(_download_path, FileAccess.WRITE)
-	if f == null:
-		busy = false
-		update_failed.emit("cannot write the update")
-		return
-	f.store_buffer(body)
-	f.close()
 	_on_archive_ready()
 
 func _on_archive_ready() -> void:
@@ -209,7 +221,46 @@ func _notification(what: int) -> void:
 		_closing = true
 		_spawn_helper(false)
 
+## The archive a spawn installs. Right after a download it is the in-memory
+## path; on a later close of a STAGED session there is no memory, so it comes
+## from the state file instead. A staged archive that no longer exists drops
+## the state — there is nothing to apply.
+func _resolve_archive() -> String:
+	if _download_path != "" and FileAccess.file_exists(_download_path):
+		return ProjectSettings.globalize_path(_download_path)
+	var state := _read_state()
+	if state.is_empty():
+		return ""
+	var archive := str(state.get("archive", ""))
+	if archive == "" or not FileAccess.file_exists(archive):
+		DirAccess.remove_absolute(_state_abs())
+		return ""
+	return archive
+
+func _resolve_target() -> String:
+	if _download_path != "":
+		return install_target()
+	var state := _read_state()
+	if state.is_empty():
+		return install_target()
+	var target := str(state.get("target", ""))
+	return target if target != "" else install_target()
+
+func _read_state() -> Dictionary:
+	if not FileAccess.file_exists(_state_abs()):
+		return {}
+	var f := FileAccess.open(_state_abs(), FileAccess.READ)
+	if f == null:
+		return {}
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	return parsed if typeof(parsed) == TYPE_DICTIONARY else {}
+
 func _spawn_helper(relaunch: bool) -> bool:
+	var archive := _resolve_archive()
+	if archive == "":
+		update_failed.emit("the update is gone — try installing it again")
+		return false
 	var src := _helper_source()
 	if not FileAccess.file_exists(src):
 		update_failed.emit("the installer is missing from this build")
@@ -232,16 +283,16 @@ func _spawn_helper(relaunch: bool) -> bool:
 		pid = OS.create_process("powershell.exe", [
 			"-NoProfile", "-WindowStyle", "Hidden",
 			"-ExecutionPolicy", "Bypass", "-File", tmp,
-			"-Archive", ProjectSettings.globalize_path(_download_path),
-			"-Target", install_target(),
+			"-Archive", archive,
+			"-Target", _resolve_target(),
 			"-Relaunch", "1" if relaunch else "0",
 			"-State", _state_abs()])
 	else:
 		var shell := "/bin/bash" if OS.get_name() == "macOS" else "/bin/sh"
 		pid = OS.create_process(shell, [
 			tmp,
-			"--archive", ProjectSettings.globalize_path(_download_path),
-			"--target", install_target(),
+			"--archive", archive,
+			"--target", _resolve_target(),
 			"--relaunch", "1" if relaunch else "0",
 			"--state", _state_abs()])
 	return pid > 0

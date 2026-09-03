@@ -74,7 +74,11 @@ for platform, asset in ASSETS.items():
         stdin=open(path, "rb"), capture_output=True, check=True).stdout
     sig_b64 = base64.b64encode(sig).decode()
     entries[platform] = {
-        "url": f"https://github.com/{repo}/releases/latest/download/{asset}",
+        "version": version,
+        # The URL is PER-TAG, not /latest/: a merged feed keeps another
+        # platform's older entry, and /latest/download/ would 404 it the
+        # moment the newer release claims the "latest" redirect.
+        "url": f"https://github.com/{repo}/releases/download/{tag}/{asset}",
         "sha256": sha,
         "sig": sig_b64,
     }
