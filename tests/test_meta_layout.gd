@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 17
+const EXPECTED_CHECKS := 18
 
 var failures := 0
 var checks := 0
@@ -74,6 +74,15 @@ func fits_the_viewport() -> void:
 		main.queue_free()
 		await process_frame
 		return
+
+	# The build version rides the subtitle line (meta_screen._build reads
+	# application/config/version; "dev" when unset). Pin the text so a layout
+	# change cannot silently drop the only in-game display of it.
+	var subtitle: Node = _find(main, "Label", "subnet 01")
+	var v: Variant = ProjectSettings.get_setting("application/config/version")
+	var expect_v := "dev" if v == null else str(v)
+	_check("the boot subtitle names the build",
+		subtitle != null and ("v%s" % expect_v) in str(subtitle.get("text")), true)
 
 	var r: Rect2 = (start as Control).get_global_rect()
 	print("    ./intrude bottom edge at y=%.0f of %.0f" % [r.end.y, vh])
