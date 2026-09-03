@@ -139,13 +139,13 @@ func direct_path_and_fallback() -> void:
 	# named by the punch op. The op's local fields are carried and inert —
 	# the socket never dials them, because a single ENetConnection cannot
 	# retry after its one outgoing connect.
-	host_t._begin_punch(3)
-	var link: Transport.DirectLink = host_t._links[3]
-	host_t._receive_punch({"member": 3, "host": "127.0.0.2", "port": 59999,
+	host_t._begin_punch(2)
+	var link: Transport.DirectLink = host_t._links[2]
+	host_t._receive_punch({"member": 2, "host": "127.0.0.2", "port": 59999,
 		"local_host": "127.0.0.1", "local_port": 59998, "key": "0123456789abcdef0123456789abcdef"})
 	_check("the socket dials exactly the op's reflexive endpoint",
 		[link.dialed, link.remote_host, link.remote_port], [true, "127.0.0.2", 59999])
-	host_t.disconnect_direct(3)
+	host_t.disconnect_direct(2)
 
 	client_t.close()
 	host_t.close()

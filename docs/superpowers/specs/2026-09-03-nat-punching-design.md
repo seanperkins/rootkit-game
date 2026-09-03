@@ -232,20 +232,28 @@ same seed — that is the acceptance gate.
 
 ## Transport security limits — documented, not claimed away
 
-ENet carries **plaintext with no integrity protection**, and this feature
-does not change that. The relay-issued key authenticates only the
-`direct_hello`/`direct_ack` handshake; the records, checksums, control
-messages and snapshots that follow are unmodified and unauthenticated on
-both the relay and direct paths. The direct path additionally exposes the
-peers' public endpoints to each other (the relay already saw them, so
-confidentiality is unchanged; observability of host IPs by co-players is
-new). Recent practitioner guidance — WebRTC stacks with DTLS-SRTP and
-ICE, Tailscale's WireGuard tunnels — assumes encrypted authenticated
-payloads, so "the design follows best practices" is true of the
-*traversal mechanics* only, never of transport confidentiality or
-integrity. Adding E2E encryption is out of scope here and would be a
-separate design; until then the whole session is as authenticatable as
-the plaintext protocol was before this feature.
+ENet carries **plaintext with no cryptographic integrity protection**,
+and this feature does not change that. No game packet — record, checksum,
+control message or snapshot — carries a cryptographic authenticator or
+MAC on either path; the "integrity" is transport framing alone. The
+relay-issued key is itself a bearer secret delivered in the clear: the
+relay sends it in the plaintext `punch` op over the relay link, and each
+side sends it again in the plaintext `direct_hello`/`direct_ack` over the
+direct socket. It therefore **rejects blind/off-path connects only** — a
+socket that merely reaches the right port without having seen the key
+cannot complete the hello/ack exchange. It does not authenticate against
+the relay (the relay is the key's issuer and sees every session), and an
+on-path observer of either plaintext path can read and present it. The
+direct path additionally exposes the peers' public endpoints to each
+other (the relay already saw them, so confidentiality is unchanged;
+observability of host IPs by co-players is new). Recent practitioner
+guidance — WebRTC stacks with DTLS-SRTP and ICE, Tailscale's WireGuard
+tunnels — assumes encrypted authenticated payloads, so "the design
+follows best practices" is true of the *traversal mechanics* only, never
+of transport confidentiality or cryptographic integrity. Adding E2E
+encryption is out of scope here and would be a separate design; until
+then the whole session is as authenticatable as the plaintext protocol
+was before this feature.
 
 ## Out of scope
 
