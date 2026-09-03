@@ -328,8 +328,12 @@ func a_refused_joiner_reaches_a_session_knowing_client() -> void:
 		"counters": SaveGame.session_counters()}, 999, 1)
 	host_t.send_control(Protocol.Message.REFUSED, 0, {"reason": "build", "build": "0.4.0"},
 		client_id)
-	_pump(40)
+	# The id was stamped at encode; restore immediately so the host polls the
+	# pump under its real session context — anything in flight would otherwise
+	# decode foreign and inflate the malformed counters and bad_packets the
+	# later cases measure.
 	host_t.session = hs
+	_pump(40)
 	var got: Dictionary = {}
 	for msg in cs.inbox:
 		if int(msg["kind"]) == Protocol.Message.REFUSED:
