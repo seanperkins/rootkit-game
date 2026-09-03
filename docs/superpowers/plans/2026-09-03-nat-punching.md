@@ -87,7 +87,3 @@ packets up through the same `_handle` path, keyed by member id.
 - **The protocol bump is a hard cut**: the deployed relay and released
   clients must move together, or every link is `refused: bad`. Coordinate
   the relay deploy with the client release.
-- **Symmetric NATs** will not punch; they stay relayed. Acceptable.
-- **The protocol bump is a hard cut**: the deployed relay and released
-  clients must move together, or every link is `refused: bad`. Coordinate
-  the relay deploy with the client release.
