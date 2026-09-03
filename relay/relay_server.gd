@@ -51,7 +51,10 @@ func poll(now_ms: int) -> void:
 	var i := 0
 	while i < _drop_later.size():
 		if now_ms >= int(_drop_later[i][1]):
-			peer.disconnect_peer(int(_drop_later[i][0]))
+			# A joiner told "closed" usually hangs up first; ENet errors on
+			# disconnecting a peer it no longer has.
+			if rooms.is_connected_peer(int(_drop_later[i][0])):
+				peer.disconnect_peer(int(_drop_later[i][0]))
 			_drop_later.remove_at(i)
 		else:
 			i += 1
@@ -69,6 +72,7 @@ func _perform(actions: Array) -> void:
 			peer.set_transfer_mode(int(a[3]))
 			peer.put_packet(a[4])
 		elif a[0] == "drop":
-			peer.disconnect_peer(int(a[1]))
+			if rooms.is_connected_peer(int(a[1])):
+				peer.disconnect_peer(int(a[1]))
 		elif a[0] == "drop_later":
 			_drop_later.append([int(a[1]), Time.get_ticks_msec() + DROP_GRACE_MS])

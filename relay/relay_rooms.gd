@@ -37,6 +37,10 @@ func _init(rng_seed: int = -1) -> void:
 func connect_peer(peer: int, _now_ms: int) -> void:
 	_connected[peer] = true
 
+## Still on the socket, as far as this side has been told.
+func is_connected_peer(peer: int) -> bool:
+	return _connected.has(peer)
+
 func disconnect_peer(peer: int) -> Array:
 	var actions := []
 	_connected.erase(peer)
