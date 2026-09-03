@@ -85,11 +85,19 @@ per link.
   the candidate keyed by that DIRECTED pair. It emits nothing back to
   either side until BOTH directions of the pair are registered — i.e. until
   it holds both `(host, client)`'s and `(client, host)`'s candidates.
-- The **local** candidate (the peer's LAN `ip` and its own bound port) rides
-  in the same `discover` datagram, for two peers on the same network. It is
-  sanitised exactly like `last_address` (the hostname whitelist, length
-  cap) and dropped if malformed — never trusted as a route without a
-  completed, authenticated handshake.
+- The **local** candidate (the peer's LAN `ip` and its own bound port)
+  rides in the same `discover` datagram and is sanitised exactly like
+  `last_address` (the hostname whitelist, length cap), but is **explicitly
+  deferred**: it is carried and reserved, never dialed by this release.
+  One `ENetConnection` permits exactly one outgoing `connect_to_host`, so
+  a socket cannot try reflexive first and then retry the local address —
+  and a second socket per link (a distinct registration kind per
+  candidate, so both directions of each kind settle separately) is not
+  warranted before field evidence that same-LAN-no-hairpin co-op is
+  common. Such a pair rides the relay, which is always available. The
+  reflexive candidate is therefore THE candidate this feature dials:
+  the link socket raw-punches the remote reflexive mapping and spends its
+  sole connect on it.
 - Once both directions are known, the relay mints ONE shared, unguessable
   `key` for the pair and sends each side, over the EXISTING relay link (not
   the discovery socket), `{op:"punch", member:<the other member>,
@@ -117,10 +125,12 @@ per link.
 
 - One `ENetConnection`, bound to an OS-assigned port, that both sends the
   `discover` datagram above and later spends its single outgoing connect on
-  `connect_to_host` for that member's candidates (relayed reflexive address
-  first, local address as a fallback attempt) — the standard
-  simultaneous-open punch: both ends dial each other at once, and the first
-  packet from each opens its NAT's mapping for the other's reply.
+  `connect_to_host` to the remote reflexive mapping named by the punch op
+  — the standard simultaneous-open punch: both ends dial each other at
+  once, and the first packet from each opens its NAT's mapping for the
+  other's reply. The op's `local_host`/`local_port` fields are inert on
+  this socket (see **Candidates and reflexive discovery**): one socket,
+  one connect, one candidate — the reflexive one.
 - **Authentication over the raw connect.** A completed ENet handshake alone
   only proves a UDP path exists to *something* listening on that port — not
   that it is the intended peer. Each side sends `direct_hello` carrying the
@@ -220,12 +230,34 @@ same seed — that is the acceptance gate.
 - **Determinism**: a relayed run and a punched run of one seed produce
   identical tick hashes.
 
+## Transport security limits — documented, not claimed away
+
+ENet carries **plaintext with no integrity protection**, and this feature
+does not change that. The relay-issued key authenticates only the
+`direct_hello`/`direct_ack` handshake; the records, checksums, control
+messages and snapshots that follow are unmodified and unauthenticated on
+both the relay and direct paths. The direct path additionally exposes the
+peers' public endpoints to each other (the relay already saw them, so
+confidentiality is unchanged; observability of host IPs by co-players is
+new). Recent practitioner guidance — WebRTC stacks with DTLS-SRTP and
+ICE, Tailscale's WireGuard tunnels — assumes encrypted authenticated
+payloads, so "the design follows best practices" is true of the
+*traversal mechanics* only, never of transport confidentiality or
+integrity. Adding E2E encryption is out of scope here and would be a
+separate design; until then the whole session is as authenticatable as
+the plaintext protocol was before this feature.
+
 ## Out of scope
 
 TURN/relay-of-last-resort beyond the existing relay, symmetric-NAT
 prediction, more than one relay, IPv6 candidates, per-link delay
 renegotiation, and any client–client direct link — the star is the whole
-topology this feature builds. Symmetric NATs that rewrite the port per
+topology this feature builds — and E2E encryption of the transport. A
+same-LAN candidate socket (a distinct registration kind per candidate so
+both directions of each kind settle separately) is also deferred: the
+relay is the working same-network path, and no field evidence yet shows
+same-LAN-no-hairpin co-op common enough to double the per-link socket
+count. Symmetric NATs that rewrite the port per
 destination will simply fail to punch and stay relayed; that is acceptable
 for a co-op game with a working relay fallback.
 

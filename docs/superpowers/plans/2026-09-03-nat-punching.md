@@ -65,9 +65,12 @@ a client–client link.
   0, …)` (OS-assigned port). That same socket sent the `discover` datagram
   that produced the candidate exchange (raw `socket_send`, spending no
   connect); it now spends its single outgoing `connect_to_host` on the
-  peer's reflexive address, with the local candidate as a fallback attempt
-  — simultaneous open, proven in the original feasibility probe (see
-  History).
+  peer's reflexive address — the ONE candidate a socket may dial, since
+  the same socket cannot try local afterward (simultaneous open, proven
+  in the original feasibility probe, see History). The punch op's
+  `local_host`/`local_port` fields are carried and inert; a same-LAN
+  candidate is deferred to a separate per-link socket (distinct
+  registration kind) or left to the relay.
 - On `EVENT_CONNECT`, send `direct_hello` carrying the `key` the relay's
   `punch` op handed this side. On receiving a `direct_hello` or
   `direct_ack` whose key matches, mark the link authenticated
