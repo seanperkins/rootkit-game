@@ -33,6 +33,28 @@ tick (above the guard):  poll transport ─> ring ─> take(tick) ─> _apply_re
 | `CONTROL_MAX` | 16384 | `ADDRESS_MAX` | 64 |
 | `DEFAULT_PORT` | 43210 | | |
 
+## `relay/` — the room-code relay
+
+Every peer, host included, dials `SessionRules.RELAY_ADDRESS:RELAY_PORT`
+(43211) as an ENet client; the relay forwards packets between the members
+of a room on a ONE-BYTE route and never decodes a game packet. Rooms are
+keyed by a six-character code (`CODE_ALPHABET`, no 0/O/1/I).
+
+| File | Role |
+|---|---|
+| `relay_frame.gd` `RelayFrame` (pure) | `route(member, bytes)` / `unroute`; ops `u8 255 + var_to_bytes(dict)` bounded by `RELAY_OP_MAX` 512; `is_code / normalise_code` |
+| `relay_rooms.gd` `RelayRooms` (pure) | `connect_peer / disconnect_peer / handle / expire / stats` → actions `["send", peer, ch, mode, bytes]`, `["drop", peer]`, `["drop_later", peer]`; ops `create join room refused joined left kick closed`; member ids host 1, joiners 2..4, broadcast 0 (host only) |
+| `relay_server.gd` `RelayServer` | the ENet shell; `relay_main.gd` is the systemd process |
+| `deploy.sh` / `install.sh` | doctl droplet (nyc3) + systemd unit `rootkit-relay` |
+
+`Transport` relay mode: `host_relayed(session)` / `join_relayed(code, session)`
+dial the relay; `_put` prefixes the destination member, `poll` strips the
+source and hands it up as the peer id, so `HOST_PEER = 1`, bindings and
+every message path are unchanged. Relay ops drive `room_ready(code)`,
+`peer_joined`, `peer_left`; `relay_error` carries `unknown / full / closed /
+bad / lost`. `RELAY_DELAY` 5 is the relayed lobby's input delay.
+`tests/test_relay.gd` runs a relay in-process over loopback (real UDP).
+
 ## `scripts/net/lockstep.gd` (361) — `Lockstep`, PURE
 
 A ring of `RING = 128` ticks × `MAX_PLAYERS` records `{move, card, target,

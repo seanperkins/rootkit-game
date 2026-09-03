@@ -1,0 +1,14 @@
+[Unit]
+Description=ROOTKIT room-code relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rootkit
+WorkingDirectory=/opt/rootkit-relay/project
+ExecStart=/opt/rootkit-relay/godot --headless --path /opt/rootkit-relay/project -s res://relay/relay_main.gd -- --port 43211
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

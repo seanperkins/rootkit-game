@@ -60,6 +60,11 @@ Grab the zip for your platform from the
   signed, so SmartScreen asks once: *More info → Run anyway*.
 - **Linux**: `ROOTKIT.x86_64` plus its `.pck`; `chmod +x` it if needed.
 
+**Play online**: one player presses *host* and reads out the six-character
+room code; the others type it in the field and press *join*. No port
+forwarding: everyone connects to a small relay (`relay/`). *host LAN* is the
+direct-address mode for a local network.
+
 Releases are cut from a version tag. Windows and Linux come from
 `.github/workflows/release.yml`; the Mac build is signed here with
 `tools/release_mac.sh <tag>`. Both attach to the same release.
