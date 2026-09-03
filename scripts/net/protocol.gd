@@ -75,14 +75,18 @@ static func decode_envelope(bytes: PackedByteArray, context: Dictionary) -> Dict
 		return {}
 	if body_len < 0 or body_len != bytes.size() - ENVELOPE:
 		return {}
-	# HELLO, WELCOME and START are the lobby handshake, exchanged before the
-	# client has a confirmed session, so they are exempt from the session
-	# check. A client learns its session id FROM the WELCOME in its inbox, and
-	# applies it a step later — so a START that arrives in the same poll batch
-	# as its WELCOME would otherwise be measured against session id 0 and
-	# silently refused, the whole run failing to start. Both bodies are
-	# re-validated against the established session by apply_welcome/apply_start.
-	if kind != Message.HELLO and kind != Message.WELCOME and kind != Message.START 			and session_id != int(context.get("session_id", -1)):
+	# HELLO, WELCOME, START and REFUSED are handshake/link-level messages,
+	# exchanged before (or instead of) a confirmed session, so they are exempt
+	# from the session check. A client learns its session id FROM the WELCOME
+	# in its inbox, and applies it a step later — so a START that arrives in
+	# the same poll batch as its WELCOME would otherwise be measured against
+	# session id 0 and silently refused, the whole run failing to start. And a
+	# REFUSED sent at session 0 (the host refusing a joiner, like WELCOME) to
+	# a client that already knows its session would be dropped the same way —
+	# the refusal is the reply to a HELLO it may never have had answered.
+	# Bodies are re-validated against the established session where it matters.
+	if kind != Message.HELLO and kind != Message.WELCOME and kind != Message.START \
+			and kind != Message.REFUSED and session_id != int(context.get("session_id", -1)):
 		return {}
 	return {"kind": kind, "session_id": session_id, "tick": tick,
 		"body": bytes.slice(ENVELOPE)}

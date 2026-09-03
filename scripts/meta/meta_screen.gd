@@ -373,6 +373,13 @@ func _on_peer_left(id: int) -> void:
 	else:
 		_link_status.text = "the host went away"
 		_leave()
+		# A link cut before any WELCOME assigned a slot is the host refusing
+		# this build at the envelope (old host, new client) or cutting us off;
+		# the REFUSED message can only travel between builds that share the
+		# enum, so name the likely cause.
+		if _session == null or _session.role != NetworkSession.Role.CLIENT \
+				or _session.local_slot < 0:
+			_link_status.text = "the host closed the link — it may be a different game version; check for updates"
 
 func _process(_dt: float) -> void:
 	if _transport == null or _session == null:
@@ -382,7 +389,10 @@ func _process(_dt: float) -> void:
 		var why := "the relay did not answer" if _transport.relayed \
 			else "no answer from %s" % SaveGame.string_pref("last_address")
 		_leave()
-		_link_status.text = why
+		# An OLD build cannot decode REFUSED (its Message enum is shorter), so
+		# the version-skew case that can never produce a message is a silent
+		# dead link — treat it as probable skew too, like the explicit one.
+		_link_status.text = "%s — it may be an older game version; check for updates" % why
 		return
 	if _transport.relayed and _transport.relay_error != "":
 		var reason: String = {"unknown": "no room with that code", "full": "that room is full",

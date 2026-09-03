@@ -221,6 +221,10 @@ func build_versions_are_part_of_the_handshake() -> void:
 		[str(refused.get("reason", "")), str(refused.get("build", ""))], ["build", "0.4.0"])
 	_check("REFUSED refuses a non-string reason",
 		body.call(M.REFUSED, 0, {"reason": 5, "build": "0.4.0"}).is_empty(), true)
+	var rejected := Protocol.decode_envelope(Protocol.encode_control(
+		M.REFUSED, 777, 0, {"reason": "build", "build": "0.4.0"}), {"session_id": 777})
+	_check("REFUSED crosses even at a known session id — the host sends it at 0",
+		rejected.is_empty(), false)
 	finished["build_versions_are_part_of_the_handshake"] = true
 
 ## The one text field takes a code or an address: six alphabet characters

@@ -15,7 +15,8 @@ const PORT := 43217
 const CASES := ["reliable_input_survives_withheld_polling", "one_relay_bundle_per_tick",
 	"a_snapshot_does_not_delay_input", "pings_and_counters", "tick_windows_are_distinct",
 	"foreign_envelopes_are_refused", "a_join_after_start_is_refused",
-	"malformed_packets_are_counted_then_cut", "silence_parks_after_three_seconds"]
+	"malformed_packets_are_counted_then_cut", "silence_parks_after_three_seconds",
+	"a_refused_joiner_reaches_a_session_knowing_client"]
 
 var host_t: Transport
 var client_t: Transport
@@ -36,6 +37,7 @@ func _initialize() -> void:
 	reliable_input_survives_withheld_polling()
 	one_relay_bundle_per_tick()
 	a_snapshot_does_not_delay_input()
+	a_refused_joiner_reaches_a_session_knowing_client()
 	pings_and_counters()
 	tick_windows_are_distinct()
 	foreign_envelopes_are_refused()
@@ -311,6 +313,25 @@ func a_join_after_start_is_refused() -> void:
 	hs.started = false
 	hs.inbox.clear()
 	finished["a_join_after_start_is_refused"] = true
+
+## The host refuses a joiner by sending REFUSED at whatever session id its
+## send_control carries, while the receiver's context already names a session.
+## The refusal must land in the receiver's inbox, not be dropped by the
+## envelope's session check — the lobby uses this to say "update" instead of
+## giving a dead link.
+func a_refused_joiner_reaches_a_session_knowing_client() -> void:
+	cs.inbox.clear()
+	host_t.send_control(Protocol.Message.REFUSED, 0, {"reason": "build", "build": "0.4.0"},
+		client_id)
+	_pump(40)
+	var got: Dictionary = {}
+	for msg in cs.inbox:
+		if int(msg["kind"]) == Protocol.Message.REFUSED:
+			got = msg["body"]
+	_check("REFUSED reaches a client that knows its session", not got.is_empty(), true)
+	_check("and names the host's build", str(got.get("build", "")), "0.4.0")
+	cs.inbox.clear()
+	finished["a_refused_joiner_reaches_a_session_knowing_client"] = true
 
 ## Garbage is dropped and counted per peer; at BAD_PACKETS the peer is cut.
 func malformed_packets_are_counted_then_cut() -> void:
