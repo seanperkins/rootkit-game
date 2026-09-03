@@ -1,0 +1,68 @@
+extends SceneTree
+## Probe the live relay from this machine: host a room, join it, pass one
+## record each way, print the timings. Not a suite; a check after a deploy.
+##   godot --headless -s res://tools/probe_relay.gd [-- --address IP]
+var ADDR := SessionRules.RELAY_ADDRESS
+var relay_port := SessionRules.RELAY_PORT
+var host_t: Transport
+var client_t: Transport
+var hs: NetworkSession
+var cs: NetworkSession
+var code := ""
+var joined := []
+var saw := []
+func _desc() -> Dictionary:
+	var rows := []
+	for s in 2:
+		rows.append({"slot": s, "name": "p%d" % s, "counters": SaveGame.session_counters()})
+	return NetworkSession.validate_descriptor({"protocol": SessionRules.PROTOCOL,
+		"session_id": 79, "seed": 1, "delay": 2, "choice_timeout": 0, "roster": rows})
+func _ring() -> Lockstep:
+	var ls := Lockstep.new(SessionRules.MAX_PLAYERS, 2)
+	ls.mark_absent(2); ls.mark_absent(3); ls.prime(0, 1)
+	return ls
+func _pump(ms: int) -> void:
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < ms:
+		if host_t != null: host_t.poll()
+		if client_t != null: client_t.poll()
+		OS.delay_msec(2)
+func _has(ls: Lockstep, slot: int, tick: int) -> bool:
+	var cell: int = tick & (Lockstep.RING - 1)
+	return ls._tick_tag[cell] == tick and (ls._have[cell] & (1 << slot)) != 0
+func _initialize() -> void:
+	var args := OS.get_cmdline_user_args()
+	for i in args.size():
+		if args[i] == "--address" and i + 1 < args.size():
+			ADDR = args[i + 1]
+	if ADDR == "":
+		print("no relay address: set SessionRules.RELAY_ADDRESS or pass -- --address IP")
+		quit(1); return
+	SaveGame.use_fresh_state()
+	hs = NetworkSession.create(_desc(), 0, NetworkSession.Role.HOST); hs.lockstep = _ring()
+	host_t = Transport.new(); root.add_child(host_t)
+	host_t.room_ready.connect(func(c): code = c)
+	host_t.peer_joined.connect(func(id): joined.append(id); host_t.bind_peer(id, 1))
+	var t0 := Time.get_ticks_msec()
+	print("host_relayed: ", error_string(host_t.host_relayed(hs, ADDR, relay_port)))
+	while code == "" and Time.get_ticks_msec() - t0 < 6000: _pump(10)
+	print("room code: '%s' after %d ms (error '%s')" % [code, Time.get_ticks_msec() - t0, host_t.relay_error])
+	if code == "":
+		quit(1); return
+	cs = NetworkSession.create(_desc(), 1, NetworkSession.Role.CLIENT); cs.lockstep = _ring()
+	client_t = Transport.new(); root.add_child(client_t)
+	client_t.peer_joined.connect(func(id): saw.append(id); client_t.bind_peer(Transport.HOST_PEER, 0))
+	print("join_relayed: ", error_string(client_t.join_relayed(code, cs, ADDR, relay_port)))
+	t0 = Time.get_ticks_msec()
+	while (joined.is_empty() or saw.is_empty()) and Time.get_ticks_msec() - t0 < 6000: _pump(10)
+	print("host saw %s, joiner saw %s after %d ms" % [joined, saw, Time.get_ticks_msec() - t0])
+	t0 = Time.get_ticks_msec()
+	client_t.send_input(2, Vector2(0.25, 0.0), -1, -1, -1)
+	while not _has(hs.lockstep, 1, 2) and Time.get_ticks_msec() - t0 < 3000: _pump(5)
+	print("joiner->host record: %s in %d ms" % [_has(hs.lockstep, 1, 2), Time.get_ticks_msec() - t0])
+	t0 = Time.get_ticks_msec()
+	host_t.send_input(2, Vector2(-0.5, 0.0), -1, -1, -1); host_t.flush_relay(2)
+	while not _has(cs.lockstep, 0, 2) and Time.get_ticks_msec() - t0 < 3000: _pump(5)
+	print("host->joiner bundle: %s in %d ms" % [_has(cs.lockstep, 0, 2), Time.get_ticks_msec() - t0])
+	client_t.close(); host_t.close()
+	quit(0)

@@ -91,7 +91,7 @@ const DEFAULT_PORT := 43210
 ## ENet client; the relay forwards packets between the members of a room on
 ## a one-byte route (relay/relay_frame.gd). A raw IP, baked in: replacing
 ## the droplet means a release. Set from relay/deploy.sh's printed address.
-const RELAY_ADDRESS := ""
+const RELAY_ADDRESS := "68.183.52.156"
 const RELAY_PORT := 43211
 ## One extra tick of input delay for the hop through the relay.
 const RELAY_DELAY := 5

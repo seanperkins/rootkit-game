@@ -53,7 +53,12 @@ for _ in $(seq 1 30); do
 done
 $SSH root@"$IP" true || { echo "cannot ssh to root@$IP with the matched key" >&2; exit 1; }
 $SSH root@"$IP" 'command -v rsync >/dev/null || (apt-get update -qq >/dev/null && apt-get install -y -qq rsync >/dev/null); mkdir -p /root/rootkit-src'
-rsync -a --delete -e "$SSH" --exclude .godot --exclude build --exclude site --exclude .git "$ROOT/" root@"$IP":/root/rootkit-src/
+rsync -a --delete -e "$SSH" --exclude /.godot --exclude /build --exclude /site --exclude /.git "$ROOT/" root@"$IP":/root/rootkit-src/
+# The class cache, as a fallback for a droplet too small to run the import.
+if [ -f "$ROOT/.godot/global_script_class_cache.cfg" ]; then
+  $SSH root@"$IP" 'mkdir -p /root/rootkit-src/.godot'
+  rsync -a -e "$SSH" "$ROOT/.godot/global_script_class_cache.cfg" root@"$IP":/root/rootkit-src/.godot/
+fi
 $SSH root@"$IP" 'bash /root/rootkit-src/relay/install.sh'
 echo
 echo "relay is up at $IP:43211"
