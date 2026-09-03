@@ -22,7 +22,7 @@ class_name Protocol extends RefCounted
 ## per kind.
 
 enum Message { HELLO, WELCOME, START, INPUT, RELAY, CHECKSUM, RESYNC, SNAPSHOT,
-	ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END, PING, PONG }
+	ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END, PING, PONG, REFUSED }
 
 const ENVELOPE := 14
 const INPUT_BODY := 28            # move f32 x2, aim f32 x2, card, target, offer i32
@@ -252,9 +252,13 @@ static func decode_control(kind: int, tick: int, body: PackedByteArray) -> Dicti
 			var slot := int(_num(raw.get("slot", -1)))
 			if slot < -1 or slot >= SessionRules.MAX_PLAYERS:
 				return {}
+			var version = raw.get("version", "")
+			if typeof(version) != TYPE_STRING or version.length() > SessionRules.VERSION_MAX:
+				return {}
 			out = {"protocol": SessionRules.PROTOCOL, "name": name,
 				"session_id": int(_num(raw.get("session_id", 0))), "slot": slot,
-				"counters": SaveGame.sanitise_session_counters(raw.get("counters", null))}
+				"counters": SaveGame.sanitise_session_counters(raw.get("counters", null)),
+				"version": version}
 		Message.WELCOME, Message.START:
 			var desc := NetworkSession.validate_descriptor(raw.get("descriptor", null))
 			if desc.is_empty():
@@ -282,6 +286,15 @@ static func decode_control(kind: int, tick: int, body: PackedByteArray) -> Dicti
 			if t < 0:
 				return {}
 			out = {"t": t}
+		Message.REFUSED:
+			var reason = raw.get("reason", "")
+			if typeof(reason) != TYPE_STRING \
+					or reason.length() > SessionRules.REFUSED_REASON_MAX:
+				return {}
+			var build = raw.get("build", "")
+			if typeof(build) != TYPE_STRING or build.length() > SessionRules.VERSION_MAX:
+				return {}
+			out = {"reason": reason, "build": build}
 		_:
 			return {}
 	out["kind"] = kind

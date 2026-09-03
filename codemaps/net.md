@@ -22,7 +22,7 @@ tick (above the guard):  poll transport ─> ring ─> take(tick) ─> _apply_re
 
 | Const | Value | Const | Value |
 |---|---|---|---|
-| `PROTOCOL` | 3 | `NAME_MAX` | 24 |
+| `PROTOCOL` | 4 | `NAME_MAX` | 24 |
 | `TICK_DT` | 1/60 | `HITSTOP_TICKS` | 4 |
 | `MAX_PLAYERS` | 4 | `DEFAULT_DELAY` / `LAN_DELAY` | 4 / 3 |
 | `CHOICE_TIMEOUT_TICKS` | 1800 | `CHECKSUM_INTERVAL` | 60 |
@@ -91,8 +91,11 @@ bytes; control kinds `var_to_bytes` of a primitive Dictionary, decoded with
 shape-checked per kind — unknown fields dropped, bad values refuse the body.
 
 `enum Message { HELLO, WELCOME, START, INPUT, RELAY, CHECKSUM, RESYNC,
-SNAPSHOT, ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END }`.
-`BOUNDARY_MARGIN = 3` — a boundary sits at `executed + delay + 3`.
+SNAPSHOT, ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END, PING,
+PONG, REFUSED }`. HELLO carries the build `version`; REFUSED carries
+`{reason, build}` — a peer that refuses a join names the build so the
+joiner can tell its player to update. `BOUNDARY_MARGIN = 3` — a boundary
+sits at `executed + delay + 3`.
 
 `valid_tick(kind, tick, ctx)` — three DISTINCT windows: input
 `[executed, +RING)` or `[boundary+1, …)` while one is armed; checksum
@@ -145,10 +148,17 @@ Direct packet peers share the usual `set_timeout(PEER_TIMEOUT_MS, ...)`.
 ## `scripts/net/network_session.gd` (451) — `NetworkSession`, PURE
 
 `enum Role { SOLO, HOST, CLIENT }`. The immutable `descriptor`
-`{protocol, session_id, seed, delay, choice_timeout, roster[{slot, name,
-counters}]}` — `validate_descriptor(raw)` returns a clean copy or `{}` on
-ANY violation. `local_slot`, `role`, `lockstep`, `inbox`, `started`,
-`accepts_hello`.
+`{protocol, session_id, seed, delay, choice_timeout, version, roster[{slot,
+name, counters}]}` — `validate_descriptor(raw)` returns a clean copy or
+`{}` on ANY violation. `local_slot`, `role`, `lockstep`, `inbox`,
+`started`, `accepts_hello`. `admit` returns
+`ADMIT_VERSION_MISMATCH (-2)` — distinct from a plain -1 refusal — when a
+HELLO names a different build than the host runs; the lobby answers with
+REFUSED before cutting the link. `apply_welcome`/`apply_start` refuse a
+descriptor whose version differs from this peer's build (`reject_reason`
+= "version"): lockstep peers must run byte-identical builds, so a skew is
+rejected at the handshake, where it is a message, not mid-run, where it is
+a desync.
 
 | Group | State / API |
 |---|---|

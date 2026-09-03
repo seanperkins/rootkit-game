@@ -853,7 +853,8 @@ func _on_peer_joined(_id: int) -> void:
 		"protocol": SessionRules.PROTOCOL, "name": p.get("name", ""),
 		"counters": p.get("counters", {}),
 		"session_id": int(_session.descriptor.get("session_id", 0)),
-		"slot": local_slot})
+		"slot": local_slot,
+		"version": str(_session.descriptor.get("version", ""))})
 
 ## Client: the host is gone, or silent past the timeout. Stop, and HELLO for
 ## this original slot until it works or the attempts run out. There is no

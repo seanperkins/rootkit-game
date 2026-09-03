@@ -19,8 +19,8 @@ class_name NetworkSession extends RefCounted
 
 enum Role { SOLO, HOST, CLIENT }
 
-## protocol, session_id, seed, delay, choice_timeout, roster. Frozen after START;
-## never mutated in place by the simulation.
+## protocol, session_id, seed, delay, choice_timeout, roster, version. Frozen
+## after START; never mutated in place by the simulation.
 var descriptor: Dictionary = {}
 
 ## Which roster slot this process's local input drives.
@@ -209,11 +209,17 @@ var lobby_session_id := 0
 var lobby_seed := 0
 var lobby_delay := SessionRules.DEFAULT_DELAY
 var lobby_timeout := SessionRules.CHOICE_TIMEOUT_TICKS
+## The build version this peer is running — the tag stamped into
+## application/config/version ("dev" in editor builds). The host freezes it
+## into the descriptor so every peer inherits it; a HELLO naming a different
+## value is refused before it gets a slot.
+var lobby_version := ""
 
 ## Open a lobby as host: this profile takes slot 0.
 static func host_lobby(profile: Dictionary, session_id: int, seed_value: int,
 		delay: int = SessionRules.DEFAULT_DELAY,
-		timeout: int = SessionRules.CHOICE_TIMEOUT_TICKS) -> NetworkSession:
+		timeout: int = SessionRules.CHOICE_TIMEOUT_TICKS,
+		version: String = "") -> NetworkSession:
 	var s := NetworkSession.new()
 	s.role = Role.HOST
 	s.local_slot = 0
@@ -221,14 +227,16 @@ static func host_lobby(profile: Dictionary, session_id: int, seed_value: int,
 	s.lobby_seed = int(seed_value)
 	s.lobby_delay = clampi(delay, 0, SessionRules.DEFAULT_DELAY + 4)
 	s.lobby_timeout = maxi(0, timeout)
+	s.lobby_version = version
 	s.lobby_rows = [_sanitise_profile(profile, 0)]
 	return s
 
 ## Open a lobby as a client: no slot until WELCOME assigns one.
-static func client_lobby() -> NetworkSession:
+static func client_lobby(version: String = "") -> NetworkSession:
 	var s := NetworkSession.new()
 	s.role = Role.CLIENT
 	s.local_slot = -1
+	s.lobby_version = version
 	return s
 
 ## The lowest free slot, or -1 when the lobby is full or START has passed.
@@ -249,8 +257,13 @@ func profile_row(slot: int) -> Dictionary:
 ## Host: admit a HELLO from `peer`. A fresh joiner before START takes the
 ## lowest free slot; after START only a reconnect naming this session and an
 ## existing slot is admitted, and it does not replace that slot's name or
-## counters. Returns the slot, or -1 when refused.
+## counters. Returns the slot, or -1 when refused, or ADMIT_VERSION_MISMATCH
+## when the HELLO names a different build than this host runs.
+const ADMIT_VERSION_MISMATCH := -2
+
 func admit(hello: Dictionary, peer: int) -> int:
+	if hello.get("version", "") != lobby_version:
+		return ADMIT_VERSION_MISMATCH
 	if started:
 		if int(hello.get("session_id", -1)) != int(descriptor.get("session_id", -2)):
 			return -1
@@ -290,6 +303,7 @@ func lobby_descriptor() -> Dictionary:
 		"seed": lobby_seed,
 		"delay": _starting_delay(lobby_delay, lobby_rows.size()),
 		"choice_timeout": lobby_timeout,
+		"version": lobby_version,
 		"roster": lobby_rows.duplicate(true)})
 
 ## The starting input delay: the lobby's mode constant scaled to the live
@@ -312,11 +326,18 @@ func start() -> Dictionary:
 	return descriptor
 
 ## Client: a WELCOME carries the host's current roster and this peer's slot
-## (or -1 for a refresh that keeps the slot already assigned).
+## (or -1 for a refresh that keeps the slot already assigned). A descriptor
+## naming a different build version is refused — lockstep peers must run the
+## same build or the simulation diverges in ways checksums only find later.
 func apply_welcome(body: Dictionary) -> bool:
 	var desc: Dictionary = body.get("descriptor", {})
 	if desc.is_empty():
+		reject_reason = "shape"
 		return false
+	if str(desc.get("version", "")) != lobby_version:
+		reject_reason = "version"
+		return false
+	reject_reason = ""
 	descriptor = desc
 	lobby_rows = (desc["roster"] as Array).duplicate(true)
 	lobby_session_id = int(desc["session_id"])
@@ -326,18 +347,26 @@ func apply_welcome(body: Dictionary) -> bool:
 	return true
 
 ## Client: START freezes the descriptor. Refused when it names another session
-## than the one WELCOME announced, or does not hold this peer's slot.
+## than the one WELCOME announced, does not hold this peer's slot, or changes
+## the build version the WELCOME already established.
 func apply_start(body: Dictionary) -> bool:
 	var desc: Dictionary = body.get("descriptor", {})
 	if desc.is_empty():
 		return false
 	if lobby_session_id != 0 and int(desc["session_id"]) != lobby_session_id:
 		return false
+	if str(desc.get("version", "")) != lobby_version:
+		reject_reason = "version"
+		return false
 	descriptor = desc
 	if profile(local_slot).is_empty():
 		return false
 	started = true
 	return true
+
+## Why the last apply_welcome/apply_start was refused: "shape", "version", or
+## "" when it was not. The lobby UI reads it to say what went wrong.
+var reject_reason := ""
 
 ## Bind a validated descriptor to this peer's slot and role.
 static func create(desc: Dictionary, slot: int, role_value: int) -> NetworkSession:
@@ -350,13 +379,15 @@ static func create(desc: Dictionary, slot: int, role_value: int) -> NetworkSessi
 ## A one-slot descriptor for offline play: this peer is the only player, input
 ## has no delay (its own record is always present), and offers never time out
 ## because there is no one else to wait on.
-static func solo_descriptor(profile: Dictionary, seed: int) -> Dictionary:
+static func solo_descriptor(profile: Dictionary, seed: int,
+		version: String = "") -> Dictionary:
 	return {
 		"protocol": SessionRules.PROTOCOL,
 		"session_id": 0,
 		"seed": int(seed),
 		"delay": 0,
 		"choice_timeout": 0,
+		"version": version,
 		"roster": [_sanitise_profile(profile, 0)],
 	}
 
@@ -380,6 +411,9 @@ static func validate_descriptor(raw) -> Dictionary:
 		return {}
 	var timeout := int(_num(raw.get("choice_timeout", -1), -1.0))
 	if timeout < 0:
+		return {}
+	var version = raw.get("version", "")
+	if typeof(version) != TYPE_STRING or version.length() > SessionRules.VERSION_MAX:
 		return {}
 	var roster = raw.get("roster", null)
 	if typeof(roster) != TYPE_ARRAY:
@@ -412,6 +446,7 @@ static func validate_descriptor(raw) -> Dictionary:
 		"seed": int(_num(raw.get("seed", 0), 0.0)),
 		"delay": delay,
 		"choice_timeout": timeout,
+		"version": version,
 		"roster": clean_roster,
 	}
 

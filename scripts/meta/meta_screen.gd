@@ -66,8 +66,12 @@ func _ready() -> void:
 	add_child(col)
 
 	col.add_child(_label("ROOTKIT", 30, FG))
-	col.add_child(_label("rogue process // corporate network // subnet 01", 14, DIM))
-	col.add_child(_label("v%s" % _build(), 12, DIM))
+	# The version rides the subtitle line, not its own row: test_meta_layout
+	# measures ./intrude against the viewport, and every added line eats the
+	# slack the 240px scroll height was tuned for. "v0.4.0" is a fact to show,
+	# not an element to inherit spacing for.
+	col.add_child(_label("rogue process // corporate network // subnet 01  —  v%s" % _build(),
+		14, DIM))
 	col.add_child(_spacer(18))
 
 	_salvage = _label("", 18, HOT)
@@ -252,7 +256,8 @@ func _start_hosting(relay: bool) -> void:
 	# the simulation, so a real random source is fine.
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
-	_session = NetworkSession.host_lobby(profile, rng.randi() | 1, rng.randi(), _delay_for(relay))
+	_session = NetworkSession.host_lobby(profile, rng.randi() | 1, rng.randi(),
+		_delay_for(relay), SessionRules.CHOICE_TIMEOUT_TICKS, _build())
 	_transport = Transport.new()
 	add_child(_transport)
 	var err: Error
@@ -291,7 +296,7 @@ func _join() -> void:
 	if _transport != null:
 		return
 	_profile()
-	_session = NetworkSession.client_lobby()
+	_session = NetworkSession.client_lobby(_build())
 	_transport = Transport.new()
 	add_child(_transport)
 	var addr := SaveGame.string_pref("last_address")
@@ -354,7 +359,8 @@ func _on_connected_to_host(_id: int) -> void:
 	var p := _profile()
 	_transport.send_control(Protocol.Message.HELLO, 0, {
 		"protocol": SessionRules.PROTOCOL, "name": p["name"],
-		"counters": p["counters"], "session_id": 0, "slot": -1})
+		"counters": p["counters"], "session_id": 0, "slot": -1,
+		"version": _build()})
 	_link_status.text = "connected — waiting for a slot"
 
 func _on_peer_left(id: int) -> void:
@@ -401,6 +407,14 @@ func _handle(kind: int, body: Dictionary, peer: int) -> void:
 			if _session.role != NetworkSession.Role.HOST:
 				return
 			var slot := _session.admit(body, peer)
+			if slot == NetworkSession.ADMIT_VERSION_MISMATCH:
+				# Same wire protocol, different build: a lockstep friend that
+				# has not updated would desync. Name the build, then cut the
+				# link — the joiner's client shows the reason in the lobby.
+				_transport.send_control(Protocol.Message.REFUSED, 0,
+					{"reason": "build", "build": _build()}, peer)
+				_transport.peer.disconnect_peer(peer)
+				return
 			if slot < 0:
 				_transport.peer.disconnect_peer(peer)
 				return
@@ -416,6 +430,10 @@ func _handle(kind: int, body: Dictionary, peer: int) -> void:
 				_link_status.text = "in the lobby as slot %d — waiting for the host to start" \
 					% _session.local_slot
 				_refresh_players()
+			elif _session.reject_reason == "version":
+				_leave()
+				_link_status.text = "the host is running v%s — you are on v%s; update to play together" \
+					% [str(body.get("descriptor", {}).get("version", "?")), _build()]
 		Protocol.Message.START:
 			if _session.role != NetworkSession.Role.CLIENT:
 				return
@@ -429,6 +447,14 @@ func _handle(kind: int, body: Dictionary, peer: int) -> void:
 				_transport.peer.disconnect_peer(peer)
 				_broadcast_welcome(-1)
 				_refresh_players()
+		Protocol.Message.REFUSED:
+			if _session.role != NetworkSession.Role.CLIENT:
+				return
+			if str(body.get("reason", "")) != "build":
+				return
+			_leave()
+			_link_status.text = "the host runs v%s — you are on v%s; update to play together" \
+				% [str(body.get("build", "?")), _build()]
 
 ## Refresh every OTHER peer's roster after a change; the joining peer already
 ## has its own WELCOME with its slot.

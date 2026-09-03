@@ -7,12 +7,24 @@ class_name SessionRules extends RefCounted
 
 ## Wire-protocol version. Two peers with different values cannot share a
 ## simulation, so the handshake refuses a mismatch and the descriptor carries it.
-const PROTOCOL := 3   # 2: the input record carries an aim; 3: five exploit rows
+const PROTOCOL := 4   # 2: the input record carries an aim; 3: five exploit rows;
+                      # 4: the session tracks the game BUILD version
+                      # (HELLO/WELCOME/REFUSED), so a skew refuses cleanly
+                      # instead of desyncing.
 
 ## Longest a player display name may be, in characters. A roster row past this is
 ## rejected by descriptor validation rather than truncated — a hostile peer does
 ## not get to smuggle length past the check by padding.
 const NAME_MAX := 24
+
+## Longest the game build version string may be, in characters — the value
+## `config/version` carries in release builds and "dev" in editor builds. It
+## rides the HELLO/WELCOME handshake and the session descriptor; peers at
+## different values refuse to share a session.
+const VERSION_MAX := 32
+
+## Longest a REFUSED reason string may be, in characters.
+const REFUSED_REASON_MAX := 32
 
 ## The single simulation step. The tick is 60 Hz and nothing below the world
 ## guard reads a wall clock, so every simulation step ages by exactly this,

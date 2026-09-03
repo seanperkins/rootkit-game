@@ -161,6 +161,16 @@ the site; this is the index.
   for emit sites rather than keeping a list — **an id reached through a lookup
   table is invisible to that grep**, so a new table of ids must be added to the
   suite's indirect-site scan the way `HIT_SOUNDS` was.
+- **A lockstep session runs one build.** `SessionRules.PROTOCOL` refuses a
+  differently-built *protocol* at the envelope, but two builds on the same
+  protocol can still diverge in game logic — so the handshake also carries the
+  build version: HELLO/WELCOME/REFUSED plus the descriptor's `version` (the
+  tag stamped into `application/config/version`, "dev" in editor builds).
+  A same-protocol skew is refused at `admit` (`ADMIT_VERSION_MISMATCH`,
+  distinct from a plain -1) and at `apply_welcome`/`apply_start`
+  (`reject_reason = "version"`), so the lobby says "update" instead of the
+  run finding a desync later. Any HELLO/WELCOME/REFUSED path must carry the
+  version — a reconnect HELLO without it is refused by the updated host.
 - **The relay and client ship the same `RELAY_PROTOCOL`.** A punched leg is a
   per-host↔client direct socket with the relay as the always-live fallback.
   The path seam replays a bounded one-ring window of tick-addressed records:

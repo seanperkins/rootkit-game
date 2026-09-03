@@ -14,7 +14,8 @@ const CASES := ["host_owns_slot_zero_and_assigns_the_lowest_free",
 	"control_bodies_round_trip_and_reject_bad_shapes",
 	"the_link_column_offers_relay_and_lan",
 	"the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet",
-	"a_high_bit_session_id_round_trips_so_records_are_not_refused"]
+	"a_high_bit_session_id_round_trips_so_records_are_not_refused",
+	"build_versions_are_part_of_the_handshake"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lobby\n")
@@ -28,6 +29,7 @@ func _initialize() -> void:
 	control_bodies_round_trip_and_reject_bad_shapes()
 	the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet()
 	a_high_bit_session_id_round_trips_so_records_are_not_refused()
+	build_versions_are_part_of_the_handshake()
 	await the_link_column_offers_relay_and_lan()
 	print("")
 	for c in CASES:
@@ -45,9 +47,9 @@ func _check(label: String, got, want) -> void:
 		print("  FAIL  %s — got %s, want %s" % [label, got, want])
 		failures += 1
 
-func _hello(name: String) -> Dictionary:
+func _hello(name: String, version: String = "") -> Dictionary:
 	return {"protocol": SessionRules.PROTOCOL, "name": name, "session_id": 0,
-		"slot": -1, "counters": SaveGame.session_counters()}
+		"slot": -1, "counters": SaveGame.session_counters(), "version": version}
 
 func _host() -> NetworkSession:
 	return NetworkSession.host_lobby({"slot": 0, "name": "host",
@@ -175,6 +177,51 @@ func control_bodies_round_trip_and_reject_bad_shapes() -> void:
 	_check("a non-dictionary body is refused",
 		Protocol.decode_control(M.ABSENT, 1, var_to_bytes([1, 2])).is_empty(), true)
 	finished["control_bodies_round_trip_and_reject_bad_shapes"] = true
+
+## HELLO/WELCOME/REFUSED name the build version, and a skew is refused before
+## it owns a slot: lockstep peers must run byte-identical builds, and a
+## mismatch found in a running session is a desync, not a refusal. The wire
+## PROTOCOL is the coarser gate — an old build refuses the envelope itself —
+## and the version is the finer one: two builds on the same protocol that
+## differ in game logic must not share a simulation.
+func build_versions_are_part_of_the_handshake() -> void:
+	var M := Protocol.Message
+	var host := NetworkSession.host_lobby({"slot": 0, "name": "host",
+		"counters": SaveGame.session_counters()}, 4242, 20260830,
+		SessionRules.DEFAULT_DELAY, SessionRules.CHOICE_TIMEOUT_TICKS, "0.4.0")
+	_check("the lobby descriptor names the host's build",
+		str(host.lobby_descriptor().get("version", "")), "0.4.0")
+	_check("a matching build is admitted", host.admit(_hello("a", "0.4.0"), 5), 1)
+	_check("a different build is refused", host.admit(_hello("b", "0.4.1"), 6),
+		NetworkSession.ADMIT_VERSION_MISMATCH)
+	_check("a build-less HELLO is a skew too", host.admit(_hello("c", ""), 7),
+		NetworkSession.ADMIT_VERSION_MISMATCH)
+	_check("the refused HELLOs took no slot", host.admit(_hello("d", "0.4.0"), 8), 2)
+	var same := NetworkSession.client_lobby("0.4.0")
+	_check("WELCOME applies when the build matches",
+		same.apply_welcome({"descriptor": host.lobby_descriptor(), "slot": 1}), true)
+	var skew := NetworkSession.client_lobby("0.4.2")
+	_check("WELCOME is refused on a build skew",
+		skew.apply_welcome({"descriptor": host.lobby_descriptor(), "slot": 2}), false)
+	_check("and names the reason", skew.reject_reason, "version")
+	# Codec: HELLO carries its version, REFUSED carries reason and build.
+	var body := func(kind: int, tick: int, d: Dictionary) -> Dictionary:
+		var bytes := Protocol.encode_control(kind, 7, tick, d)
+		var env := Protocol.decode_envelope(bytes, {"session_id": 7})
+		return Protocol.decode_control(kind, int(env["tick"]), env["body"])
+	var hello: Dictionary = body.call(M.HELLO, 0, {"protocol": SessionRules.PROTOCOL,
+		"name": "x", "slot": -1, "counters": {}, "version": "0.3.1"})
+	_check("HELLO round-trips its version", str(hello.get("version", "")), "0.3.1")
+	_check("an overlong HELLO version is refused",
+		body.call(M.HELLO, 0, {"protocol": SessionRules.PROTOCOL, "name": "x",
+			"slot": -1, "counters": {},
+			"version": "x".repeat(SessionRules.VERSION_MAX + 1)}).is_empty(), true)
+	var refused: Dictionary = body.call(M.REFUSED, 0, {"reason": "build", "build": "0.4.0"})
+	_check("REFUSED round-trips reason and build",
+		[str(refused.get("reason", "")), str(refused.get("build", ""))], ["build", "0.4.0"])
+	_check("REFUSED refuses a non-string reason",
+		body.call(M.REFUSED, 0, {"reason": 5, "build": "0.4.0"}).is_empty(), true)
+	finished["build_versions_are_part_of_the_handshake"] = true
 
 ## The one text field takes a code or an address: six alphabet characters
 ## route through the relay, anything else is a direct address. Hosting
