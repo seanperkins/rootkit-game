@@ -13,10 +13,10 @@
 #   2. ./tools/configure_macos_ci.sh /path/to/exported.p12
 #
 # The p12 is RE-WRAPPED under a freshly generated 48-hex passphrase before
-# it is pushed, so the hand-typed Keychain Access password never guards the
-# key bytes at rest in the vault. The ASC key id and issuer are not
-# secrets (they name nothing without the .p8, sound-mural's Fastfile says
-# the same); the key content is.
+# it is pushed, and verified to be the Developer ID identity WITH a private
+# key before a single byte reaches the vault. The ASC key id and issuer are
+# not secrets (they name nothing without the .p8, sound-mural's Fastfile
+# says the same); the key content is.
 set -euo pipefail
 
 P12="${1:?usage: configure_macos_ci.sh <exported-signing.p12>}"
@@ -34,7 +34,7 @@ echo
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# --- re-wrap under a generated passphrase, then push to the vault -----------
+# --- re-wrap under a generated passphrase ------------------------------------
 VLT_PW=$(openssl rand -hex 24)
 # Keychain Access exports a legacy RC2/3DES p12; OpenSSL 3.x refuses it
 # without -legacy. Try modern first, then retry with -legacy on the INPUT
@@ -52,6 +52,29 @@ if ! openssl pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes 2>"$TMP/rw.err" \
   echo "re-wrapped with -legacy (Keychain Access legacy p12)"
 fi
 
+# --- verify WHAT was exported before anything is pushed ----------------------
+# Catches the Frost Solutions item or a certificate-only export locally,
+# instead of a green script that burns a CI run on a mismatched identity.
+if ! openssl pkcs12 -in "$TMP/macos-signing.p12" -passin "pass:$VLT_PW" -nodes \
+  -out "$TMP/verify.pem" 2>"$TMP/verify.err"; then
+  echo "could not verify the re-wrapped p12 — openssl said:" >&2
+  cat "$TMP/verify.err" >&2
+  exit 1
+fi
+SUBJ=$(openssl x509 -in "$TMP/verify.pem" -noout -subject)
+case "$SUBJ" in
+  *"Developer ID Application"*) ;;
+  *) echo "WRONG IDENTITY: $SUBJ" >&2
+     echo "expected 'Developer ID Application' — did you export the Frost Solutions item?" >&2
+     exit 1 ;;
+esac
+if ! grep -qE "BEGIN (RSA )?PRIVATE KEY" "$TMP/verify.pem"; then
+  echo "no private key in the p12 — exported a certificate without its key?" >&2
+  exit 1
+fi
+echo "verified: Developer ID Application identity with private key"
+
+# --- push to the vault -------------------------------------------------------
 gh repo clone "$VAULT" "$TMP/vault" -- --depth=1
 cp "$TMP/macos-signing.p12" "$TMP/vault/macos-signing.p12"
 ( cd "$TMP/vault" \
