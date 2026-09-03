@@ -53,12 +53,21 @@ static func hp_mult(subnet: int, elapsed: float) -> float:
 ## same fight with more targets. Reads the IMMUTABLE roster size: a death or a
 ## park never lowers it, so a party cannot shed difficulty by losing a member.
 const HP_PER_EXTRA_PLAYER := 0.50
-
 ## The board axis: five exploit rows (from three) fire up to two-thirds more,
 ## so every enemy carries this much more integrity on top of the subnet,
-## elapsed and party axes. Set by the perf gate's coverage pin: the smallest
-## value whose fixture field is no thinner than the three-row pin.
-const HP_ROWS := 1.40
+## elapsed and party axes.
+##
+## 1.15, down from the 1.40 the perf gate's coverage pin chose. That pin is a
+## LOAD instrument — it wants a full field — and it set a number that is paid
+## from the first tick, when the board holds one rank-1 row and none of the
+## five rows it is pricing. At 1.40 a daemon opened at 14 integrity against a
+## 12 dps starting packet and ICE at 980 (1421 by the subnet's end, with the
+## elapsed ramp on top); at 1.15 they open at 11.5 and 805. The late-build
+## case it exists for still pays it — the multiplier applies at every
+## elapsed — and the perf gate's field mean is re-pinned below with the
+## reason, because this is a balance change the game wanted rather than a
+## lighter tick.
+const HP_ROWS := 1.15
 
 static func party_hp_mult(players: int) -> float:
 	return 1.0 + HP_PER_EXTRA_PLAYER * float(maxi(players, 1) - 1)
@@ -81,9 +90,19 @@ var spawned: int = 0
 var dropped: int = 0        # pool was full; counted, never silently ignored
 var boss_spawned: bool = false
 
-## One a minute, and never in the last: ICE arrives at SUBNET_SECONDS and the
-## subnet's ending is not a stage to share.
-const MINIBOSS_TIMES := [60.0, 120.0, 180.0, 240.0]
+## Never in the last minute: ICE arrives at SUBNET_SECONDS and the subnet's
+## ending is not a stage to share. `tests/test_minibosses` asserts that rule,
+## so the last time stays at 240.
+##
+## The gaps CLOSE — 80, 65, 55, 40 — rather than sitting a flat minute apart.
+## The first used to land at 60 s, when a first-subnet board is still one
+## rank-1 vector: fork_bomb is a CHARGER with 20 contact damage and 195
+## integrity on the board axis alone — 219 by the time it lands at 80 s, with
+## the elapsed ramp on it — which is a wall rather than a set-piece that
+## early. Twenty seconds is another twenty seconds of cards, and the
+## compression puts the time it costs back into the crowded half of the
+## subnet where the player has something to spend it with.
+const MINIBOSS_TIMES := [80.0, 145.0, 200.0, 240.0]
 const MINIBOSS_IDS := [&"fork_bomb", &"packet_filter", &"null_ptr", &"kernel_panic"]
 
 var miniboss_fired: PackedByteArray
@@ -99,14 +118,29 @@ static func _idx(id: StringName) -> int:
 
 func _init(seed_value: int = 20260829) -> void:
 	rng.seed = seed_value
+	# Rates are the DENSITY axis, and the overlaps are what set it: five rows
+	# run at once through the 190-210 window, where the concurrent solo spawn
+	# rate used to peak at 9.4/s (daemon 4.2 + worm 3.4 + probe 0.7 + rootkit
+	# 0.6 + sentinel 0.5), holding 9.15/s to 240 as watchdog replaces sentinel
+	# — against a board that kills a handful a second. A subnet is 300 s long
+	# and the pool caps at MAX_ENEMIES 600, so nothing here is unbounded — but
+	# the field still arrived faster than any first-subnet build clears it,
+	# and being surrounded is what ended the run rather than any single enemy.
+	#
+	# The four rows below are the overlap, cut so the peak concurrent rate is
+	# 6.6/s and one subnet schedules 1288 spawns rather than 1690 (-402: 72
+	# from daemon 60-150, 108 from worm 150-240, 192 from daemon 180-300, 30
+	# from firewall 240-300). The escalation SHAPE is untouched — every window,
+	# formation and type ordering is as it was, and the late phase is still the
+	# densest part of the subnet.
 	waves = [
 		Wave.new(0.0,   45.0,  0, 1.8, Formation.RING),
 		Wave.new(20.0,  90.0,  2, 1.2, Formation.STREAM),
-		Wave.new(60.0, 150.0,  0, 3.0, Formation.RING),
+		Wave.new(60.0, 150.0,  0, 2.2, Formation.RING),
 		Wave.new(90.0, 180.0,  1, 0.6, Formation.FLANK),
-		Wave.new(150.0, 240.0, 2, 3.4, Formation.BURST),
-		Wave.new(180.0, 300.0, 0, 4.2, Formation.RING),
-		Wave.new(240.0, 300.0, 1, 1.4, Formation.FLANK),
+		Wave.new(150.0, 240.0, 2, 2.2, Formation.BURST),
+		Wave.new(180.0, 300.0, 0, 2.6, Formation.RING),
+		Wave.new(240.0, 300.0, 1, 0.9, Formation.FLANK),
 		# The new types, introduced one at a time so each is legible when it
 		# first appears rather than arriving in a crowd.
 		Wave.new(70.0,  160.0, _idx(&"tracer"),   1.1,  Formation.FLANK),

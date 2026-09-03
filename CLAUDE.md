@@ -176,9 +176,21 @@ Two that drive the rest:
 - Enemy integrity scales on both axes (`SpawnDirector.hp_mult`) because a rank
   buys damage linearly — with constant HP everything one-shot forever past 34.
 - Five exploit rows fire up to two-thirds more than the three they replaced,
-  so `SpawnDirector.HP_ROWS` (1.40) scales every enemy's integrity. It was set
-  by the perf gate's coverage pin, not by feel: the smallest value whose
-  autopiloted field is no thinner than the three-row pin.
+  so `SpawnDirector.HP_ROWS` (1.15) scales every enemy's integrity. It was
+  originally 1.40, set by the perf gate's coverage pin rather than by feel —
+  a LOAD instrument choosing a balance number that is paid from the first
+  tick, when the board holds one rank-1 row and none of the five it prices.
+  The first-subnet retune cut the surcharge from +40% to +15% and re-pinned
+  the gate.
+- **Difficulty is retuned on five axes at once, and they are coupled.** The
+  wave rates are the density axis (peak concurrent solo spawn 6.6/s, 1288
+  spawns a subnet), `HP_ROWS` and `EnemyTable`'s ICE row are the per-enemy
+  axis, `PlayerStats.BASE` integrity/defense is the attrition budget, and
+  `BASE.pickup_radius` decides whether the XP a subnet drops is ever
+  collected — a fighting subnet holds no regeneration, so the pool the player
+  starts with is very nearly the pool they finish with. Moving any one of
+  them moves the perf gate's coverage pin; re-measure and re-pin with a
+  written reason rather than lowering a floor quietly.
 - Terrain density is **flat** across subnets. A cramped late arena reads as
   cramped, not hard; escalation lives in enemy HP and the wave table.
 

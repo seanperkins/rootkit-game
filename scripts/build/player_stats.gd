@@ -14,12 +14,41 @@ class_name PlayerStats extends RefCounted
 ## player stat has nowhere to land in the exploit namespace, so it cannot be sold
 ## in the shop and then silently delivered as something else.
 
+## 128 integrity, not the 100 this started at, and 15 defense where there was
+## none.
+##
+## A subnet is 300 s long and holds no regeneration: the only heals in a
+## fighting subnet are a data block held for its full duration (once every
+## `Blocks.INTERVAL`), the `keylog` lifesteal payload, and
+## `run.SUBNET_CLEAR_HEAL`, which pays out only after the subnet is already
+## won. Against 200-300 live bodies at 7-18 contact damage on a 0.5 s iframe,
+## a 100-point pool with no mitigation is spent by attrition long before any
+## single enemy is a threat — measured on an autopiloted solo run, whose
+## integrity fell monotonically to zero on every seed, both from a fresh save
+## and from one with five ranks in every shop line.
+##
+## The two numbers do different jobs and neither replaces the other. Integrity
+## is the budget: 128 is a power of two, which is the register this game's
+## numbers read in, and it is worth 3.5 ranks of `memory`. Defense is the
+## SHAPE: d/(d+DEFENSE_K) at 15 takes exactly a fifth off every source, so a
+## pool spent in small contact hits goes a quarter further (1 / 0.8) while a
+## 26-point `_pulse` is softened by the same fraction rather than being made
+## safe.
+##
+## The cost, stated: `memory` (+8/rank) and `encryption` (+6/rank) are worth
+## proportionally less than they were, because the base they add to is bigger.
+## They are still the only way past this line.
 const BASE := {
-	&"integrity": 100.0,
+	&"integrity": 128.0,
 	&"armor": 0.0,
-	&"defense": 0.0,
+	&"defense": 15.0,
 	&"clock_speed": 220.0,
-	&"pickup_radius": 30.0,
+	## 80, not 30. XP exists only as shards on the floor at 1 xp each, and a
+	## 30 px radius on an 11 px player collects only what dies in contact —
+	## a kiting player leaves most of a subnet's XP where it dropped and the
+	## build never matures, which is the other half of the attrition above.
+	## `bandwidth` (+6/rank) tops this up rather than being the whole of it.
+	&"pickup_radius": 80.0,
 }
 
 const BASE_MULT := {

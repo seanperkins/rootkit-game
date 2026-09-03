@@ -54,7 +54,14 @@ static func all() -> Array:
 			110.0, 18.0, 16, Behaviour.RANGED),
 		# ICE stays LAST: EnemyTable.ICE is an index into this list, and the boss
 		# spawn, the win condition and the flip guard all read it.
-		EnemyType.new(&"ice",      3, Color(1.00, 0.25, 0.85), 700.0, 46.0, 1e18, 22.0, 0),
+		#
+		# 550, not 700. The boss arrives at SUBNET_SECONDS, where the elapsed
+		# ramp is at its ceiling: at the softened board axis 550 is 917
+		# effective integrity in subnet 01 and still 1421 in subnet 02 — the
+		# number 700 used to put on the FIRST one. A boss that reads as a wall
+		# on the first subnet and as a formality on the third is scaled by the
+		# wrong axis; the campaign multiplier is the axis that should carry it.
+		EnemyType.new(&"ice",      3, Color(1.00, 0.25, 0.85), 550.0, 46.0, 1e18, 22.0, 0),
 	]
 
 const ICE := 12  # the boss. corruption_threshold is effectively infinite:
