@@ -25,8 +25,17 @@ into the game. Run it again after changing anything under `relay/`,
 
 ## Check
 
+From this machine, against the baked address (or `-- --address IP`):
+
 ```
-ssh root@<ip> journalctl -u rootkit-relay -f
+godot --headless -s res://tools/probe_relay.gd
+```
+
+It hosts a room, joins it, passes one record each way and prints the
+timings. On the droplet:
+
+```
+ssh -i ~/.ssh/digitalocean root@68.183.52.156 journalctl -u rootkit-relay -f
 ```
 
 It logs `relay: listening on UDP 43211` at start and a stats line once a
