@@ -36,11 +36,20 @@ trap 'rm -rf "$TMP"' EXIT
 
 # --- re-wrap under a generated passphrase, then push to the vault -----------
 VLT_PW=$(openssl rand -hex 24)
-if ! openssl pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes 2>/dev/null \
+# Keychain Access exports a legacy RC2/3DES p12; OpenSSL 3.x refuses it
+# without -legacy. Try modern first, then retry with -legacy on the INPUT
+# side only (the re-export is written with modern algorithms).
+if ! openssl pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes 2>"$TMP/rw.err" \
   | openssl pkcs12 -export -passout "pass:$VLT_PW" \
-      -out "$TMP/macos-signing.p12" 2>/dev/null; then
-  echo "could not re-wrap the p12 (wrong original password?)" >&2
-  exit 1
+      -out "$TMP/macos-signing.p12" 2>"$TMP/rw2.err"; then
+  if ! openssl pkcs12 -legacy -in "$P12" -passin "pass:$P12PW" -nodes 2>"$TMP/rw.err" \
+    | openssl pkcs12 -export -passout "pass:$VLT_PW" \
+        -out "$TMP/macos-signing.p12" 2>"$TMP/rw2.err"; then
+    echo "could not re-wrap the p12 — openssl said:" >&2
+    cat "$TMP/rw.err" "$TMP/rw2.err" >&2
+    exit 1
+  fi
+  echo "re-wrapped with -legacy (Keychain Access legacy p12)"
 fi
 
 gh repo clone "$VAULT" "$TMP/vault" -- --depth=1

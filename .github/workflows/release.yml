@@ -237,4 +237,5 @@ jobs:
         if: ${{ always() && env.HAS_SIGNING == 'true' }}
         run: |
           rm -f ~/.ssh/macos_certs_ed25519 ~/.ssh/config
+          rm -rf "$RUNNER_TEMP/certs" "$RUNNER_TEMP/AuthKey.p8"
           security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
