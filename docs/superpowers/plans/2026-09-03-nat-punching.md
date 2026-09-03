@@ -81,6 +81,42 @@ a second `ENetConnection` carrying `RelayFrame.route`-framed record bytes
 drops in alongside the relay socket: `poll()` services it and hands its
 packets up through the same `_handle` path, keyed by member id.
 
+## BLOCKER found in Task 3 (2026-09-03) — and the corrected design
+
+Godot's `ENetConnection` allows only ONE outgoing `connect_to_host`: the second
+fails with "The ENetConnection is already connected to a peer"
+(`modules/enet/enet_connection.cpp:87`, confirmed by probe). It accepts many
+INCOMING connections, but dials out only once. So a single punch socket CANNOT
+dial both the relay's discovery endpoint AND a peer — and for 3-4 players a peer
+cannot dial several others from one socket. The single-shared-socket design in
+the spec is therefore infeasible. The client punch code written against it was
+reverted; the relay candidate-exchange logic (`RelayRooms`, tested) and the
+constants stand.
+
+Corrected design (for the redo):
+
+- **One `ENetConnection` per DIRECT LINK.** To punch member M, a peer creates a
+  dedicated bound `ENetConnection`, uses its single outgoing connect for the
+  simultaneous open to M, and accepts M's incoming connect on it. A peer
+  punching K others holds K such sockets. Two-player co-op — the case that
+  matters now — needs exactly one.
+- **Discovery via raw UDP, not an ENet connection.** Each punch socket learns
+  its own public mapping WITHOUT spending its one outgoing connect: send a raw
+  datagram with `ENetConnection.socket_send(host, port, bytes)` to the relay's
+  discovery endpoint, which is a **`PacketPeerUDP`** (NOT the `ENetConnection`
+  the committed `relay_server.gd` currently uses — that must change). The relay
+  reads the datagram's source `get_packet_ip()/get_packet_port()` = that
+  socket's mapping, ties it to the member by the token, and pairs it. The relay
+  discovery endpoint is undeployed, so changing it is free.
+- **Pairing.** For the P–Q link, P registers socket S_pq's mapping and Q
+  registers S_qp's; the relay tells P "Q at mapping(S_qp)" and Q "P at
+  mapping(S_pq)"; each dials the other from its own socket. The `punch` op and
+  `register_reflexive` already carry per-member candidates; extend the token to
+  identify (member, target) so a peer's several punch sockets are told apart.
+- Everything else in the plan (path selection per member in `_put`, fallback to
+  the relay, the determinism gate, the coordinated `RELAY_PROTOCOL` bump and
+  deploy) is unchanged.
+
 ## Risks
 
 - **Symmetric NATs** will not punch; they stay relayed. Acceptable.
