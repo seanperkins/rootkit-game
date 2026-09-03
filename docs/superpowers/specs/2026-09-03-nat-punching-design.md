@@ -28,23 +28,40 @@ and the signalling channel.
 ## The mechanism
 
 Each peer already holds one ENet client socket, to the relay. Punching adds
-a **second ENet socket bound to a fixed local port**
-(`SessionRules.PUNCH_PORT`, default 43212) that both listens and dials. The
-relay, which sees every member's public `address:port` as ENet reports it
-on connect, tells each member the others' candidate addresses. Both ends
-then send to each other at once; the first packet from each opens its NAT's
-mapping for the other's reply. This is the standard simultaneous-open
-"STUN-less" punch: the relay is the STUN server because it already sees the
-reflexive address.
+a **second ENet socket** (an `ENetConnection` bound to an OS-assigned local
+port) that both listens and dials. The
+relay tells each member the others' candidate addresses (discovered as
+below). Both ends then send to each other at once; the first packet from
+each opens its NAT's mapping for the other's reply. This is the standard
+simultaneous-open punch, with the relay's discovery endpoint acting as the
+STUN server.
 
-### Candidates
+### Candidates and reflexive discovery (corrected 2026-09-03)
 
-For each member the relay knows two things: the **reflexive** address (the
-`host:port` its relay connection arrived from, i.e. what its NAT presents to
-the internet) and, optionally, a **local** address the member self-reports
-in its `create`/`join` (its LAN `ip:PUNCH_PORT`, for two peers on the same
-network). Both are candidates. The punch tries every candidate for a peer
-in parallel and keeps the first that completes an ENet handshake.
+The address the relay sees for a peer's RELAY connection is NOT the address
+other peers can punch to: the punch uses a SEPARATE socket with its own NAT
+mapping. So each peer's punch socket must have its own public mapping
+observed. Two sound ways:
+
+1. **Discovery endpoint (chosen, lower risk).** The relay opens a SECOND
+   `ENetConnection` host on `PUNCH_DISCOVERY_PORT`. Each peer's punch socket
+   `connect_to_host`s it and the relay replies with the `host:port` it
+   observed — that peer's reflexive punch mapping. The relay hands that to
+   the others. This leaves the working relay client (`ENetMultiplayerPeer`)
+   untouched. It is correct for endpoint-independent (full-cone / restricted
+   / port-restricted) NATs, which is most home routers; symmetric NATs give a
+   different mapping per destination and simply fail to punch, staying
+   relayed — acceptable.
+2. Unify relay + punch on one `ENetConnection` so the relay sees the punch
+   mapping directly. Cleaner but a full rewrite of the just-shipped relay
+   client; rejected for risk.
+
+The **local** candidate (the peer's LAN `ip` and its actual punch port) is
+also carried, for two peers on the same network. The punch port is
+OS-ASSIGNED (bind 0), not a fixed constant: three processes on one machine
+must coexist for local testing, and the mapping is discovered, not assumed.
+The punch tries every candidate for a peer in parallel and keeps the first
+that completes an ENet handshake.
 
 ### Signalling ops (relay → member, member → relay)
 
@@ -55,22 +72,20 @@ Added to the op table, same envelope and `RELAY_OP_MAX` bound as the rest:
 | `punch` | relay → member | `{op, peers: [[member, host, port, local_host, local_port], …]}` | every other member's candidates; sent once the room has ≥2 members and again on each join |
 | `punched` | member → relay | `{op, member}` | this end has a direct link to that member; relay notes it (diagnostics only) |
 
-The relay learns a member's reflexive `host:port` from
-`ENetMultiplayerPeer`/`ENetConnection` on connect (the same place the
-per-peer timeout is set). `local_host`/`local_port` are the optional
-self-report, sanitised exactly like `last_address` (the `hostname`
-whitelist, length cap) and dropped if malformed — never trusted as a route
-without a completed handshake.
+The relay learns a member's reflexive `host:port` from its punch socket's
+connection to `PUNCH_DISCOVERY_PORT` (see above), not from the relay
+connection. `local_host`/`local_port` are the optional self-report,
+sanitised exactly like `last_address` (the `hostname` whitelist, length
+cap) and dropped if malformed — never trusted as a route without a
+completed handshake.
 
 ### The second socket and path selection
 
 `transport.gd` in relay mode gains:
 
-- `_punch_peer: ENetMultiplayerPeer` — a second peer created with
-  `create_server` on `PUNCH_PORT` AND used to `create_client` toward each
-  candidate. (ENet can both listen and connect on one host; if the Godot
-  wrapper resists, two `ENetConnection`s on one bound socket via the
-  lower-level API.)
+- `_punch: ENetConnection` — `create_host_bound("0.0.0.0", 0, …)` (an
+  OS-assigned port) that both accepts and `connect_to_host`s each candidate.
+  Proven to do simultaneous open (see the plan's "Proven approach").
 - `_direct: Dictionary` — `member → true` once a direct link to that member
   has completed its handshake.
 - Path selection in `_put`/`flush_relay`: for a destination member with a
@@ -102,7 +117,7 @@ already does.
 
 | Const | Value | Why |
 |---|---|---|
-| `PUNCH_PORT` | 43212 | the fixed local port the second socket binds; one above `RELAY_PORT` |
+| `PUNCH_DISCOVERY_PORT` | 43212 | relay's reflexive-discovery endpoint; the punch socket binds an OS-assigned port |
 | `PUNCH_TIMEOUT_MS` | 3000 | give up a punch and stay relayed; matches `PEER_TIMEOUT_MS` |
 | `RELAY_PROTOCOL` | → 2 | the op set grows, so the relay protocol bumps; a mismatch is `refused: bad` |
 
@@ -126,7 +141,7 @@ same seed — that is the acceptance gate.
   others' candidates on the second join; `punched` is recorded; a
   malformed `local_host` is dropped.
 - **`test_transport_punch`** (real UDP on loopback): two transports punch
-  on `PUNCH_PORT`, a record crosses the direct socket, and path selection
+  on OS-assigned ports, a record crosses the direct socket, and path selection
   prefers direct once `_direct` is set and falls back when it is cleared.
 - **A three-process manual probe** (`tools/probe_punch.gd`, not a suite):
   host + two joiners through the live relay, asserting each pair reports a
