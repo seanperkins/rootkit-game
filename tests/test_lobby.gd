@@ -13,7 +13,8 @@ const CASES := ["host_owns_slot_zero_and_assigns_the_lowest_free",
 	"solo_builds_the_same_shape", "string_prefs_are_hostile_safe",
 	"control_bodies_round_trip_and_reject_bad_shapes",
 	"the_link_column_offers_relay_and_lan",
-	"the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet"]
+	"the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet",
+	"a_high_bit_session_id_round_trips_so_records_are_not_refused"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lobby\n")
@@ -26,6 +27,7 @@ func _initialize() -> void:
 	string_prefs_are_hostile_safe()
 	control_bodies_round_trip_and_reject_bad_shapes()
 	the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet()
+	a_high_bit_session_id_round_trips_so_records_are_not_refused()
 	await the_link_column_offers_relay_and_lan()
 	print("")
 	for c in CASES:
@@ -217,3 +219,25 @@ func the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet() -> void:
 		Protocol.decode_envelope(Protocol.encode_control(M.START, sid, 0, {}),
 			{"session_id": sid}).is_empty(), false)
 	finished["the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet"] = true
+
+## The host's session id is `randi() | 1`, which fills the unsigned 32-bit
+## range, so about half of all sessions have the high bit set. The envelope
+## wrote it with put_32 and read it with get_32 (signed): a high-bit id came
+## back negative and never matched the unsigned id the run compares against, so
+## every INPUT and RELAY was refused. The whole game froze at the opening tick
+## — sound, no motion — until the player died. Sessions with a low id worked,
+## which is why it was intermittent. The fix is get_u32/put_u32.
+func a_high_bit_session_id_round_trips_so_records_are_not_refused() -> void:
+	var sid := 2444840323          # > 2^31: the high bit is set
+	var ctx := {"session_id": sid, "executed": 0, "delay": 0, "boundary": -1}
+	var input := Protocol.encode_input(sid, 3, Vector2(0.5, -0.5), 1, 2, 0)
+	var env := Protocol.decode_envelope(input, ctx)
+	_check("a high-bit session id survives the envelope", env.is_empty(), false)
+	_check("and decodes to the same unsigned value", int(env.get("session_id", -1)), sid)
+	var relay := Protocol.encode_relay(sid, 3, [[1, 3, Vector2.ZERO, 0, 0, 0, Vector2.ZERO]], [])
+	_check("a high-bit RELAY survives too",
+		Protocol.decode_envelope(relay, ctx).is_empty(), false)
+	# A genuinely foreign session id is still refused.
+	_check("but a different session id is still refused",
+		Protocol.decode_envelope(input, {"session_id": sid ^ 0x40}).is_empty(), true)
+	finished["a_high_bit_session_id_round_trips_so_records_are_not_refused"] = true

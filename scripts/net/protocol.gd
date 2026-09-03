@@ -42,7 +42,13 @@ static func encode(kind: int, session_id: int, tick: int,
 	b.big_endian = false
 	b.put_u8(SessionRules.PROTOCOL)
 	b.put_u8(kind)
-	b.put_32(session_id)
+	# The session id is the host's `randi() | 1`, which fills the full unsigned
+	# 32-bit range. It MUST round-trip through get_u32, not get_32: a session id
+	# with the high bit set decodes negative under get_32 and never equals the
+	# unsigned value the run compares against, so every INPUT and RELAY is
+	# refused and the game freezes at the opening tick — sound but no motion.
+	# Same bytes on the wire either way, so this is not a format change.
+	b.put_u32(session_id)
 	b.put_32(tick)
 	b.put_32(body.size())
 	b.put_data(body)
@@ -60,7 +66,7 @@ static func decode_envelope(bytes: PackedByteArray, context: Dictionary) -> Dict
 	b.data_array = bytes
 	var proto := b.get_u8()
 	var kind := b.get_u8()
-	var session_id := b.get_32()
+	var session_id := b.get_u32()   # unsigned: see encode()
 	var tick := b.get_32()
 	var body_len := b.get_32()
 	if proto != SessionRules.PROTOCOL:
