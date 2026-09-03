@@ -105,6 +105,17 @@ func direct_path_and_fallback() -> void:
 	_check("client counted a direct send", client_t.direct_sent > 0, true)
 	_check("host counted a direct receive", host_t.direct_received > 0, true)
 
+	# Checksums self-heal: a direct checksum must NOT consume the shared
+	# replay window, else it can evict an unrecoverable INPUT at the seam.
+	var replay_before: int = client_t._links[Transport.HOST_PEER].replay.size()
+	client_t.send_checksum(2, 12345)
+	_check("a direct checksum does not enter the replay window",
+		client_t._links[Transport.HOST_PEER].replay.size(), replay_before)
+	var input_before: int = client_t._links[Transport.HOST_PEER].replay.size()
+	client_t.send_input(2, Vector2(0.75, 0.0), -1, -1, -1, Vector2.ZERO)
+	_check("a direct input does enter the replay window",
+		client_t._links[Transport.HOST_PEER].replay.size(), input_before + 1)
+
 	host_t.send_input(2, Vector2(-0.5, 0.0), -1, -1, -1)
 	host_t.flush_relay(2)
 	_check("host bundle crosses direct", await _wait_until(func():
