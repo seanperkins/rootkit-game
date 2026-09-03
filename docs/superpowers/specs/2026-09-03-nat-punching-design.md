@@ -243,10 +243,17 @@ direct socket. It therefore **rejects blind/off-path connects only** — a
 socket that merely reaches the right port without having seen the key
 cannot complete the hello/ack exchange. It does not authenticate against
 the relay (the relay is the key's issuer and sees every session), and an
-on-path observer of either plaintext path can read and present it. The
-direct path additionally exposes the peers' public endpoints to each
-other (the relay already saw them, so confidentiality is unchanged;
-observability of host IPs by co-players is new). Recent practitioner
+on-path observer of either plaintext path can read and present it. Punching also discloses strictly more endpoint data than the room socket
+did. The relay already observed the room connection's public mapping, but
+discovery now hands it each peer's dedicated punch socket mapping and
+self-reported LAN candidate, and the `punch` op forwards BOTH candidates
+to the paired co-player — including a private LAN address the co-player
+could never otherwise have observed. Sanitisation rejects malformed
+values (hostname whitelist, length caps) but does not prevent disclosure
+to a paired peer; the LAN address is accepted on the wire because a
+serviceable same-LAN candidate was the design intent, which this release
+defers. The direct path likewise exposes the peers' public punch
+endpoints to each other. Recent practitioner
 guidance — WebRTC stacks with DTLS-SRTP and ICE, Tailscale's WireGuard
 tunnels — assumes encrypted authenticated payloads, so "the design
 follows best practices" is true of the *traversal mechanics* only, never
