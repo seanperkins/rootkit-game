@@ -8,7 +8,8 @@ class_name Protocol extends RefCounted
 ## Envelope, little-endian, 14 bytes:
 ##   u8  protocol version     refused unless == SessionRules.PROTOCOL
 ##   u8  message kind         refused unless a Message value
-##   i32 session id           refused unless it matches the context (HELLO exempt)
+##   i32 session id           refused unless it matches the context
+##                            (the lobby handshake HELLO/WELCOME/START is exempt)
 ##   i32 tick                 message-specific window, see valid_tick
 ##   i32 body length          refused unless it equals the bytes that follow
 ##
@@ -48,8 +49,9 @@ static func encode(kind: int, session_id: int, tick: int,
 	return b.data_array
 
 ## The envelope of `bytes`, or {} when it is malformed or foreign. `context` is
-## {session_id}; a HELLO is exempt from the session check because a fresh
-## joiner has no session yet.
+## {session_id}; the lobby handshake (HELLO, WELCOME, START) is exempt from
+## the session check because a fresh joiner has no confirmed session yet — it
+## learns and re-validates its session id from these very messages.
 static func decode_envelope(bytes: PackedByteArray, context: Dictionary) -> Dictionary:
 	if bytes.size() < ENVELOPE:
 		return {}
@@ -67,7 +69,14 @@ static func decode_envelope(bytes: PackedByteArray, context: Dictionary) -> Dict
 		return {}
 	if body_len < 0 or body_len != bytes.size() - ENVELOPE:
 		return {}
-	if kind != Message.HELLO and session_id != int(context.get("session_id", -1)):
+	# HELLO, WELCOME and START are the lobby handshake, exchanged before the
+	# client has a confirmed session, so they are exempt from the session
+	# check. A client learns its session id FROM the WELCOME in its inbox, and
+	# applies it a step later — so a START that arrives in the same poll batch
+	# as its WELCOME would otherwise be measured against session id 0 and
+	# silently refused, the whole run failing to start. Both bodies are
+	# re-validated against the established session by apply_welcome/apply_start.
+	if kind != Message.HELLO and kind != Message.WELCOME and kind != Message.START 			and session_id != int(context.get("session_id", -1)):
 		return {}
 	return {"kind": kind, "session_id": session_id, "tick": tick,
 		"body": bytes.slice(ENVELOPE)}

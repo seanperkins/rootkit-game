@@ -12,7 +12,8 @@ const CASES := ["host_owns_slot_zero_and_assigns_the_lowest_free",
 	"start_freezes_the_roster", "a_client_applies_welcome_then_start",
 	"solo_builds_the_same_shape", "string_prefs_are_hostile_safe",
 	"control_bodies_round_trip_and_reject_bad_shapes",
-	"the_link_column_offers_relay_and_lan"]
+	"the_link_column_offers_relay_and_lan",
+	"the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet"]
 
 func _initialize() -> void:
 	print("ROOTKIT — lobby\n")
@@ -24,6 +25,7 @@ func _initialize() -> void:
 	solo_builds_the_same_shape()
 	string_prefs_are_hostile_safe()
 	control_bodies_round_trip_and_reject_bad_shapes()
+	the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet()
 	await the_link_column_offers_relay_and_lan()
 	print("")
 	for c in CASES:
@@ -191,3 +193,27 @@ func the_link_column_offers_relay_and_lan() -> void:
 	m.queue_free()
 	await process_frame
 	finished["the_link_column_offers_relay_and_lan"] = true
+
+## A joiner learns its session id FROM the WELCOME in its inbox and applies it
+## a step later. A START that lands in the same poll batch is decoded while the
+## joiner's context still reads session id 0 — so the envelope check must
+## exempt the lobby handshake, or START is refused and the run never begins.
+## This was intermittent: it only bit when WELCOME and START arrived together.
+func the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet() -> void:
+	var M := Protocol.Message
+	var sid := 777
+	# The joiner has not applied WELCOME yet: its context session id is 0.
+	var ctx := {"session_id": 0}
+	for kind in [M.HELLO, M.WELCOME, M.START]:
+		var bytes := Protocol.encode_control(kind, sid, 0, {})
+		_check("%s is accepted before the joiner knows the session" % M.keys()[kind],
+			Protocol.decode_envelope(bytes, ctx).is_empty(), false)
+	# An in-game message with the wrong session id is still refused.
+	var input := Protocol.encode_input(sid, 0, Vector2.ZERO, -1, -1, -1)
+	_check("but a foreign-session INPUT is still refused",
+		Protocol.decode_envelope(input, ctx).is_empty(), true)
+	# Once the joiner has its session, the handshake still matches normally.
+	_check("and START matches once the session is known",
+		Protocol.decode_envelope(Protocol.encode_control(M.START, sid, 0, {}),
+			{"session_id": sid}).is_empty(), false)
+	finished["the_lobby_handshake_survives_a_session_id_it_has_not_learned_yet"] = true

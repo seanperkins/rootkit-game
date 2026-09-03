@@ -385,6 +385,11 @@ func _process(_dt: float) -> void:
 		_link_status.text = reason
 		return
 	_transport.poll()
+	# poll() delivers peer_disconnected synchronously, and a client's handler
+	# calls _leave(), which nulls the session and the transport. Draining a
+	# session that just went away would be a crash on the next line.
+	if _session == null or _transport == null:
+		return
 	while not _session.inbox.is_empty():
 		var msg: Dictionary = _session.inbox.pop_front()
 		_handle(int(msg["kind"]), msg["body"], int(msg["peer"]))
