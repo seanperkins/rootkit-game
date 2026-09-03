@@ -25,6 +25,18 @@ VAULT="seanperkins/rootkit-macos-certs"
 ASC_KEY_ID="4XBH56T7RS"
 P8="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
 
+# OpenSSL 3.x with the legacy provider is REQUIRED: -legacy/-macalg sha1
+# control the RC2-40 encoding macOS security import accepts, and /usr/bin/
+# openssl on macOS is LibreSSL, which has neither flag. Allow an override
+# for other setups; verify the version rather than trusting PATH.
+OPENSSL="${OPENSSL:-openssl}"
+if ! "$OPENSSL" version 2>/dev/null | grep -q "OpenSSL 3"; then
+  echo "need OpenSSL 3.x (brew openssl) — got:" >&2
+  "$OPENSSL" version >&2
+  echo "try: brew install openssl@3 && export OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl"" >&2
+  exit 1
+fi
+
 [ -f "$P12" ] || { echo "no such file: $P12" >&2; exit 1; }
 [ -f "$P8" ] || { echo "no asc key at $P8 (expected id $ASC_KEY_ID)" >&2; exit 1; }
 read -r -s -p "original p12 password (the one you set in Keychain Access): " P12PW
@@ -35,16 +47,16 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # --- re-wrap under a generated passphrase ------------------------------------
-VLT_PW=$(openssl rand -hex 24)
+VLT_PW=$($OPENSSL rand -hex 24)
 # Keychain Access exports a legacy RC2/3DES p12; OpenSSL 3.x refuses it
 # without -legacy (sound-mural's docs hit this exact trap). Try modern
 # first, then retry with -legacy on the INPUT side only. Both stages use
 # FILES: OpenSSL 3.6's pkcs12 -export cannot read a PEM stream from
 # stdin ("Could not find certificates from -in file from <stdin>"), so a
 # pipe shape fails on a perfectly good p12.
-if ! openssl pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes \
+if ! $OPENSSL pkcs12 -in "$P12" -passin "pass:$P12PW" -nodes \
   -out "$TMP/raw.pem" 2>"$TMP/rw.err"; then
-  if ! openssl pkcs12 -legacy -in "$P12" -passin "pass:$P12PW" -nodes \
+  if ! $OPENSSL pkcs12 -legacy -in "$P12" -passin "pass:$P12PW" -nodes \
     -out "$TMP/raw.pem" 2>"$TMP/rw.err"; then
     echo "could not read the p12 — openssl said:" >&2
     cat "$TMP/rw.err" >&2
@@ -55,7 +67,7 @@ fi
 # sound-mural's measured table: macOS security import accepts only
 # -legacy -macalg sha1 on a real PKCS#12; openssl-3 defaults and bare
 # -legacy both fail with "MAC verification failed" even WITH a password.
-if ! openssl pkcs12 -legacy -macalg sha1 -export -in "$TMP/raw.pem" \
+if ! $OPENSSL pkcs12 -legacy -macalg sha1 -export -in "$TMP/raw.pem" \
   -passout "pass:$VLT_PW" -out "$TMP/macos-signing.p12" 2>"$TMP/rw2.err"; then
   echo "could not re-export the p12 — openssl said:" >&2
   cat "$TMP/rw2.err" >&2
@@ -63,16 +75,18 @@ if ! openssl pkcs12 -legacy -macalg sha1 -export -in "$TMP/raw.pem" \
 fi
 
 # --- verify WHAT was exported before anything is pushed ----------------------
+# The vault p12 is RC2-40-encrypted by the -legacy export (the encoding
+# macOS security import accepts), so the verify READ needs -legacy too.
 # Catches the Frost Solutions item or a certificate-only export locally,
 # instead of a green script that burns a CI run on a mismatched identity.
-if ! openssl pkcs12 -in "$TMP/macos-signing.p12" -passin "pass:$VLT_PW" -nodes \
+if ! $OPENSSL pkcs12 -legacy -in "$TMP/macos-signing.p12" -passin "pass:$VLT_PW" -nodes \
   -out "$TMP/verify.pem" 2>"$TMP/verify.err"; then
   echo "could not verify the re-wrapped p12 — openssl said:" >&2
   cat "$TMP/verify.err" >&2
   exit 1
 fi
-SUBJ=$(openssl crl2pkcs7 -nocrl -certfile "$TMP/verify.pem" \
-  | openssl pkcs7 -print_certs -noout)
+SUBJ=$($OPENSSL crl2pkcs7 -nocrl -certfile "$TMP/verify.pem" \
+  | $OPENSSL pkcs7 -print_certs -noout)
 case "$SUBJ" in
   *"Developer ID Application"*) ;;
   *) echo "WRONG IDENTITY: $SUBJ" >&2
