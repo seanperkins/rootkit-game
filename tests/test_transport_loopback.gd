@@ -13,7 +13,7 @@ var finished := {}
 
 const PORT := 43217
 const CASES := ["reliable_input_survives_withheld_polling", "one_relay_bundle_per_tick",
-	"a_snapshot_does_not_delay_input", "tick_windows_are_distinct",
+	"a_snapshot_does_not_delay_input", "pings_and_counters", "tick_windows_are_distinct",
 	"foreign_envelopes_are_refused", "a_join_after_start_is_refused",
 	"malformed_packets_are_counted_then_cut", "silence_parks_after_three_seconds"]
 
@@ -36,6 +36,7 @@ func _initialize() -> void:
 	reliable_input_survives_withheld_polling()
 	one_relay_bundle_per_tick()
 	a_snapshot_does_not_delay_input()
+	pings_and_counters()
 	tick_windows_are_distinct()
 	foreign_envelopes_are_refused()
 	a_join_after_start_is_refused()
@@ -198,6 +199,42 @@ func a_snapshot_does_not_delay_input() -> void:
 		_check("the snapshot arrived intact", (snapshots[0][1] as PackedByteArray).size(), big.size())
 		_check("labelled with its tick", snapshots[0][0], 4)
 	finished["a_snapshot_does_not_delay_input"] = true
+
+## The ping heartbeat: each side sends PINGs over channel 0, the peer echoes
+## a PONG with the probe's timestamp, and the RTT lands per slot — never in
+## the session inbox — while the packet and record counters track the flow.
+func pings_and_counters() -> void:
+	# The heartbeat only runs once a session is STARTED: before that the
+	# host's descriptor is empty and a probe would be refused as foreign.
+	hs.started = true
+	cs.started = true
+	var inbox_before: int = hs.inbox.size() + cs.inbox.size()
+	var malformed_total_before: int = host_t.malformed_total + client_t.malformed_total
+	client_t.send_input(7, Vector2(0.2, 0.4), 0, 0, 0)
+	var t0 := Time.get_ticks_msec()
+	var saw_rtt := -1
+	# Several PING intervals, so a missed beat cannot fail the case.
+	while Time.get_ticks_msec() - t0 < 2500:
+		host_t.poll()
+		client_t.poll()
+		OS.delay_msec(5)
+		if saw_rtt < 0 and host_t.ping_ms.has(1):
+			saw_rtt = int(host_t.ping_ms[1])
+	_check_true("the host measured the client's round trip", saw_rtt >= 0)
+	_check("on a loopback it stayed small", saw_rtt >= 0 and saw_rtt <= 100, true)
+	_check_true("the client measured the host's round trip",
+		client_t.ping_ms.has(0))
+	_check("PING/PONG never reached the session inbox",
+		hs.inbox.size() + cs.inbox.size(), inbox_before)
+	_check("and nothing was refused", host_t.malformed_total + client_t.malformed_total,
+		malformed_total_before)
+	_check("the host's record counter ran", host_t.input_records_received > 0, true)
+	_check("per-slot, too", int(host_t.slot_records_in.get(1, 0)) > 0, true)
+	_check("packet counters ran on both sides",
+		host_t.packets_in > 0 and client_t.packets_out > 0, true)
+	_check("the stats snapshot carries the diagnostics",
+		host_t.net_stats().has("ping") and client_t.net_stats().has("packets_out"), true)
+	finished["pings_and_counters"] = true
 
 ## The codec keeps three separate windows: input records ahead of executed,
 ## checksum reports behind it, and announced boundaries a delay-plus-margin

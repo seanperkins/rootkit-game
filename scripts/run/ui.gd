@@ -95,6 +95,33 @@ func _build() -> void:
 	tally.add_theme_color_override("font_color", DIM)
 	_hud.add_child(tally)
 
+	# The network diagnostics panel. Its own small box so it stays readable
+	# over the arena; the tick rate it prints is the number a player reports.
+	_net_panel = PanelContainer.new()
+	_net_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_net_panel.offset_left = -380
+	_net_panel.offset_top = 104
+	_net_panel.offset_right = -20
+	_net_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var npbg := StyleBoxFlat.new()
+	npbg.bg_color = Color(0.02, 0.05, 0.04, 0.88)
+	npbg.border_color = DIM
+	npbg.set_border_width_all(1)
+	npbg.set_content_margin_all(8)
+	_net_panel.add_theme_stylebox_override("panel", npbg)
+	_net_text = _mono(13)
+	_net_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_net_text.add_theme_color_override("font_color", DIM)
+	_net_panel.add_child(_net_text)
+	_hud.add_child(_net_panel)
+	# A session without a transport (a test harness, a headless gate) has
+	# nothing to report and a panel that says so helps nobody; run.tscn is
+	# bound before _ready, so the real lobby always delivers a transport here.
+	_net_shown = run != null and run._session != null \
+		and run._session.role != NetworkSession.Role.SOLO \
+		and run._transport != null
+	_net_panel.visible = _net_shown
+
 	# Bottom-left: the build is reference material, not a live readout, so it
 	# gets the corner the eye is not on during a fight.
 	var build := _mono(13)
@@ -324,6 +351,9 @@ func _refresh() -> void:
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())
 
+	if _net_panel != null and _net_panel.visible:
+		_refresh_net()
+
 ## One line per exploit of the LOCAL slot's build. Shared with the run summary,
 ## so the two cannot drift. `resolved` is slot-strided, so each exploit's
 ## compiled row is looked up by its global id.
@@ -366,6 +396,103 @@ func _slot_name(s: int) -> String:
 	var nm := String(run._session.profile(s).get("name", ""))
 	return nm if nm != "" else "slot %d" % s
 
+## The network panel body. Reads transport counters and lockstep state straight
+## off the run — presentation only, never the tick. The headline is the tick
+## rate against wall time, because that is the slowdown: a healthy link reads
+## ~60, and a starved pipeline reads 30 or less.
+func _refresh_net() -> void:
+	var t: Transport = run._transport
+	var stats: Dictionary = t.net_stats() if t != null else {}
+	var lines: Array = []
+	if t == null:
+		_net_text.text = "NET  no wire (offline)"
+		return
+	var stall_pct := 0.0
+	var denom: int = run.tick + run._stalled_total
+	if denom > 0:
+		stall_pct = 100.0 * float(run._stalled_total) / float(denom)
+	var now := Time.get_ticks_msec()
+	if _net_sample_ms == 0 or now - _net_sample_ms >= 1000:
+		if _net_sample_ms != 0:
+			var dt := now - _net_sample_ms
+			_net_tick_rate = 1000.0 * float(run.tick - _net_sample_tick) / float(dt)
+			_net_recv_rate = 1000.0 * float(
+				int(stats.get("records_in", 0)) - _net_recv_total) / float(dt)
+			for s in SessionRules.MAX_PLAYERS:
+				_net_slot_rate[s] = 1000.0 * float(
+					int(stats.get("slot_records_in", {}).get(s, 0))
+					- int(_net_slot_recv.get(s, 0))) / float(dt)
+			var stall_delta: int = run._stalled_total - _net_stall_total
+			_net_slot_stall.clear()
+			if stall_delta > 0:
+				for s in run._stall_slots.keys():
+					var d: int = int(run._stall_slots[s]) - int(_net_prev_stall.get(s, 0))
+					if d > 0:
+						_net_slot_stall[int(s)] = 100.0 * float(d) / float(stall_delta)
+		_net_sample_ms = now
+		_net_sample_tick = run.tick
+		_net_recv_total = int(stats.get("records_in", 0))
+		_net_slot_recv = stats.get("slot_records_in", {}).duplicate()
+		_net_stall_total = run._stalled_total
+		_net_prev_stall = run._stall_slots.duplicate()
+	var head: String = "NET %s  slot %d  d%d  tick %d" % [
+		"host" if t.is_host else "client", run.local_slot,
+		run.lockstep.delay, run.tick]
+	lines.append(head)
+	lines.append("rate %4.1f/s   stall %.0f%%   recv %.1f/s" % [
+		_net_tick_rate, stall_pct, _net_recv_rate])
+	# The delay budget versus the worst measured round trip: the one number
+	# that explains the fault — a delay smaller than the RTT starves the
+	# pipeline to roughly delay/RTT ticks per second.
+	var worst_rtt := 0
+	for s in stats.get("ping", {}).keys():
+		worst_rtt = maxi(worst_rtt, int(stats.get("ping", {}).get(s, 0)))
+	var budget_ms: float = float(run.lockstep.delay) * 1000.0 / 60.0
+	if worst_rtt > 0:
+		if worst_rtt > budget_ms:
+			lines.append("flow d%d=%.0fms vs rtt %3dms  -> ~%d t/s max" % [
+				run.lockstep.delay, budget_ms, worst_rtt,
+				roundi(1000.0 * float(run.lockstep.delay) / float(worst_rtt))])
+		else:
+			lines.append("flow d%d=%.0fms vs rtt %3dms  -> ok" % [
+				run.lockstep.delay, budget_ms, worst_rtt])
+	for s in SessionRules.MAX_PLAYERS:
+		if run._session.profile(s).is_empty():
+			continue
+		var nm: String = "you" if s == run.local_slot else _slot_name(s)
+		var st: String = {run.SlotState.LIVE: "LIVE", run.SlotState.DEAD: "DEAD"} \
+			.get(run.slot_state[s], "AWAY")
+		var rtt := int(stats.get("ping", {}).get(s, 0))
+		var rtt_s: String = "%3dms" % rtt if rtt > 0 else "  — "
+		var path: String = "local"
+		if s != run.local_slot:
+			path = "direct" if not t.relayed else (
+				"direct" if t.direct_to(int(t.peer_of_slot.get(s, -1))) else "relay ")
+		lines.append("%-9s %-4s %s %s %5.1f/s" % [nm, st, rtt_s, path,
+			float(_net_slot_rate.get(s, 0.0))])
+	var relay_err: String = str(stats.get("relay_error", ""))
+	var err_s: String = ("  err %s" % relay_err) if relay_err != "" else ""
+	lines.append("pkts %s out/%s in  fb %d  mal %d%s" % [
+		_k(int(stats.get("packets_out", 0))), _k(int(stats.get("packets_in", 0))),
+		int(stats.get("direct_fallbacks", 0)), int(stats.get("malformed", 0)),
+		err_s])
+	if run._stalled_ticks > 0 and run._stalled_ticks >= SessionRules.STALL_NOTICE:
+		var names: Array = []
+		for s in run.missing_slots():
+			names.append(_slot_name(s))
+		lines.append("waiting on %s  %.1fs" % [", ".join(names),
+			float(run._stalled_ticks) / 60.0])
+	if not _net_slot_stall.is_empty():
+		var parts: Array = []
+		for s in _net_slot_stall.keys():
+			parts.append("%s %.0f%%" % [_slot_name(int(s)), float(_net_slot_stall[s])])
+		lines.append("starved by: %s" % ", ".join(parts))
+	_net_text.text = "\n".join(lines)
+
+## 1234 -> "1234", 12345 -> "12.3k": the panel's packet counts stay one word.
+func _k(n: int) -> String:
+	return str(n) if n < 1000 else "%.1fk" % (float(n) / 1000.0)
+
 func _build_lines() -> Array:
 	var lines := []
 	var ls: int = run.local_slot
@@ -395,6 +522,24 @@ var _recipes_body: Label
 var _vignette: ColorRect
 var _pause_panel: Control
 var _settings: Control
+## The network diagnostics panel, top-right under the tally. F1 toggles it;
+## shown by default in a session. Reads transport counters and lockstep state
+## every frame — presentation only, never the tick.
+var _net_panel: PanelContainer
+var _net_text: Label
+var _net_shown := false
+var _net_sample_ms := 0
+var _net_sample_tick := 0
+var _net_slot_recv: Dictionary = {}
+var _net_slot_rate: Dictionary = {}
+var _net_tick_rate := 0.0
+var _net_recv_total := 0
+var _net_recv_rate := 0.0
+var _net_stall_total := 0
+var _net_prev_stall: Dictionary = {}
+## slot -> percent of the last second's stall callbacks that were waiting on
+## it, computed from _net_prev_stall deltas.
+var _net_slot_stall: Dictionary = {}
 
 func _on_cards(cards: Array) -> void:
 	_cards_data = cards
@@ -878,6 +1023,10 @@ func _input(e: InputEvent) -> void:
 		_route_cancel()
 	elif e.is_action_pressed("pause") and _can_pause():
 		_toggle_pause()
+	elif e.is_action_pressed("netinfo") and _net_panel != null \
+			and run != null and run._session != null \
+			and run._session.role != NetworkSession.Role.SOLO:
+		_toggle_netinfo()
 	elif _overlay.visible:
 		var nav := ""
 		for a in NAV_ACTIONS:
@@ -967,6 +1116,10 @@ func _toggle_pause() -> void:
 		return
 	run.user_paused = not run.user_paused
 	_pause_panel.visible = run.user_paused
+
+func _toggle_netinfo() -> void:
+	_net_shown = not _net_shown
+	_net_panel.visible = _net_shown
 
 func _nav_move(action: String) -> void:
 	match action:

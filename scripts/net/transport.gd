@@ -26,6 +26,11 @@ const HOST_PEER := 1
 ## sent before the first service and alongside it until the handshake lands.
 const DISCOVERY_RETRY_MS := 250
 const PUNCH_RETRY_MS := 100
+## One PING per second to every bound peer, both directions. A PONG echoes
+## the probe's timestamp, so the round trip is measured on whatever path the
+## probes take — channel 0, direct once punched — which is the path INPUT
+## traffic actually uses, not some side channel.
+const PING_INTERVAL_MS := 1000
 ## A peer cannot advance more than one lockstep ring ahead of a missing record.
 ## Retain that bounded window so one-sided direct failure can replay the seam
 ## over the still-live relay; duplicates are rejected by slot and absolute tick.
@@ -73,6 +78,23 @@ var peer_of_slot: Dictionary = {}
 ## Refused-packet counts per peer, and the running total.
 var bad_packets: Dictionary = {}
 var malformed_total := 0
+
+## Always-on diagnostics, cheap integers: the HUD panel and --netlog read
+## them, nothing in the simulation ever does. Packets and bytes are counted
+## where they touch ENet; record counters are the logical INPUT records.
+var packets_in := 0
+var packets_out := 0
+var bytes_in := 0
+var bytes_out := 0
+var input_records_sent := 0
+var input_records_received := 0
+## slot -> records newly stored from the wire, cumulative. The panel's
+## per-slot arrival rate is the delta of this over a second.
+var slot_records_in: Dictionary = {}
+## slot -> last measured round trip in ms. Erased when the slot's peer goes,
+## so a stale value can never outlive the link that produced it.
+var ping_ms: Dictionary = {}
+var _next_ping_ms := 0
 
 ## The host's outbound relay staging: records received or submitted since the
 ## last flush, as [slot, tick, move, card, target, offer], and checksum reports
@@ -226,6 +248,7 @@ func _on_peer_disconnected(id: int) -> void:
 	# Listeners first, while the binding still says which slot this was.
 	peer_left.emit(id)
 	if slot_of_peer.has(id):
+		ping_ms.erase(int(slot_of_peer[id]))
 		peer_of_slot.erase(int(slot_of_peer[id]))
 		slot_of_peer.erase(id)
 
@@ -276,6 +299,7 @@ func drop_peer(id: int) -> void:
 	elif peer != null:
 		peer.disconnect_peer(id)
 	if slot_of_peer.has(id):
+		ping_ms.erase(int(slot_of_peer[id]))
 		peer_of_slot.erase(int(slot_of_peer[id]))
 		slot_of_peer.erase(id)
 
@@ -296,6 +320,7 @@ func close() -> void:
 	peer = null
 	slot_of_peer.clear()
 	peer_of_slot.clear()
+	ping_ms.clear()
 	_relay_up = false
 	_room_up = false
 
@@ -327,6 +352,8 @@ func _put_member(target: int, channel: int, mode: int,
 			if mode == MultiplayerPeer.TRANSFER_MODE_RELIABLE else 0
 		if link.packet.send(channel, bytes, flags) == OK:
 			direct_sent += 1
+			packets_out += 1
+			bytes_out += bytes.size()
 			if replayable:
 				_remember_direct(link, channel, mode, bytes)
 			return
@@ -339,6 +366,8 @@ func _put_member(target: int, channel: int, mode: int,
 func _put_raw(target: int, channel: int, mode: int, bytes: PackedByteArray) -> void:
 	if peer == null:
 		return
+	packets_out += 1
+	bytes_out += bytes.size()
 	peer.set_target_peer(target)
 	peer.set_transfer_channel(channel)
 	peer.set_transfer_mode(mode)
@@ -351,6 +380,7 @@ func _session_id() -> int:
 ## stages it for its next relay and needs no packet.
 func send_input(tick: int, move: Vector2, card: int, target: int, offer: int,
 		aim: Vector2 = Vector2.ZERO) -> void:
+	input_records_sent += 1
 	if is_host:
 		_relay_records.append([session.local_slot, tick, move, card, target, offer, aim])
 		return
@@ -421,6 +451,8 @@ func poll() -> void:
 		var from := peer.get_packet_peer()
 		var channel := peer.get_packet_channel()
 		var bytes := peer.get_packet()
+		packets_in += 1
+		bytes_in += bytes.size()
 		if relayed:
 			if RelayFrame.is_op(bytes):
 				_relay_op(RelayFrame.decode_op(bytes))
@@ -434,12 +466,48 @@ func poll() -> void:
 	_polling = false
 	if relayed and _room_up:
 		_poll_punch()
+	_ping_step()
 	if _rejoin_pending:
 		_rejoin_pending = false
 		# The drain may have delivered the relay's "closed": then the room
 		# is gone and the rejoin the disconnect asked for has no target.
 		if relay_error != "closed":
 			_rejoin_relay_now()
+
+## One PING to every bound peer per PING_INTERVAL_MS, over the same channel 0
+## path game records use. Never called while the link is down; never touches
+## the simulation. Gated on `started`: before START the host's descriptor is
+## still empty (its session id is 0) while a client's already holds the id, so
+## a probe sent in the lobby would be refused as a foreign session, counted,
+## and — after BAD_PACKETS worth of one-per-second probes — cut the peer.
+func _ping_step() -> void:
+	if session == null or not session.started or not connected() \
+			or slot_of_peer.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	if now < _next_ping_ms:
+		return
+	_next_ping_ms = now + PING_INTERVAL_MS
+	for id in slot_of_peer.keys():
+		_put(int(id), CH_INPUT, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE,
+			Protocol.encode_control(Protocol.Message.PING, _session_id(), 0, {"t": now}))
+
+## One primitive snapshot of the always-on counters and the measured round
+## trips, for the HUD panel and the netlog. Display only; nothing in the
+## simulation reads it.
+func net_stats() -> Dictionary:
+	return {
+		"packets_in": packets_in, "packets_out": packets_out,
+		"bytes_in": bytes_in, "bytes_out": bytes_out,
+		"records_in": input_records_received,
+		"records_out": input_records_sent,
+		"slot_records_in": slot_records_in.duplicate(),
+		"ping": ping_ms.duplicate(),
+		"relayed": relayed, "relay_error": relay_error,
+		"direct_fallbacks": direct_fallbacks,
+		"malformed": malformed_total,
+		"relays_sent": relays_sent, "relays_received": relays_received,
+	}
 
 ## The relay talking to this end: the room answer, roster changes, refusals.
 func _relay_op(op: Dictionary) -> void:
@@ -468,12 +536,14 @@ func _relay_op(op: Dictionary) -> void:
 			_destroy_link(m2)
 			peer_left.emit(m2)
 			if slot_of_peer.has(m2):
+				ping_ms.erase(int(slot_of_peer[m2]))
 				peer_of_slot.erase(int(slot_of_peer[m2]))
 				slot_of_peer.erase(m2)
 		"closed":
 			relay_error = "closed"
 			_room_up = false
 			_destroy_links()
+			ping_ms.clear()
 			peer_left.emit(HOST_PEER)
 			if slot_of_peer.has(HOST_PEER):
 				peer_of_slot.erase(int(slot_of_peer[HOST_PEER]))
@@ -482,6 +552,7 @@ func _relay_op(op: Dictionary) -> void:
 			relay_error = str(op.get("reason", "bad"))
 			_room_up = false
 			_destroy_links()
+			ping_ms.clear()
 
 ## Start one star leg. The relay room token authenticates this member; `target`
 ## makes the same token usable for the host's several dedicated sockets.
@@ -777,6 +848,43 @@ func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 				_refuse(from)
 				return
 			snapshot_received.emit(tick, body)
+		Protocol.Message.PING:
+			# Transport-level, never session state: the reply echoes the probe
+			# timestamp so the sender measures the round trip on this path.
+			# UNRELIABLE like CHECKSUM: channel 0 is reliable ordered, so a
+			# retransmitted probe would both block the records behind it and
+			# report retransmit time as latency; a lost probe just costs the
+			# sample.
+			if channel != CH_INPUT:
+				_refuse(from)
+				return
+			var pong := Protocol.decode_control(kind, tick, body)
+			if pong.is_empty():
+				_refuse(from)
+				return
+			if not slot_of_peer.has(from):
+				# A bound-less peer's probe is not its fault: a client binds
+				# the host the moment it connects, while the host binds it
+				# only when its HELLO is admitted. Never counted against it.
+				return
+			_put(from, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE,
+				Protocol.encode_control(Protocol.Message.PONG, _session_id(), 0,
+					{"t": int(pong.get("t", 0))}))
+		Protocol.Message.PONG:
+			if channel != CH_INPUT:
+				_refuse(from)
+				return
+			var pong := Protocol.decode_control(kind, tick, body)
+			if pong.is_empty():
+				_refuse(from)
+				return
+			if not slot_of_peer.has(from):
+				return
+			var t := int(pong.get("t", 0))
+			var now := Time.get_ticks_msec()
+			# A stale or future timestamp is not a measurement this path made.
+			if t > 0 and now >= t and now - t < 60000:
+				ping_ms[int(slot_of_peer[from])] = now - t
 		_:
 			var ctl := Protocol.decode_control(kind, tick, body)
 			if ctl.is_empty():
@@ -807,6 +915,9 @@ func _accept_record(slot: int, tick: int, move: Vector2, card: int, target: int,
 		offer: int, aim: Vector2 = Vector2.ZERO) -> bool:
 	var stored := session.lockstep != null \
 		and session.lockstep.submit(slot, tick, move, card, target, offer, aim)
+	if stored:
+		input_records_received += 1
+		slot_records_in[slot] = int(slot_records_in.get(slot, 0)) + 1
 	if boundary >= 0 and tick > boundary and _held.size() < HELD_MAX \
 			and not _held_has(slot, tick):
 		_held.append([slot, tick, move, card, target, offer, aim])

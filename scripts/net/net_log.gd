@@ -18,8 +18,8 @@ class_name NetLog extends RefCounted
 ## Lines are prefixed `net` so they can be pulled out of the Godot log:
 ##   grep '^net ' ~/Library/Application\ Support/Godot/app_userdata/ROOTKIT/logs/godot.log
 
-## One heartbeat per second at 60Hz.
-const HEARTBEAT_TICKS := 60
+## One heartbeat per second, on the wall clock.
+const HEARTBEAT_MS := 1000
 
 var enabled := false
 
@@ -72,6 +72,7 @@ func stalled(tick: int, missing: PackedInt32Array) -> void:
 		_total_stalls += 1
 		_line("stall start tick=%d waiting_on=%s" % [tick, str(missing)])
 	_stall_len += 1
+	_maybe_beat(tick, Time.get_ticks_msec())
 
 ## The tick ran. Closes a stall that was open, which is the only place its
 ## length is known.
@@ -84,10 +85,15 @@ func stepped(tick: int) -> void:
 			% [_stall_tick, _stall_len, roundi(_stall_len * 1000.0 / 60.0)])
 		_stall_tick = -1
 		_stall_len = 0
-	if _last_beat_tick < 0:
-		_last_beat_tick = tick
-	elif tick - _last_beat_tick >= HEARTBEAT_TICKS:
-		_beat(tick)
+	_maybe_beat(tick, Time.get_ticks_msec())
+
+## One printable line for a transport lifecycle event — a peer joined or left,
+## a park, a return, a rejoin, a relay error. The run composes the text; this
+## class only prefixes it. Guarded by the caller like the allocating sites.
+func event(text: String) -> void:
+	if not enabled:
+		return
+	_line("event " + text)
 
 ## Host only: the checksums for `tick` disagreed, and these slots are the ones
 ## that did not match the host.
@@ -119,10 +125,18 @@ func snapshot_applied(boundary: int, ok: bool) -> void:
 		_snapshots_applied += 1
 	_line("snapshot %s boundary=%d" % ["applied" if ok else "REFUSED", boundary])
 
-## Once a second: how much of that second the world actually stepped. A
-## healthy link is `stalled=0`; anything else is the hitch, measured.
-func _beat(tick: int) -> void:
-	var now := Time.get_ticks_msec()
+## Wall-clock heartbeat. Called from BOTH the stalled and the stepped paths,
+## because the tick-gated version went silent exactly during a hard stall —
+## the one time a log line matters. The headline is what it always was:
+## `ran` is how many ticks the world executed per real second, so a session
+## running 1 game-second per 3 real seconds prints ran=20.
+func _maybe_beat(tick: int, now: int) -> void:
+	if _last_beat_tick < 0:
+		_last_beat_tick = tick
+		_beat_wall = now
+		return
+	if now - _beat_wall < HEARTBEAT_MS:
+		return
 	var wall := now - _beat_wall
 	var ran := tick - _last_beat_tick
 	_line("beat  tick=%d ran=%d stalled=%d stalls=%d worst=%d wall=%dms"

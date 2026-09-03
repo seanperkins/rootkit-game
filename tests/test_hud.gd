@@ -12,7 +12,8 @@ var finished := {}
 
 const CASES := ["the_blocks_exist_and_populate", "integrity_warns_proportionally",
 	"the_summary_reports_a_finished_run", "the_summary_survives_a_short_build",
-	"the_teammate_strip_names_everyone_else", "settings_from_pause_cover_the_viewport",
+	"the_teammate_strip_names_everyone_else", "the_net_panel_is_session_only",
+	"the_stall_is_attributed", "settings_from_pause_cover_the_viewport",
 	"abandon_from_the_pause_menu_ends_a_solo_run"]
 
 func _initialize() -> void:
@@ -24,6 +25,8 @@ func _initialize() -> void:
 	await the_summary_reports_a_finished_run()
 	await the_summary_survives_a_short_build()
 	await the_teammate_strip_names_everyone_else()
+	await the_net_panel_is_session_only()
+	await the_stall_is_attributed()
 	await settings_from_pause_cover_the_viewport()
 	await abandon_from_the_pause_menu_ends_a_solo_run()
 	print("")
@@ -158,6 +161,59 @@ func the_teammate_strip_names_everyone_else() -> void:
 	h.teardown()
 	await process_frame
 	finished["the_teammate_strip_names_everyone_else"] = true
+
+## The network diagnostics panel exists, is hidden for solo, shows by default
+## in a session (no transport in the harness: the panel says so), and F1
+## toggles it through the same method the key path calls.
+func the_net_panel_is_session_only() -> void:
+	var r := await _fresh_run()
+	var ui := _ui(r)
+	ui._refresh()
+	_check("solo keeps the net panel hidden", ui._net_panel.visible, false)
+	ui._toggle_netinfo()
+	_check("the toggle flips hidden to shown", ui._net_panel.visible, true)
+	ui._toggle_netinfo()
+	r.free()
+	await process_frame
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 2, 0, 20260830)
+	var r2: Node2D = h.runs[0]
+	var ui2 := _ui(r2)
+	ui2._refresh()
+	# The harness carries no transport, so the panel stays hidden — the real
+	# lobby always attaches one before the run enters the tree.
+	_check("a session with no transport keeps the panel hidden",
+		ui2._net_panel.visible, false)
+	ui2._toggle_netinfo()
+	_check("the toggle still reveals it", ui2._net_panel.visible, true)
+	ui2._refresh()
+	_check("and the body names the wire", ui2._net_text.text.contains("NET"), true)
+	ui2._toggle_netinfo()
+	_check("F1 hides it again", ui2._net_panel.visible, false)
+	h.teardown()
+	await process_frame
+	finished["the_net_panel_is_session_only"] = true
+
+## The fault the net panel exists to explain: a peer's records withheld (the
+## harness's wire after its controller drops), and the diagnostics must name
+## that slot — the persistent one-or-two-frame stall never reaches
+## STALL_NOTICE, so the cumulative per-slot attribution is the only signal.
+func the_stall_is_attributed() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 2, 2, 20260830)
+	h.withheld[1] = [0, 1000000]
+	var r: Node2D = h.runs[0]
+	for i in 90:
+		h.step(func(_t): return [Vector2.ZERO, Vector2.ZERO])
+	_check("the host stalled", r._stalled_total > 0, true)
+	_check("and attributed it to the withheld slot",
+		int(r._stall_slots.get(1, 0)) > 0, true)
+	var miss: PackedInt32Array = r.missing_slots()
+	_check("the stall names slot one", miss.has(1), true)
+	_check("and never the local slot", miss.has(0), false)
+	h.teardown()
+	await process_frame
+	finished["the_stall_is_attributed"] = true
 
 ## The settings panel anchored itself from _ready with set_anchors_preset,
 ## which under a CanvasLayer leaves the Control 0x0 for good: its scrim covered

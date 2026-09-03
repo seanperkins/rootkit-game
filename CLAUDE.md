@@ -33,6 +33,14 @@ exits 0 saying `PASS`. That has hidden two real breakages here. The runner reads
 stderr and fails a suite on any `SCRIPT ERROR` or `Parse Error` whatever the
 suite claims about itself.
 
+**Live network diagnostics.** In a co-op session, `F1` toggles the HUD net
+panel: per-slot RTT (measured by PING/PONG on channel 0, i.e. the path game
+records use), relay-vs-punched path, per-slot receive rates, packet/record
+counters, stalled % and the live tick rate — the number that reports "the game
+runs at half speed". `-- --netlog` (after the binary/`--`) writes `net …`
+lines — stall start/end, beats, desyncs, snapshots, and peer/park/return/
+reconnect events — to the Godot log instead of only on screen.
+
 ## Architecture
 
 `codemaps/` describes the shape — `architecture.md`, `audio.md`, `build.md`,

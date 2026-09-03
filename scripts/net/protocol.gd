@@ -22,7 +22,7 @@ class_name Protocol extends RefCounted
 ## per kind.
 
 enum Message { HELLO, WELCOME, START, INPUT, RELAY, CHECKSUM, RESYNC, SNAPSHOT,
-	ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END }
+	ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END, PING, PONG }
 
 const ENVELOPE := 14
 const INPUT_BODY := 28            # move f32 x2, aim f32 x2, card, target, offer i32
@@ -277,6 +277,11 @@ static func decode_control(kind: int, tick: int, body: PackedByteArray) -> Dicti
 			out = {"outcome": outcome, "hash": int(_num(raw.get("hash", 0)))}
 		Message.END_CHECK:
 			out = {}
+		Message.PING, Message.PONG:
+			var t := int(_num(raw.get("t", 0)))
+			if t < 0:
+				return {}
+			out = {"t": t}
 		_:
 			return {}
 	out["kind"] = kind

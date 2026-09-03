@@ -117,3 +117,11 @@ restart={
 , Object(InputEventJoypadButton,"button_index":2,"pressed":false,"script":null)
 ]
 }
+; F1 toggles the network diagnostics panel during a session. Keyboard-only:
+; there is no spare gamepad button a fighting player would not hit by accident.
+; 4194332 is KEY_F1 (4194304 + 0x1C); 4194336 would be F5.
+netinfo={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":4194332,"pressed":false,"echo":false,"script":null)
+]
+}

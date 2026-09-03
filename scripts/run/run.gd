@@ -287,6 +287,14 @@ var tick := 0
 ## Consecutive physics callbacks in which the ring was not ready. Read by the
 ## HUD to name the slots being waited on.
 var _stalled_ticks := 0
+## Cumulative stalled ticks this session, for the HUD panel's percentage.
+## Diagnostics: counted above the guard, never read by the tick.
+var _stalled_total := 0
+## slot -> stall callbacks that were waiting on that slot, cumulative. The
+## panel attributes a slow session to its slot over a sample window. The
+## common fault is one-to-three-frame stalls that never reach STALL_NOTICE,
+## so the attribution window is what names the culprit. Diagnostics only.
+var _stall_slots: Dictionary = {}
 ## The local slot's staged choice for its open offer, as (card, target, offer
 ## seq); card -1 means none. Written by the UI-facing choose/decline calls,
 ## consumed by the next successful record submit.
@@ -820,6 +828,11 @@ const RECONNECT_RETRY_FRAMES := 180
 func _on_peer_left(id: int) -> void:
 	if _session.ended:
 		return
+	if _netlog.enabled:
+		var slot_of := -1
+		if _transport != null and _transport.slot_of_peer.has(id):
+			slot_of = int(_transport.slot_of_peer[id])
+		_netlog.event("peer left id=%d slot=%d" % [id, slot_of])
 	if _session.role == NetworkSession.Role.HOST:
 		if _transport != null and _transport.slot_of_peer.has(id):
 			request_park(int(_transport.slot_of_peer[id]))
@@ -829,6 +842,8 @@ func _on_peer_left(id: int) -> void:
 		_begin_reconnect()
 
 func _on_peer_joined(_id: int) -> void:
+	if _netlog.enabled:
+		_netlog.event("peer joined id=%d" % _id)
 	if _session.role != NetworkSession.Role.CLIENT or not _session.reconnecting \
 			or _transport == null:
 		return
@@ -858,6 +873,9 @@ func _begin_reconnect() -> void:
 	_session.reconnecting = true
 	_reconnect_frames = 0
 	_reconnect_attempts += 1
+	if _netlog.enabled:
+		_netlog.event("reconnect attempt %d of %d" % [_reconnect_attempts,
+			RECONNECT_ATTEMPTS])
 	if _reconnect_attempts > RECONNECT_ATTEMPTS:
 		_session.ended = true
 		emit_signal("run_ended", false, 0)
@@ -907,6 +925,8 @@ func _host_park_step() -> void:
 func _park(slot: int) -> void:
 	if slot_state[slot] == SlotState.ABSENT:
 		return
+	if _netlog.enabled:
+		_netlog.event("park slot=%d tick=%d" % [slot, lockstep.executed])
 	_parked_health[slot] = player_health[slot]
 	slot_state[slot] = SlotState.ABSENT
 	player_vel[slot] = Vector2.ZERO
@@ -928,6 +948,8 @@ func _park(slot: int) -> void:
 func _return(slot: int, t: int) -> void:
 	if slot_state[slot] != SlotState.ABSENT:
 		return
+	if _netlog.enabled:
+		_netlog.event("return slot=%d tick=%d" % [slot, t])
 	# A return faces right, whether it comes back LIVE or DEAD, so a slot
 	# revived later never carries the facing it parked with.
 	player_facing[slot] = Vector2.RIGHT
@@ -996,6 +1018,8 @@ func accept_reconnect(body: Dictionary, peer: int) -> int:
 		and es.end_outcome != NetworkSession.Outcome.WIN
 	if clears:
 		es.cancel_no_live_check()
+	if _netlog.enabled:
+		_netlog.event("reconnect accept slot=%d boundary=%d" % [slot, r])
 	es.announce_resync(r, PackedInt32Array([slot]))
 	_pending_present[slot] = r
 	if _transport != null:
@@ -1334,7 +1358,8 @@ func _ending_step() -> void:
 	evaluate_end_check()
 
 ## The LIVE slots whose record for the next tick has not arrived, for the HUD's
-## stall notice once _stalled_ticks passes STALL_NOTICE.
+## stall notice once _stalled_ticks passes STALL_NOTICE. Slot names come from
+## the screen side via _session.profile.
 func missing_slots() -> PackedInt32Array:
 	return lockstep.missing(lockstep.executed)
 
@@ -1833,9 +1858,17 @@ func _physics_process(_dt: float) -> void:
 		return
 	if not lockstep.ready(lockstep.executed) or _holding_for_snapshot():
 		_stalled_ticks += 1
+		_stalled_total += 1
 		# Guarded here, not inside: lockstep.missing allocates.
 		if _netlog.enabled:
 			_netlog.stalled(lockstep.executed, lockstep.missing(lockstep.executed))
+		# Sampled, never per frame, for the same reason the netlog call is
+		# guarded: missing() allocates. Every sixth callback (10/s at worst)
+		# stands for the six, so the panel's attribution stays honest without
+		# an allocation per stalled frame.
+		if _stalled_ticks % 6 == 0:
+			for s in lockstep.missing(lockstep.executed):
+				_stall_slots[s] = int(_stall_slots.get(s, 0)) + 6
 		return
 	_stalled_ticks = 0
 	_netlog.stepped(lockstep.executed)
@@ -5303,6 +5336,8 @@ func _build_manifest() -> void:
 			"_execute_immune_type": "constant per enemy type",
 			"_pending_fusions": "presentation: derived from _offer_open by _emit_local_offer",
 			"_stalled_ticks": "transport liveness, local",
+			"_stalled_total": "diagnostics: counted above the guard, never read by it",
+			"_stall_slots": "diagnostics: attributed above the guard, never read by it",
 			"_netlog": "diagnostics: reports the tick, never read by it",
 			"_local_choice": "local staged input, not yet a record",
 			"_rec_moves": "take buffer", "_rec_aims": "take buffer", "_rec_cards": "take buffer",
