@@ -221,9 +221,13 @@ func build_versions_are_part_of_the_handshake() -> void:
 		[str(refused.get("reason", "")), str(refused.get("build", ""))], ["build", "0.4.0"])
 	_check("REFUSED refuses a non-string reason",
 		body.call(M.REFUSED, 0, {"reason": 5, "build": "0.4.0"}).is_empty(), true)
+	# The real failure shape: a lobby host's descriptor is empty, so its
+	# send_control stamps session 0, while the receiver's context already names
+	# a session. Without the exemption this is dropped — the encoded id and the
+	# context id MUST differ.
 	var rejected := Protocol.decode_envelope(Protocol.encode_control(
-		M.REFUSED, 777, 0, {"reason": "build", "build": "0.4.0"}), {"session_id": 777})
-	_check("REFUSED crosses even at a known session id — the host sends it at 0",
+		M.REFUSED, 0, 0, {"reason": "build", "build": "0.4.0"}), {"session_id": 777})
+	_check("REFUSED at session 0 crosses a receiver that knows session 777",
 		rejected.is_empty(), false)
 	finished["build_versions_are_part_of_the_handshake"] = true
 

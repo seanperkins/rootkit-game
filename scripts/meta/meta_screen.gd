@@ -371,14 +371,16 @@ func _on_peer_left(id: int) -> void:
 		_broadcast_welcome(-1)
 		_refresh_players()
 	else:
-		_link_status.text = "the host went away"
-		_leave()
 		# A link cut before any WELCOME assigned a slot is the host refusing
 		# this build at the envelope (old host, new client) or cutting us off;
 		# the REFUSED message can only travel between builds that share the
-		# enum, so name the likely cause.
-		if _session == null or _session.role != NetworkSession.Role.CLIENT \
-				or _session.local_slot < 0:
+		# enum, so name the likely cause. Capture the flag FIRST: _leave()
+		# nulls the session, so reading it after would turn every client
+		# disconnect — including a fully admitted one — into a version hint.
+		var never_admitted := _session.local_slot < 0
+		_link_status.text = "the host went away"
+		_leave()
+		if never_admitted:
 			_link_status.text = "the host closed the link — it may be a different game version; check for updates"
 
 func _process(_dt: float) -> void:

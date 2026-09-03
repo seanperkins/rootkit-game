@@ -318,17 +318,24 @@ func a_join_after_start_is_refused() -> void:
 ## send_control carries, while the receiver's context already names a session.
 ## The refusal must land in the receiver's inbox, not be dropped by the
 ## envelope's session check — the lobby uses this to say "update" instead of
-## giving a dead link.
+## giving a dead link. The host's session is swapped for a lobby-shaped one
+## (empty descriptor → its send_control stamps session 0) so the encoded id
+## DIFFERS from the client's session 77: same encoded/decoded id would pass
+## with or without the exemption and pin nothing.
 func a_refused_joiner_reaches_a_session_knowing_client() -> void:
 	cs.inbox.clear()
+	host_t.session = NetworkSession.host_lobby({"slot": 0, "name": "h",
+		"counters": SaveGame.session_counters()}, 999, 1)
 	host_t.send_control(Protocol.Message.REFUSED, 0, {"reason": "build", "build": "0.4.0"},
 		client_id)
 	_pump(40)
+	host_t.session = hs
 	var got: Dictionary = {}
 	for msg in cs.inbox:
 		if int(msg["kind"]) == Protocol.Message.REFUSED:
 			got = msg["body"]
-	_check("REFUSED reaches a client that knows its session", not got.is_empty(), true)
+	_check("REFUSED at session 0 reaches a client that knows session 77",
+		not got.is_empty(), true)
 	_check("and names the host's build", str(got.get("build", "")), "0.4.0")
 	cs.inbox.clear()
 	finished["a_refused_joiner_reaches_a_session_knowing_client"] = true
