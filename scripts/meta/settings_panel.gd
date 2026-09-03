@@ -30,7 +30,12 @@ signal closed
 var _value_labels := {}
 
 func _ready() -> void:
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	# `set_anchors_and_offsets_preset`, not `set_anchors_preset`: called from
+	# _ready, the latter leaves this Control 0x0 for good — the anchors read
+	# 1,1 but the rect never resolves, re-anchoring later is a no-op, and the
+	# scrim covers nothing, so the pause menu (or the shop) shows straight
+	# through the settings screen. test_meta_layout and test_hud measure it.
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	visible = false
 
 	var scrim := ColorRect.new()

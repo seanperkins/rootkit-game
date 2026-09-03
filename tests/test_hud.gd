@@ -12,7 +12,8 @@ var finished := {}
 
 const CASES := ["the_blocks_exist_and_populate", "integrity_warns_proportionally",
 	"the_summary_reports_a_finished_run", "the_summary_survives_a_short_build",
-	"the_teammate_strip_names_everyone_else"]
+	"the_teammate_strip_names_everyone_else", "settings_from_pause_cover_the_viewport",
+	"abandon_from_the_pause_menu_ends_a_solo_run"]
 
 func _initialize() -> void:
 	print("ROOTKIT — hud\n")
@@ -23,6 +24,8 @@ func _initialize() -> void:
 	await the_summary_reports_a_finished_run()
 	await the_summary_survives_a_short_build()
 	await the_teammate_strip_names_everyone_else()
+	await settings_from_pause_cover_the_viewport()
+	await abandon_from_the_pause_menu_ends_a_solo_run()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -155,3 +158,45 @@ func the_teammate_strip_names_everyone_else() -> void:
 	h.teardown()
 	await process_frame
 	finished["the_teammate_strip_names_everyone_else"] = true
+
+## The settings panel anchored itself from _ready with set_anchors_preset,
+## which under a CanvasLayer leaves the Control 0x0 for good: its scrim covered
+## nothing and the pause menu drew straight through the settings screen.
+func settings_from_pause_cover_the_viewport() -> void:
+	var r := await _fresh_run()
+	var ui := _ui(r)
+	ui._toggle_pause()
+	ui._settings.open()
+	for i in 4:
+		await process_frame
+	var vw: float = ProjectSettings.get_setting("display/window/size/viewport_width")
+	var vh: float = ProjectSettings.get_setting("display/window/size/viewport_height")
+	_check("settings opens over the pause menu", ui._settings.visible, true)
+	_check("and its rect spans the viewport",
+		ui._settings.get_global_rect().size, Vector2(vw, vh))
+	var scrim: Control = ui._settings.get_child(0)
+	_check("and so does its scrim", scrim.get_global_rect().size, Vector2(vw, vh))
+	ui._settings.close()
+	_check("closing it leaves the pause menu up", ui._pause_panel.visible, true)
+	r.free()
+	await process_frame
+	finished["settings_from_pause_cover_the_viewport"] = true
+
+## The pause menu's abandon button called run._die() with no slot after the
+## slots refactor gave _die one — a runtime error the button swallowed, so
+## pressing it did nothing at all.
+func abandon_from_the_pause_menu_ends_a_solo_run() -> void:
+	var r := await _fresh_run()
+	var ui := _ui(r)
+	ui._toggle_pause()
+	_check("the run is paused", r.user_paused, true)
+	ui._abandon()
+	await process_frame
+	_check("abandon unpauses", r.user_paused, false)
+	_check("and hides the pause menu", ui._pause_panel.visible, false)
+	_check("and the local slot is dead", r.slot_state[r.local_slot], r.SlotState.DEAD)
+	_check("and the solo session has ended", r._session.ended, true)
+	_check("and the summary is up", ui._end.visible, true)
+	r.free()
+	await process_frame
+	finished["abandon_from_the_pause_menu_ends_a_solo_run"] = true

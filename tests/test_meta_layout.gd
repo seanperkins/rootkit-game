@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 15
+const EXPECTED_CHECKS := 17
 
 var failures := 0
 var checks := 0
@@ -49,6 +49,15 @@ func _find(node: Node, cls: String, needle: String) -> Node:
 			return hit
 	return null
 
+func _find_settings(node: Node) -> Node:
+	if node.has_method("_nudge"):
+		return node
+	for c in node.get_children():
+		var hit := _find_settings(c)
+		if hit != null:
+			return hit
+	return null
+
 func fits_the_viewport() -> void:
 	var main: Node = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
@@ -70,6 +79,20 @@ func fits_the_viewport() -> void:
 	print("    ./intrude bottom edge at y=%.0f of %.0f" % [r.end.y, vh])
 	_check("./intrude fits inside the viewport height", r.end.y <= vh, true)
 	_check("./intrude fits inside the viewport width", r.end.x <= vw, true)
+
+	# The settings overlay must actually cover the shop: anchored from _ready
+	# with set_anchors_preset it stayed 0x0 and the shop showed through.
+	var settings_btn: Node = _find(main, "Button", "settings")
+	_check("the settings button exists", settings_btn != null, true)
+	if settings_btn != null:
+		settings_btn.pressed.emit()
+		for i in 4:
+			await process_frame
+		var shown: Node = _find_settings(main)
+		_check("the open settings panel spans the viewport",
+			shown != null and (shown as Control).get_global_rect().size == Vector2(vw, vh), true)
+		if shown != null:
+			shown.close()
 
 	var scroll: Node = _find(main, "ScrollContainer", "")
 	_check("the upgrade rows are in a ScrollContainer", scroll != null, true)

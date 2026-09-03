@@ -909,12 +909,19 @@ func _input(e: InputEvent) -> void:
 
 ## Leaving mid-run banks nothing beyond what a death would, so it goes through
 ## the same _die path rather than inventing a second one.
+## Solo: the local slot dies, so kills and flips still bank and the summary
+## shows before the shell. Networked: leave. A death applied here would be
+## a callback outside the tick that no other peer sees, so a client's exit is
+## the host parking its slot, and a host's exit is the host going away.
 func _abandon() -> void:
 	if run == null:
 		return
 	run.user_paused = false
 	_pause_panel.visible = false
-	run._die()
+	if run._session != null and run._session.role != NetworkSession.Role.SOLO:
+		_restart()
+		return
+	run._die(run.local_slot)
 
 func _toggle_recipes() -> void:
 	_recipes.visible = not _recipes.visible
