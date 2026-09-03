@@ -111,6 +111,10 @@ func _perform(actions: Array) -> void:
 		return
 	for a in actions:
 		if a[0] == "send":
+			# The disconnected peer's callback ran first in a near-simultaneous
+			# teardown; ENet errors on put_packet to a peer it already dropped.
+			if not rooms.is_connected_peer(int(a[1])):
+				continue
 			peer.set_target_peer(int(a[1]))
 			peer.set_transfer_channel(int(a[2]))
 			peer.set_transfer_mode(int(a[3]))
