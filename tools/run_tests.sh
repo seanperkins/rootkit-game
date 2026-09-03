@@ -25,7 +25,7 @@ SUITES=(
   test_determinism_rules test_meta_derivation test_lockstep test_plurality test_offers
   test_manifest test_snapshot_hostile test_multiplayer_sim test_transport_loopback
   test_lobby test_recovery test_ending test_parking test_reconnect test_facing
-  test_relay_frame test_relay_rooms test_relay test_transport_punch
+  test_relay_frame test_relay_rooms test_relay test_transport_punch test_update
 )
 [ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)
 

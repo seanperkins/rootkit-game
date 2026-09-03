@@ -50,6 +50,11 @@ var _leave_btn: Button
 var _start_btn: Button
 var _players: Label
 var _link_status: Label
+var _update_row: HBoxContainer
+var _update_label: Label
+var _update_now_btn: Button
+var _update_quit_btn: Button
+var _update_move_btn: Button
 var _session: NetworkSession = null
 var _transport: Transport = null
 
@@ -212,6 +217,7 @@ func _build_link() -> void:
 	_link_status.custom_minimum_size = Vector2(440, 0)
 	_link_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_link.add_child(_link_status)
+
 	# The room code, large enough to read aloud, with a copy button; both
 	# empty until the relay answers a host.
 	_code_label = _label("", 22, FG)
@@ -222,6 +228,49 @@ func _build_link() -> void:
 	_copy_btn.visible = false
 	_copy_btn.pressed.connect(func(): DisplayServer.clipboard_set(_transport.code if _transport != null else ""))
 	_link.add_child(_copy_btn)
+
+	# The update strip hugs the bottom edge, OUTSIDE the measured column:
+	# test_meta_layout gates the column against the viewport and every new
+	# element in it eats the slack the scroll height was tuned for. It stays
+	# hidden until the updater finds something worth saying.
+	_update_row = HBoxContainer.new()
+	_update_row.anchor_top = 1.0
+	_update_row.anchor_bottom = 1.0
+	_update_row.offset_top = -64
+	_update_row.offset_bottom = -28
+	_update_row.offset_left = 64
+	_update_row.add_theme_constant_override("separation", 10)
+	_update_row.visible = false
+	add_child(_update_row)
+	_update_label = _label("", 13, DIM)
+	_update_row.add_child(_update_label)
+	_update_now_btn = Button.new()
+	_update_now_btn.text = "  install & restart  "
+	_update_now_btn.custom_minimum_size = Vector2(150, 30)
+	_update_now_btn.pressed.connect(_install_now)
+	_update_row.add_child(_update_now_btn)
+	_update_quit_btn = Button.new()
+	_update_quit_btn.text = "  apply on quit  "
+	_update_quit_btn.custom_minimum_size = Vector2(130, 30)
+	_update_quit_btn.pressed.connect(_install_on_quit)
+	_update_row.add_child(_update_quit_btn)
+	_update_move_btn = Button.new()
+	_update_move_btn.text = "  move to /Applications  "
+	_update_move_btn.custom_minimum_size = Vector2(180, 30)
+	_update_move_btn.pressed.connect(_move_to_applications)
+	_update_row.add_child(_update_move_btn)
+
+	# Updater is the autoload, so it survives the menu -> run scene swap and
+	# can apply-on-quit from inside a run. The menu re-enters this scene every
+	# time a run ends, so guard the connections. Headless suites drive this
+	# scene without a project main loop, so the autoload may simply not exist.
+	if not OS.has_feature("headless"):
+		var updater := get_node_or_null("/root/Updater")
+		if updater != null and not updater.update_ready.is_connected(_on_update_ready):
+			updater.update_ready.connect(_on_update_ready)
+			updater.update_state.connect(_on_update_state)
+			updater.update_failed.connect(_on_update_failed)
+			updater.begin_check()
 
 ## Six characters from the code alphabet route through the relay; anything
 ## else is a direct address.
@@ -239,6 +288,50 @@ func _profile() -> Dictionary:
 	SaveGame.save_state()
 	return {"slot": 0, "name": SaveGame.string_pref("display_name"),
 		"counters": SaveGame.session_counters()}
+
+## The update strip's actions. The player is on the menu when they press
+## these — a session is never interrupted; apply happens either right away
+## (spawn helper, restart) or at the next quit (the autoload's close hook).
+func _install_now() -> void:
+	_update_now_btn.disabled = true
+	_update_quit_btn.disabled = true
+	Updater.install_now()
+
+func _install_on_quit() -> void:
+	_update_now_btn.disabled = true
+	_update_quit_btn.disabled = true
+	Updater.install_on_quit()
+
+## A quarantined zip-launched app runs from a randomized read-only mount; the
+## update can only swap the bundle where it lives after the player moves it.
+## /Applications needs admin for this, hence the osascript prompt.
+func _move_to_applications() -> void:
+	var exe := OS.get_executable_path()
+	var idx := exe.find("ROOTKIT.app")
+	if idx <= 0:
+		_update_label.text = "could not find the app bundle to move"
+		return
+	var src := exe.substr(0, idx + "ROOTKIT.app".length())
+	var cmd := "ditto \"%s\" \"/Applications/ROOTKIT.app\" && rm -rf \"%s\"" % [src, src]
+	var ok := OS.execute("osascript", ["-e",
+		"do shell script \"%s\" with administrator privileges" % cmd.replace("\"", "\\\"")])
+	_update_label.text = "now quit and relaunch ROOTKIT from /Applications" if ok == 0 \
+		else "could not move it — drag ROOTKIT.app into /Applications and relaunch"
+
+func _on_update_ready(info: Dictionary) -> void:
+	_update_label.text = "update available: v%s" % str(info.get("version", "?"))
+	_update_move_btn.visible = Updater.translocated()
+	_update_now_btn.visible = not _update_move_btn.visible
+	_update_quit_btn.visible = not _update_move_btn.visible
+	_update_row.visible = true
+
+func _on_update_state(text: String) -> void:
+	_update_label.text = text
+	_update_row.visible = true
+
+func _on_update_failed(reason: String) -> void:
+	_update_label.text = reason
+	_update_row.visible = true
 
 func _host() -> void:
 	_start_hosting(true)

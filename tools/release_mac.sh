@@ -44,6 +44,14 @@ godot --headless --import >/dev/null 2>&1 || true
 godot --headless --export-release macos "$APP"
 [ -d "$APP" ] || { echo "export produced no app" >&2; exit 1; }
 
+# The updater helper rides INSIDE the bundle and BEFORE codesign (and
+# therefore before notarization): the signature and staple cover whatever the
+# package ships — a helper copied in afterwards would break both. It is what
+# this build will use to swap in the NEXT version.
+mkdir -p "$APP/Contents/Resources"
+cp "$ROOT/packaging/updater/macos.sh" "$APP/Contents/Resources/updater.sh"
+chmod +x "$APP/Contents/Resources/updater.sh"
+
 # Godot exported with an ad-hoc signature; replace it with the Developer ID,
 # hardened runtime and the entitlements a Godot binary needs.
 codesign --force --deep --options runtime --timestamp \
@@ -67,3 +75,10 @@ gh release view "$TAG" >/dev/null 2>&1 \
   || gh release create "$TAG" --title "ROOTKIT $TAG" --generate-notes
 gh release upload "$TAG" "$ZIP" --clobber
 echo "uploaded $(basename "$ZIP") to release $TAG"
+
+# The update feed. Signing needs the private key: tools/update_feed.sh genkey
+# makes it at ~/.config/rootkit/update_sign.key. Merge keeps the Windows and
+# Linux CI entries when this local run only built macOS.
+"$ROOT/tools/update_feed.sh" "$TAG" --merge
+gh release upload "$TAG" "$ROOT/build/latest.json" --clobber
+echo "uploaded build/latest.json to release $TAG"

@@ -64,9 +64,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG="$GITHUB_REF_NAME"
+          # The updater helpers ship inside the build: the game needs them at
+          # runtime to swap in the NEXT update. Linux is a .tar.gz — tar is on
+          # every distro the game ships to; Windows uses built-in tar.exe.
+          cp packaging/updater/windows.ps1 build/windows/updater.ps1
+          cp packaging/updater/linux.sh build/linux/updater.sh
+          chmod +x build/linux/updater.sh
           (cd build/windows && zip -qr "../ROOTKIT-$TAG-windows.zip" .)
-          (cd build/linux && zip -qr "../ROOTKIT-$TAG-linux.zip" .)
-          ls -la build/*.zip
+          (cd build/linux && tar -czf "../ROOTKIT-$TAG-linux.tar.gz" .)
+          ls -la build/*.zip build/*.tar.gz
 
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/v')
@@ -77,7 +83,7 @@ jobs:
           TAG="$GITHUB_REF_NAME"
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --title "ROOTKIT $TAG" --generate-notes
-          gh release upload "$TAG" "build/ROOTKIT-$TAG-windows.zip" "build/ROOTKIT-$TAG-linux.zip" --clobber
+          gh release upload "$TAG" "build/ROOTKIT-$TAG-windows.zip" "build/ROOTKIT-$TAG-linux.tar.gz" --clobber
 
   macos:
     # The same export/sign/notarise/staple path tools/release_mac.sh runs
@@ -176,6 +182,12 @@ jobs:
           godot --headless --import || true
           godot --headless --export-release macos build/macos/ROOTKIT.app
           [ -d build/macos/ROOTKIT.app ] || { echo "export produced no app" >&2; exit 1; }
+          # The updater helper rides INSIDE the bundle and BEFORE codesign: the
+          # signature and notarization cover whatever the package ships, so a
+          # helper copied in afterwards would break both.
+          mkdir -p build/macos/ROOTKIT.app/Contents/Resources
+          cp packaging/updater/macos.sh build/macos/ROOTKIT.app/Contents/Resources/updater.sh
+          chmod +x build/macos/ROOTKIT.app/Contents/Resources/updater.sh
 
       - name: Sign
         if: env.HAS_SIGNING == 'true'
@@ -239,3 +251,40 @@ jobs:
           rm -f ~/.ssh/macos_certs_ed25519 ~/.ssh/config
           rm -rf "$RUNNER_TEMP/certs" "$RUNNER_TEMP/AuthKey.p8"
           security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
+
+  feed:
+    # The update manifest for the release: one signed latest.json next to the
+    # three archives. After both build jobs so every asset exists; merges so a
+    # job that only sees a subset (macOS local runs) never drops the others.
+    # The private sign key lives in the Actions secret UPDATE_SIGN_KEY as
+    # base64 PEM; generate one with tools/update_feed.sh genkey on a personal
+    # machine, and keep the public key in sync with the game's embedded PUBKEY.
+    needs: [build, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_SIGN_KEY: ${{ secrets.UPDATE_SIGN_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the release assets
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          mkdir -p build
+          gh release download "$TAG" --dir build --clobber
+          ls -la build
+
+      - name: Generate and upload the feed
+        run: |
+          set -euo pipefail
+          if [ -z "${UPDATE_SIGN_KEY:-}" ]; then
+            echo "::error::Secret UPDATE_SIGN_KEY is unset. See tools/update_feed.sh genkey."
+            exit 1
+          fi
+          TAG="$GITHUB_REF_NAME"
+          printf '%s' "$UPDATE_SIGN_KEY" | base64 -d > "$RUNNER_TEMP/update_sign.key"
+          UPDATE_SIGN_KEY_FILE="$RUNNER_TEMP/update_sign.key" \
+            ./tools/update_feed.sh "$TAG" --merge
+          gh release upload "$TAG" build/latest.json --clobber

@@ -171,6 +171,17 @@ the site; this is the index.
   (`reject_reason = "version"`), so the lobby says "update" instead of the
   run finding a desync later. Any HELLO/WELCOME/REFUSED path must carry the
   version — a reconnect HELLO without it is refused by the updated host.
+- **The update channel is HTTPS + RSA-4096, never a plain hash.** The feed is
+  `latest.json` on the GitHub Release; `tools/update_feed.sh` signs each
+  archive's SHA-256 with the private key (`~/.config/rootkit/update_sign.key`
+  locally, Actions secret `UPDATE_SIGN_KEY` as base64 PEM) and the game
+  verifies with the public key embedded in `UpdateFeed.PUBKEY` before it will
+  touch a file. The private key never ships; rotate only in a release whose
+  clients still verify with the old key. The macOS bundle is replaced whole by
+  the platform helper (`ditto -x -k` — never `ZIPReader`, which loses mode bits
+  and AppleDouble metadata and invalidates a signed bundle), and a build that
+  cannot write its own location (App Translocation) is told to move to
+  /Applications first. Install now or apply-on-quit only — never mid-session.
 - **The relay and client ship the same `RELAY_PROTOCOL`.** A punched leg is a
   per-host↔client direct socket with the relay as the always-live fallback.
   The path seam replays a bounded one-ring window of tick-addressed records:
