@@ -1,8 +1,9 @@
 class_name RelayRooms extends RefCounted
 
 ## The relay's rooms, PURE: fed peer ids, channels, modes and bytes, it answers
-## with a list of actions — ["send", to_peer, channel, mode, bytes] or
-## ["drop", peer] — and the ENet shell performs them. Nothing here reads a
+## with a list of actions — ["send", to_peer, channel, mode, bytes],
+## ["drop", peer] or ["drop_later", peer] (after a short grace, so a final
+## op sent just before it is delivered) — and the ENet shell performs them. Nothing here reads a
 ## packet past its first byte, so the relay cannot be made to decode the game.
 
 const MAX_MEMBERS := 4
@@ -51,7 +52,7 @@ func disconnect_peer(peer: int) -> Array:
 			var p := int(room["members"][m])
 			actions.append(["send", p, 0, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
 				RelayFrame.encode_op({"op": "closed"})])
-			actions.append(["drop", p])
+			actions.append(["drop_later", p])
 			room_of_peer.erase(p)
 			member_of_peer.erase(p)
 		rooms.erase(code)

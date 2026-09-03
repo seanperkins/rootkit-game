@@ -63,6 +63,22 @@ var _port := 0
 ## parked one. Diagnostic; tests read it.
 var dropped_peers: Array = []
 
+## Relay mode: every peer, host included, is an ENet CLIENT of the relay,
+## and the relay routes on a one-byte member id (relay/relay_frame.gd). The
+## member id is what this class hands up as the peer id, so HOST_PEER, the
+## bindings and every message path are the same as direct mode.
+signal room_ready(code: String)
+var relayed := false
+var code := ""
+var member := -1
+## The last relay refusal reason, or "closed" (host gone) or "lost" (relay
+## gone); "" while fine.
+var relay_error := ""
+var _relay_address := ""
+var _relay_port := 0
+var _relay_up := false           # the ENet link to the relay
+var _room_up := false            # the room answered
+
 func host(port: int, p_session: NetworkSession) -> Error:
 	session = p_session
 	is_host = true
@@ -89,6 +105,40 @@ func join(address: String, port: int, p_session: NetworkSession) -> Error:
 	_wire()
 	return OK
 
+## Host through the relay. `address`/`port` default to SessionRules and are
+## overridable so the relay suite can stand a relay up on loopback.
+func host_relayed(p_session: NetworkSession, address: String = SessionRules.RELAY_ADDRESS,
+		port: int = SessionRules.RELAY_PORT) -> Error:
+	return _dial_relay(p_session, true, "", address, port)
+
+func join_relayed(room_code: String, p_session: NetworkSession,
+		address: String = SessionRules.RELAY_ADDRESS, port: int = SessionRules.RELAY_PORT) -> Error:
+	if not RelayFrame.is_code(room_code):
+		return ERR_INVALID_PARAMETER
+	return _dial_relay(p_session, false, RelayFrame.normalise_code(room_code), address, port)
+
+func _dial_relay(p_session: NetworkSession, as_host: bool, room_code: String,
+		address: String, port: int) -> Error:
+	if address == "" or address.length() > SessionRules.ADDRESS_MAX:
+		return ERR_UNCONFIGURED
+	session = p_session
+	is_host = as_host
+	relayed = true
+	code = room_code
+	member = -1
+	relay_error = ""
+	_relay_up = false
+	_room_up = false
+	_relay_address = address
+	_relay_port = port
+	peer = ENetMultiplayerPeer.new()
+	var err := peer.create_client(address, port, CHANNELS)
+	if err != OK:
+		peer = null
+		return err
+	_wire()
+	return OK
+
 func _wire() -> void:
 	peer.peer_connected.connect(_on_peer_connected)
 	peer.peer_disconnected.connect(_on_peer_disconnected)
@@ -100,38 +150,71 @@ func _on_peer_connected(id: int) -> void:
 	if pp != null:
 		pp.set_timeout(SessionRules.PEER_TIMEOUT_MS, SessionRules.PEER_TIMEOUT_MS,
 			SessionRules.PEER_TIMEOUT_MS)
+	if relayed:
+		# The link to the relay is up: ask for a room. peer_joined waits for
+		# the relay's answer, because a room is what "connected" means here.
+		_relay_up = true
+		var op := {"op": "create", "protocol": SessionRules.RELAY_PROTOCOL} if is_host \
+			else {"op": "join", "code": code, "protocol": SessionRules.RELAY_PROTOCOL}
+		_put_raw(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE, RelayFrame.encode_op(op))
+		return
 	bad_packets[id] = 0
 	peer_joined.emit(id)
 
 func _on_peer_disconnected(id: int) -> void:
+	if relayed:
+		# The relay itself is gone: every member this end knew is gone with it.
+		_relay_up = false
+		_room_up = false
+		if relay_error == "":
+			relay_error = "lost"
+		for m in slot_of_peer.keys():
+			peer_left.emit(int(m))
+		slot_of_peer.clear()
+		peer_of_slot.clear()
+		return
 	# Listeners first, while the binding still says which slot this was.
 	peer_left.emit(id)
 	if slot_of_peer.has(id):
 		peer_of_slot.erase(int(slot_of_peer[id]))
 		slot_of_peer.erase(id)
 
-## A client's link is gone: make it again to the same host. The run then
-## re-introduces itself with HELLO(session_id, slot) once the peer connects.
+## A client's link is gone: make it again to the same host — or, relayed,
+## the same room. The run then re-introduces itself with HELLO(session_id,
+## slot) once the peer connects.
 func rejoin() -> Error:
-	if is_host or _address == "":
+	if is_host:
+		return ERR_UNCONFIGURED
+	if relayed:
+		if code == "":
+			return ERR_UNCONFIGURED
+		var saved := code
+		close()
+		return _dial_relay(session, false, saved, _relay_address, _relay_port)
+	if _address == "":
 		return ERR_UNCONFIGURED
 	close()
 	return join(_address, _port, session)
 
 ## Cut one peer. Parking does this so a link that merely hiccupped cannot keep
 ## driving a slot nobody applies; so does input from a peer that never said
-## HELLO.
+## HELLO. Relayed, the cut is a kick op: the id is a member, not a socket.
 func drop_peer(id: int) -> void:
 	dropped_peers.append(id)
-	if peer != null:
+	if relayed:
+		if is_host and _room_up:
+			_put_raw(HOST_PEER, CH_INPUT, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
+				RelayFrame.encode_op({"op": "kick", "member": id}))
+	elif peer != null:
 		peer.disconnect_peer(id)
 	if slot_of_peer.has(id):
 		peer_of_slot.erase(int(slot_of_peer[id]))
 		slot_of_peer.erase(id)
 
 func connected() -> bool:
-	return peer != null and peer.get_connection_status() \
-		== MultiplayerPeer.CONNECTION_CONNECTED
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
+	return _room_up if relayed else true
 
 func bind_peer(peer_id: int, slot: int) -> void:
 	slot_of_peer[peer_id] = slot
@@ -143,10 +226,19 @@ func close() -> void:
 	peer = null
 	slot_of_peer.clear()
 	peer_of_slot.clear()
+	_relay_up = false
+	_room_up = false
 
 # ------------------------------------------------------------------ send ---
 
 func _put(target: int, channel: int, mode: int, bytes: PackedByteArray) -> void:
+	if relayed:
+		var to := RelayFrame.BROADCAST if target == MultiplayerPeer.TARGET_PEER_BROADCAST else target
+		_put_raw(HOST_PEER, channel, mode, RelayFrame.route(to, bytes))
+		return
+	_put_raw(target, channel, mode, bytes)
+
+func _put_raw(target: int, channel: int, mode: int, bytes: PackedByteArray) -> void:
 	if peer == null:
 		return
 	peer.set_target_peer(target)
@@ -223,7 +315,50 @@ func poll() -> void:
 		var from := peer.get_packet_peer()
 		var channel := peer.get_packet_channel()
 		var bytes := peer.get_packet()
-		_handle(from, channel, bytes)
+		if relayed:
+			if RelayFrame.is_op(bytes):
+				_relay_op(RelayFrame.decode_op(bytes))
+				continue
+			var parts := RelayFrame.unroute(bytes)
+			if parts.is_empty():
+				continue
+			_handle(int(parts[0]), channel, parts[1])
+		else:
+			_handle(from, channel, bytes)
+
+## The relay talking to this end: the room answer, roster changes, refusals.
+func _relay_op(op: Dictionary) -> void:
+	match str(op.get("op", "")):
+		"room":
+			_room_up = true
+			member = int(op.get("member", -1))
+			code = str(op.get("code", code))
+			if is_host:
+				room_ready.emit(code)
+			else:
+				bad_packets[HOST_PEER] = 0
+				peer_joined.emit(HOST_PEER)
+		"joined":
+			var m := int(op.get("member", -1))
+			if is_host and m >= 2 and m <= SessionRules.MAX_PLAYERS:
+				bad_packets[m] = 0
+				peer_joined.emit(m)
+		"left":
+			var m2 := int(op.get("member", -1))
+			peer_left.emit(m2)
+			if slot_of_peer.has(m2):
+				peer_of_slot.erase(int(slot_of_peer[m2]))
+				slot_of_peer.erase(m2)
+		"closed":
+			relay_error = "closed"
+			_room_up = false
+			peer_left.emit(HOST_PEER)
+			if slot_of_peer.has(HOST_PEER):
+				peer_of_slot.erase(int(slot_of_peer[HOST_PEER]))
+				slot_of_peer.erase(HOST_PEER)
+		"refused":
+			relay_error = str(op.get("reason", "bad"))
+			_room_up = false
 
 func _context() -> Dictionary:
 	var ls: Lockstep = session.lockstep if session != null else null
@@ -236,7 +371,10 @@ func _refuse(from: int) -> void:
 	malformed_total += 1
 	bad_packets[from] = int(bad_packets.get(from, 0)) + 1
 	if int(bad_packets[from]) >= SessionRules.BAD_PACKETS and peer != null:
-		peer.disconnect_peer(from)
+		if relayed:
+			drop_peer(from)
+		else:
+			peer.disconnect_peer(from)
 
 func _handle(from: int, channel: int, bytes: PackedByteArray) -> void:
 	var ctx := _context()

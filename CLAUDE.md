@@ -9,7 +9,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 
 ```bash
 godot                          # play, from the project root
-tools/run_tests.sh             # 55 suites + the perf gate
+tools/run_tests.sh             # 56 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 godot --headless -s res://tests/test_build.gd     # one suite
 godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)
@@ -21,7 +21,7 @@ rendering driver: `get_texture()` is null and every `tools/shot_*.gd` now exits 
 saying so. Run them windowed; from a sandboxed shell that also needs
 window-server access, which the Bash sandbox denies.
 
-**`test_transport_loopback` needs real UDP on 127.0.0.1**, which the Bash
+**`test_transport_loopback` and `test_relay` need real UDP on 127.0.0.1**, which the Bash
 sandbox denies (`enet_socket_send` errors). Run it, and the full runner, with
 the sandbox disabled. `tools/determinism_probe.gd` prints one `tick hash` per
 tick; its output must be byte-identical across arm64 and x86_64.

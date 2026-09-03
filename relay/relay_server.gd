@@ -6,6 +6,9 @@ class_name RelayServer extends RefCounted
 var peer: ENetMultiplayerPeer = null
 var rooms := RelayRooms.new()
 var _last_report_ms := 0
+## Peers to cut once a final op has had time to leave: [peer, at_ms].
+var _drop_later: Array = []
+const DROP_GRACE_MS := 250
 
 func start(port: int) -> Error:
 	peer = ENetMultiplayerPeer.new()
@@ -45,6 +48,13 @@ func poll(now_ms: int) -> void:
 		var bytes := peer.get_packet()
 		_perform(rooms.handle(from, channel, mode, bytes, now_ms))
 	_perform(rooms.expire(now_ms))
+	var i := 0
+	while i < _drop_later.size():
+		if now_ms >= int(_drop_later[i][1]):
+			peer.disconnect_peer(int(_drop_later[i][0]))
+			_drop_later.remove_at(i)
+		else:
+			i += 1
 	if now_ms - _last_report_ms >= 60000:
 		_last_report_ms = now_ms
 		print("relay: %s" % [rooms.stats()])
@@ -60,3 +70,5 @@ func _perform(actions: Array) -> void:
 			peer.put_packet(a[4])
 		elif a[0] == "drop":
 			peer.disconnect_peer(int(a[1]))
+		elif a[0] == "drop_later":
+			_drop_later.append([int(a[1]), Time.get_ticks_msec() + DROP_GRACE_MS])

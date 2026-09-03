@@ -45,7 +45,7 @@ func _sends_to(actions: Array, peer: int) -> Array:
 func _drops(actions: Array) -> Array:
 	var out := []
 	for a in actions:
-		if a[0] == "drop":
+		if a[0] == "drop" or a[0] == "drop_later":
 			out.append(int(a[1]))
 	return out
 
