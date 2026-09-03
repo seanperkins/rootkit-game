@@ -75,7 +75,7 @@ func start_freezes_the_roster() -> void:
 	_check("with the protocol", int(desc["protocol"]), SessionRules.PROTOCOL)
 	_check("the session id", int(desc["session_id"]), 4242)
 	_check("the seed", int(desc["seed"]), 20260830)
-	_check("the default delay", int(desc["delay"]), SessionRules.DEFAULT_DELAY)
+	_check("the default delay, scaled to two rows", int(desc["delay"]), 1) # round(4 * 1 / 3)
 	_check("the choice timeout", int(desc["choice_timeout"]), SessionRules.CHOICE_TIMEOUT_TICKS)
 	_check("and both roster rows", (desc["roster"] as Array).size(), 2)
 	_check("the session is started", s.started, true)

@@ -281,12 +281,29 @@ func remove_peer(peer: int) -> void:
 			lobby_rows.remove_at(k)
 			break
 
-## The descriptor the current lobby would freeze into.
+## The descriptor the current lobby would freeze into. The delay is derived
+## HERE, not in start(), so a WELCOME preview already carries the value the
+## freeze will name.
 func lobby_descriptor() -> Dictionary:
 	return validate_descriptor({
 		"protocol": SessionRules.PROTOCOL, "session_id": lobby_session_id,
-		"seed": lobby_seed, "delay": lobby_delay, "choice_timeout": lobby_timeout,
+		"seed": lobby_seed,
+		"delay": _starting_delay(lobby_delay, lobby_rows.size()),
+		"choice_timeout": lobby_timeout,
 		"roster": lobby_rows.duplicate(true)})
+
+## The starting input delay: the lobby's mode constant scaled to the live
+## roster, delay = round(base * (n - 1) / (MAX_PLAYERS - 1)), the rounding
+## done as (2*base*(n-1) + half) / (2*half) so it stays pure integer math.
+## A roster of one waits on nobody and pays nothing; the constant is the FULL
+## table's value and is reached only when every slot is dealt. Computed once,
+## at preview/freeze time: START refuses new participants, so the roster size
+## read here is final, and every peer inherits the result from the descriptor
+## instead of recomputing it.
+static func _starting_delay(base: int, players: int) -> int:
+	var n := clampi(players, 1, SessionRules.MAX_PLAYERS)
+	var half := SessionRules.MAX_PLAYERS - 1
+	return (2 * base * (n - 1) + half) / (2 * half)
 
 ## Host: freeze. From here the roster is immutable and new joiners are refused.
 func start() -> Dictionary:
