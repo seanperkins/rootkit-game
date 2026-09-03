@@ -243,7 +243,8 @@ direct socket. It therefore **rejects blind/off-path connects only** — a
 socket that merely reaches the right port without having seen the key
 cannot complete the hello/ack exchange. It does not authenticate against
 the relay (the relay is the key's issuer and sees every session), and an
-on-path observer of either plaintext path can read and present it. Punching also discloses strictly more endpoint data than the room socket
+on-path observer of either plaintext path can read and present it.
+Punching also discloses strictly more endpoint data than the room socket
 did. The relay already observed the room connection's public mapping, but
 discovery now hands it each peer's dedicated punch socket mapping and
 self-reported LAN candidate, and the `punch` op forwards BOTH candidates
