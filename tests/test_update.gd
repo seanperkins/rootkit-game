@@ -12,7 +12,8 @@ var finished := {}
 
 const CASES := ["manifest_parse_is_strict", "versions_compare_numerically",
 	"dev_never_updates_itself", "archive_verification_rejects_tampering",
-	"sha256_of_file_matches_known", "the_embedded_public_key_loads"]
+	"sha256_of_file_matches_known", "the_embedded_public_key_loads",
+	"the_update_log_writes"]
 
 func _initialize() -> void:
 	print("ROOTKIT — update feed\n")
@@ -24,6 +25,7 @@ func _initialize() -> void:
 	archive_verification_rejects_tampering()
 	sha256_of_file_matches_known()
 	the_embedded_public_key_loads()
+	await the_update_log_writes()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -169,3 +171,21 @@ func the_embedded_public_key_loads() -> void:
 		key.load_from_string(UpdateFeed.PUBKEY, true), OK)
 	_check("and it is public-only", key.is_public_only(), true)
 	finished["the_embedded_public_key_loads"] = true
+
+## The support log is the only trace for the silent-failure design; READ_WRITE
+## refuses to create a missing file, so the first-ever write must take the
+## WRITE branch or the log never exists.
+func the_update_log_writes() -> void:
+	var u = load("res://scripts/update/updater.gd").new()
+	root.add_child(u)
+	await process_frame
+	u._log("hello world")
+	var path := "user://update_log.txt"
+	_check("the log file is created on first write", FileAccess.file_exists(path), true)
+	var f := FileAccess.open(path, FileAccess.READ)
+	_check("and retains the line", f != null and f.get_as_text().contains("hello world"), true)
+	if f != null:
+		f.close()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	u.queue_free()
+	finished["the_update_log_writes"] = true

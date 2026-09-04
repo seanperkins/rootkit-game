@@ -46,10 +46,17 @@ func _ready() -> void:
 ## player), which makes the "no update appeared" bug class invisible. Keep a
 ## one-line log for support: every check/download result, timestamped.
 func _log(text: String) -> void:
-	var f := FileAccess.open("user://update_log.txt", FileAccess.READ_WRITE)
+	# READ_WRITE does NOT create a missing file — first call would no-op and
+	# the log would never exist. Create with WRITE, then append.
+	var f: FileAccess
+	if FileAccess.file_exists("user://update_log.txt"):
+		f = FileAccess.open("user://update_log.txt", FileAccess.READ_WRITE)
+		if f != null:
+			f.seek_end()
+	else:
+		f = FileAccess.open("user://update_log.txt", FileAccess.WRITE)
 	if f == null:
 		return
-	f.seek_end()
 	f.store_line("[%d] %s" % [Time.get_unix_time_from_system(), text])
 	f.close()
 
