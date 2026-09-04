@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 20
+const EXPECTED_CHECKS := 22
 
 var failures := 0
 var checks := 0
@@ -122,6 +122,17 @@ func fits_the_viewport() -> void:
 		var ir: Rect2 = (install as Control).get_global_rect()
 		_check("and its install button fits the viewport",
 			ir.end.x <= vw and ir.end.y <= vh, true)
+		var row: Control = install.get_parent()
+		var rr: Rect2 = row.get_global_rect()
+		# Measured here: 448x36 at (64, 656) in a 720px viewport. Godot clamps
+		# the control to the row's minimum width (three buttons ≈ 448px), so
+		# the anchor-less right edge is not degenerate — but pin the shape
+		# anyway: a zero-sized strip renders nothing while every "fits the
+		# viewport" check above still passes.
+		_check("the strip has a positive size", rr.size.x > 0 and rr.size.y > 0, true)
+		_check("and starts inside the viewport",
+			rr.position.x >= 0 and rr.position.y >= 0, true)
+		print("    update strip rect %s; install button rect %s" % [rr, ir])
 	main._on_update_state("")
 
 	var host: Node = _find(main, "Button", "host")
