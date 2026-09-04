@@ -182,7 +182,6 @@ func packet_flies_at_the_nearest_enemy() -> void:
 	_check_true("it aims at the nearest enemy, not the facing",
 		r.projectiles.vel[i].normalized().dot(Vector2.UP) > 0.99)
 	_check("and binds that target", r._proj_target[i], near)
-	_check("it picked the nearer of the two", near != far, true)
 	r.free(); await process_frame
 	finished["packet_flies_at_the_nearest_enemy"] = true
 

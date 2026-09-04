@@ -9,7 +9,7 @@ func _ready() -> void:
 	# Above every CanvasLayer either scene builds (ui.gd's default is 1).
 	layer = 100
 	var rect := ColorRect.new()
-	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	rect.color = Color(1.0, 1.0, 1.0, 1.0)
 	var mat := ShaderMaterial.new()
