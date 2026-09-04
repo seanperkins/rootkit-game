@@ -2551,11 +2551,15 @@ func _step2_integrate(dt: float) -> void:
 				if tj < 0:
 					_proj_reacquire[i] = HOMING_RETRY
 			if tj >= 0:
-				var want := (enemies.pos[tj] - projectiles.pos[i]).angle()
-				var have := projectiles.vel[i].angle()
+				# DetMath, not Vector2.angle()/rotated(): those call sinf/cosf/
+				# atan2f on real_t (float32), which is why this is the ONE site
+				# the cross-architecture probe caught. Measured: rotated()
+				# disagrees with the double path on 78.6% of calls.
+				var want := DetMath.angle(enemies.pos[tj] - projectiles.pos[i])
+				var have := DetMath.angle(projectiles.vel[i])
 				var turn := clampf(wrapf(want - have, -PI, PI),
 					-pr.homing * dt, pr.homing * dt)
-				projectiles.vel[i] = projectiles.vel[i].rotated(turn)
+				projectiles.vel[i] = DetMath.rotate(projectiles.vel[i], turn)
 		projectiles.pos[i] += projectiles.vel[i] * dt
 		# Population stores no scalar speed, so the step is the velocity's
 		# length: one sqrt per live projectile per tick, bounded by
@@ -2847,7 +2851,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				if to_e.length_squared() < 0.01:
 					_hit(ei, r, cj)
 					continue
-				if absf(to_e.normalized().angle_to(cdir)) <= CONE_HALF_ANGLE:
+				if absf(DetMath.angle_between(to_e.normalized(), cdir)) <= CONE_HALF_ANGLE:
 					_hit(ei, r, cj)
 		Module.VectorKind.PULSE:
 			_fx.append([FxKind.PULSE, at, Vector2.RIGHT, r.radius, FX_LIFE * 1.6, Color(0.9, 1.4, 2.2)])
@@ -2871,7 +2875,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 					# The ring is rotated so one vertex lies on the facing axis
 					# (nearest the owner), by complex multiply — no new
 					# transcendental enters the tick.
-					var v := Vector2(MINE_SPREAD, 0.0).rotated(TAU * float(sm) / float(mines))
+					var v := DetMath.rotate(Vector2(MINE_SPREAD, 0.0), TAU * float(sm) / float(mines))
 					mat = centre + Vector2(v.x * back.x - v.y * back.y, v.x * back.y + v.y * back.x)
 				# Behind the owner may be rock — the owner's position is
 				# walkable, a step behind it need not be — so every mine, single
@@ -2958,7 +2962,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				# Centred on the aim: 1 shot is dead on, 3 is -spread/0/+spread.
 				var off := (float(sp) - float(shots - 1) * 0.5) * SPLIT_SPREAD
 				var pi := projectiles.spawn(at,
-					dir2.rotated(off) * maxf(r.projectile_speed, 120.0),
+					DetMath.rotate(dir2, off) * maxf(r.projectile_speed, 120.0),
 					1.0, PROJECTILE_RADIUS, 0)
 				if pi < 0:
 					break
