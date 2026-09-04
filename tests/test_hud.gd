@@ -67,7 +67,7 @@ func the_blocks_exist_and_populate() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
 	ui._refresh()
-	for n in ["Status", "Centre", "Tally", "Build", "Version"]:
+	for n in ["Status", "Centre", "Tally", "Build", "Version", "Fps"]:
 		var node = ui._hud.get_node_or_null(n)
 		_check("the %s block exists" % n, node != null, true)
 		if node != null:

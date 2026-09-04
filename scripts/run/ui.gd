@@ -107,11 +107,25 @@ func _build() -> void:
 	centre.offset_bottom = 90
 	_hud.add_child(centre)
 
+	# Its own label rather than a line of the tally, because it is the one
+	# readout that changes colour on its own: the tally shares a single
+	# font_color, so a frame-rate line inside it could not go WARN without
+	# taking salvage and kills with it.
+	var fps := _mono(14)
+	fps.name = "Fps"
+	fps.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	fps.offset_top = 12
+	fps.offset_bottom = 32
+	fps.offset_right = -20
+	fps.add_theme_color_override("font_color", DIM)
+	_hud.add_child(fps)
+
 	var tally := _mono(14)
 	tally.name = "Tally"
 	tally.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	tally.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tally.offset_top = 12
+	tally.offset_top = 30
 	tally.offset_bottom = 90
 	tally.offset_right = -20
 	tally.add_theme_color_override("font_color", DIM)
@@ -368,6 +382,14 @@ func _refresh() -> void:
 		SpawnDirector.CAMPAIGN_SUBNETS, int(t) / 60, int(t) % 60, banner]
 	centre.add_theme_color_override("font_color",
 		WARN if banner != "" else FG)
+
+	# Display rate, not tick rate — the F1 net panel already reports the tick.
+	# Engine.get_frames_per_second() is averaged over the last second, so it
+	# does not flicker on a single long frame.
+	var fps := Engine.get_frames_per_second()
+	var fps_node: Label = _hud.get_node("Fps")
+	fps_node.text = "%d fps" % fps
+	fps_node.add_theme_color_override("font_color", DIM if fps >= 55 else WARN)
 
 	var tally := "salvage %d\nbotnet %d\nkills %d   flips %d" % [
 		run.salvage, run.botnet.count, run.kills[ls], run.flips[ls]]
