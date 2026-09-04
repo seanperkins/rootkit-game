@@ -351,7 +351,7 @@ func _build_update_modal() -> void:
 	_update_modal.visible = false
 	add_child(_update_modal)
 	var scrim := ColorRect.new()
-	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	# OPAQUE, and the shell's own background colour rather than a translucent
 	# black: the hub stays in the tree underneath (page-switch precedent), so
 	# anything the scrim lets through is hub text drawn across the modal —

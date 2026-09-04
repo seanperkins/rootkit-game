@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 35
+const EXPECTED_CHECKS := 36
 
 var failures := 0
 var checks := 0
@@ -163,6 +163,10 @@ func fits_the_viewport() -> void:
 		await process_frame
 	_check("the update modal opens on update_ready",
 		main._update_modal != null and main._update_modal.visible, true)
+	if main._update_modal != null:
+		var mscrim: Control = main._update_modal.get_child(0)
+		_check("and its scrim actually covers the viewport — not a 0x0 anchors_preset trap",
+			mscrim.get_global_rect().size, Vector2(vw, vh))
 	var install: Node = _find(main, "Button", "install & restart")
 	_check("and its install button exists", install != null, true)
 	if install != null:
