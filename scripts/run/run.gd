@@ -4786,8 +4786,20 @@ func _draw_chunk(at: Vector2, drop: float, fade: float) -> void:
 ## screen rectangle is a rotated rectangle in world space, and its bounding box
 ## is what a cheap test needs.
 func _visible_world_rect() -> Rect2:
-	var vp := get_viewport_rect().size
-	var half := from_iso(vp * 0.6).abs() + from_iso(Vector2(vp.x, -vp.y) * 0.6).abs()
+	# The bounding box of the unprojected screen is the MAX of the four
+	# unprojected corners on each axis, not the sum of two of their absolute
+	# values. Summing double-counts whenever the projection carries a term of
+	# the same sign into both corners: it was ~19% loose on the isometric and
+	# 2.4x loose under a sheared one, and everything it feeds — the backdrop
+	# lattice, the props walk and the voided-ground runs — draws every extra
+	# unit of it. Presentation only; all three callers are _draw.
+	var vp := get_viewport_rect().size * 0.6
+	var half := Vector2.ZERO
+	for c in [Vector2(vp.x, vp.y), Vector2(vp.x, -vp.y),
+			Vector2(-vp.x, vp.y), Vector2(-vp.x, -vp.y)]:
+		var w := from_iso(c)
+		half.x = maxf(half.x, absf(w.x))
+		half.y = maxf(half.y, absf(w.y))
 	return Rect2(player_pos[view_slot] - half, half * 2.0)
 
 ## Ground the collapse has already taken, as horizontal RUNS of cells, clipped
