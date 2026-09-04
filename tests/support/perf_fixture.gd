@@ -13,6 +13,13 @@ class_name PerfFixture extends RefCounted
 ## meets and not one the player can even walk through. Moving the fixture here
 ## is what makes the windowed number comparable to the gated one.
 ##
+## Every heading this fixture generates goes through DetMath, not libm. All
+## three sites land in hashed state: the two in drive() are the pinned slots'
+## movement records, and _gap's is slot 0's own — kite() returns it and drive()
+## assigns it to input_override. Single-binary runs cannot tell the difference,
+## but this file is the shared fixture, and a harness that synthesises
+## simulation inputs with libm is the shape of the bug the tick just had.
+##
 ## NOT a suite. A support object, like MultiplayerHarness.
 
 ## The party the gate plays: four slots, three of them pinned at offsets from
@@ -168,7 +175,7 @@ func drive(g: Node2D, t: int, lead: int = 0) -> void:
 		# timed region.
 		var spin := TAU * float(t) / 600.0
 		if lead <= 0:
-			g.lockstep.submit(s, g.lockstep.executed, Vector2(cos(spin), sin(spin)), c.x, c.y, c.z)
+			g.lockstep.submit(s, g.lockstep.executed, DetMath.unit(spin), c.x, c.y, c.z)
 		else:
 			# Windowed callers tick from the ENGINE, not from their own loop, so
 			# a dropped frame runs _physics_process twice between two drive()
@@ -180,7 +187,7 @@ func drive(g: Node2D, t: int, lead: int = 0) -> void:
 			# answer forever.
 			var from: int = maxi(int(_next.get(s, 0)), g.lockstep.executed)
 			for tick in range(from, g.lockstep.executed + lead + 1):
-				g.lockstep.submit(s, tick, Vector2(cos(spin), sin(spin)), c.x, c.y, c.z)
+				g.lockstep.submit(s, tick, DetMath.unit(spin), c.x, c.y, c.z)
 			_next[s] = g.lockstep.executed + lead + 1
 
 ## The autopilot. Facing is the last non-zero record, so a kite that only
@@ -329,7 +336,7 @@ func _gap(g: Node2D, me: Vector2) -> Vector2:
 	var best_score := INF
 	for h in 16:
 		var a := TAU * float(h) / 16.0
-		var dir := Vector2(cos(a), sin(a))
+		var dir := DetMath.unit(a)
 		var score := 0.0
 		for i in g.enemies.count:
 			var d: Vector2 = g.enemies.pos[i] - me

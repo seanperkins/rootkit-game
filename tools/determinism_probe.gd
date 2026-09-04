@@ -95,7 +95,11 @@ func _fill() -> void:
 		var b = run.enemy_types[ti]
 		var a := float(k) * 2.399963
 		var slot := k % SessionRules.MAX_PLAYERS
-		var at: Vector2 = run.player_pos[slot] + Vector2(cos(a), sin(a)) * (520.0 + float(k % 7) * 60.0)
+		# DetMath, not libm: this value becomes enemies.pos, which is hashed, and
+		# this is the program CI byte-diffs between two architectures. Generating
+		# the gate's own inputs with the primitive under test means a future red
+		# run reads as a simulation regression when it is the harness.
+		var at: Vector2 = run.player_pos[slot] + DetMath.unit(a) * (520.0 + float(k % 7) * 60.0)
 		var i: int = run.enemies.spawn(run.terrain.nearest_open(at), Vector2.ZERO,
 			b.integrity, 12.0, ti)
 		if i < 0:
@@ -107,7 +111,9 @@ func _fill() -> void:
 ## answer every offer with its first card so no round ever holds the world.
 func _drive(t: int) -> void:
 	var a := float(t) * 0.01
-	run.input_override = Vector2(cos(a), sin(a))
+	# Same reason: input_override is normalised into the movement record and
+	# lands in `inputs`, which is hashed.
+	run.input_override = DetMath.unit(a)
 	for s in range(1, SessionRules.MAX_PLAYERS):
 		var open: Dictionary = run._offer_open[s]
 		var seq := int(open["seq"]) if not open.is_empty() else -1

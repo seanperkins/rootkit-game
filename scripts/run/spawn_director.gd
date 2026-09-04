@@ -42,7 +42,7 @@ const HP_OVER_SUBNET := 0.45
 
 static func hp_mult(subnet: int, elapsed: float) -> float:
 	var within := 1.0 + HP_OVER_SUBNET * clampf(elapsed / SUBNET_SECONDS, 0.0, 1.0)
-	return pow(HP_PER_SUBNET, maxi(subnet, 1) - 1) * within
+	return DetMath.powi(HP_PER_SUBNET, maxi(subnet, 1) - 1) * within
 
 ## A THIRD axis for co-op: extra integrity per extra player. Spawn RATE scales
 ## linearly with the party (four players face four times the bodies), but four
@@ -76,7 +76,7 @@ static func party_hp_mult(players: int) -> float:
 ## per TYPE in one array shared by every live enemy, so a continuous ramp would
 ## retroactively move the goalposts on an enemy already half-corrupted.
 static func threshold_mult(subnet: int) -> float:
-	return pow(HP_PER_SUBNET, maxi(subnet, 1) - 1)
+	return DetMath.powi(HP_PER_SUBNET, maxi(subnet, 1) - 1)
 
 var waves: Array = []
 var elapsed: float = 0.0
@@ -217,15 +217,15 @@ func _place(formation: int, origin: Vector2, radius: float) -> Vector2:
 	match formation:
 		Formation.RING:
 			var a := rng.randf() * TAU
-			return origin + Vector2(cos(a), sin(a)) * radius
+			return origin + DetMath.unit(a) * radius
 		Formation.STREAM:
 			var a2 := rng.randf() * TAU
-			return origin + Vector2(cos(a2), sin(a2)) * (radius * 1.15)
+			return origin + DetMath.unit(a2) * (radius * 1.15)
 		Formation.FLANK:
 			var side := 1.0 if rng.randf() < 0.5 else -1.0
 			return origin + Vector2(side * radius, rng.randf_range(-radius, radius) * 0.6)
 		_:
 			var a3 := rng.randf() * TAU
-			var burst := origin + Vector2(cos(a3), sin(a3)) * radius
+			var burst := origin + DetMath.unit(a3) * radius
 			return burst + Vector2(rng.randf_range(-40, 40), rng.randf_range(-40, 40))
 	return origin

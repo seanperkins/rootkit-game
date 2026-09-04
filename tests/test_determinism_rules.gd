@@ -15,7 +15,8 @@ const DT := 1.0 / 60.0
 
 const CASES := ["tick_ignores_dt_below_guard", "hitstop_costs_fixed_ticks",
 	"no_clock_in_tick_graph", "tick_rngs_derive_from_descriptor",
-	"negative_owner_never_decodes_to_slot_zero", "structural_determinism_rules"]
+	"negative_owner_never_decodes_to_slot_zero", "structural_determinism_rules",
+	"no_libm_reaches_hashed_state"]
 
 func _initialize() -> void:
 	print("ROOTKIT — determinism rules\n")
@@ -26,6 +27,7 @@ func _initialize() -> void:
 	await tick_rngs_derive_from_descriptor()
 	await negative_owner_never_decodes_to_slot_zero()
 	structural_determinism_rules()
+	no_libm_reaches_hashed_state()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -277,6 +279,141 @@ func structural_determinism_rules() -> void:
 				unsorted = true
 	_check("every dictionary the hash walks is sorted first", unsorted, false)
 	finished["structural_determinism_rules"] = true
+
+# ------------------------------------------------- the libm guard -----------
+
+## Files whose contents are presentation or infrastructure and may call libm
+## freely. Everything NOT listed is scanned: the guard fails CLOSED, so a new
+## simulation file is guarded the day it is added rather than the day someone
+## remembers to list it.
+const LIBM_EXEMPT_FILES := [
+	"res://scripts/ui/", "res://scripts/audio/", "res://scripts/meta/",
+	"res://scripts/update/", "res://scripts/net/transport.gd",
+	"res://scripts/run/feel.gd", "res://scripts/run/props.gd",
+	"res://scripts/run/backdrop.gd",
+]
+
+## Functions inside a scanned file that are presentation. run.gd holds the
+## simulation and its renderer in one 5900-line file, so the boundary has to be
+## named. An ALLOWLIST, not a denylist: an unrecognised function is guarded.
+const LIBM_EXEMPT_FUNCS := [
+	"_draw", "_draw_ring", "_draw_chunk", "_update_renderers", "_make_mm",
+	"_build_environment", "_build_renderers", "_prime_constant_instances",
+	"_present", "_age_fx", "to_iso", "from_iso", "_visible_world_rect",
+	"_void_runs", "_route_points", "_ground_quad", "_depth_sort", "_process",
+	"_refresh_view", "_player_draw_list",
+]
+
+## Bare calls. Matched only when NOT preceded by `.` or an identifier character,
+## so `DetMath.sin(` (the replacement), `dsin(`, `asin(`, `_kernel_sin(` and
+## `powi(` do not trip it.
+const LIBM_BARE := ["cos", "sin", "tan", "acos", "asin", "atan", "atan2",
+	"exp", "log", "pow", "randfn", "ease", "lerp_angle", "deg_to_rad",
+	"rad_to_deg"]
+
+## Member and constructor forms, matched literally. There is no DetMath spelling
+## that contains these, so any hit is a violation.
+const LIBM_MEMBER := [".rotated(", ".angle()", ".angle_to(", ".angle_to_point(",
+	".slerp(", "from_angle(", "Transform2D("]
+
+static func _is_ident_char(c: String) -> bool:
+	return c == "_" or (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") \
+		or (c >= "0" and c <= "9")
+
+## Every libm reference in `src` that lands in a non-exempt function.
+static func libm_hits(path: String, src: String) -> Array:
+	var out := []
+	var owner := ""
+	for raw in src.split("\n"):
+		var line := raw
+		var t := line.strip_edges()
+		# `static func` is a boundary too. It was not, and `to_iso` (run.gd, a
+		# static func) sat in the presentation allowlist where it could never
+		# match — the allowlist entry was dead and two of the three pow sites
+		# lived in static hosts attributed to whatever named function preceded
+		# them.
+		if t.begins_with("func ") or t.begins_with("static func "):
+			var head := t.substr(12) if t.begins_with("static func ") else t.substr(5)
+			var paren := head.find("(")
+			owner = head.substr(0, paren) if paren > 0 else head
+			continue
+		if t.begins_with("#") or t.is_empty():
+			continue
+		if owner in LIBM_EXEMPT_FUNCS:
+			continue
+		for tok in LIBM_MEMBER:
+			if line.contains(str(tok)):
+				out.append("%s %s: %s" % [path, owner, tok])
+		for tok in LIBM_BARE:
+			var probe: String = str(tok) + "("
+			var at := line.find(probe)
+			while at >= 0:
+				var before := line[at - 1] if at > 0 else " "
+				if before != "." and not _is_ident_char(before):
+					out.append("%s %s: %s(" % [path, owner, tok])
+					break
+				at = line.find(probe, at + 1)
+	return out
+
+static func _gd_files(dir: String, out: Array) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var n := d.get_next()
+	while n != "":
+		var full := dir.path_join(n)
+		if d.current_is_dir():
+			_gd_files(full, out)
+		elif n.ends_with(".gd"):
+			out.append(full)
+		n = d.get_next()
+	d.list_dir_end()
+
+## No libm transcendental reaches hashed state, on any platform.
+##
+## This is the load-bearing artefact, not CI's two-runner diff. glibc
+## ifunc-selects __sin_fma by CPU feature, so two x86_64 machines can disagree;
+## macOS and Windows use different libms entirely; and the probe only ever
+## plays subnet 1, so whole call sites are never executed by it. The diff
+## witnesses the bug on one pair of machines. This says the class cannot recur.
+func no_libm_reaches_hashed_state() -> void:
+	var files: Array = []
+	_gd_files("res://scripts", files)
+	_gd_files("res://data", files)
+	files.append("res://tools/determinism_probe.gd")
+	files.append("res://tests/support/perf_fixture.gd")
+	var hits := []
+	var scanned := 0
+	for f in files:
+		var path: String = str(f)
+		var skip := false
+		for ex in LIBM_EXEMPT_FILES:
+			if path.begins_with(str(ex)):
+				skip = true
+		if skip:
+			continue
+		scanned += 1
+		hits.append_array(libm_hits(path, FileAccess.get_file_as_string(path)))
+	_check("no libm transcendental below the world guard (%d files scanned)" % scanned,
+		hits, [])
+
+	# The guard must actually fire, including inside a `static func` — the
+	# defect above would otherwise survive the very test written to catch it.
+	var fixture := "static func hp_mult(subnet: int) -> float:\n\treturn pow(1.55, subnet)\n"
+	_check("the guard fires on pow() in a static func",
+		libm_hits("fixture.gd", fixture).size(), 1)
+	var fixture2 := "func _step9_x() -> void:\n\tvar v := d.rotated(0.5)\n"
+	_check("the guard fires on .rotated() in a step",
+		libm_hits("fixture.gd", fixture2).size(), 1)
+	# And must NOT fire on the replacements.
+	# The replacements, plus an identifier that merely ENDS in a token name.
+	# (`asin(` deliberately absent: it is itself libm and the guard bans it.)
+	var ok := "func _step2_integrate() -> void:\n\tvar v := DetMath.unit(a)\n" \
+		+ "\tvar w := DetMath.powi(x, 2)\n\tvar u := DetMath.dsin(a) + _kernel_cos(b)\n"
+	_check("the guard ignores DetMath calls and identifiers ending in a token",
+		libm_hits("fixture.gd", ok), [])
+	finished["no_libm_reaches_hashed_state"] = true
 
 ## The source text of a top-level GDScript function, from its `func NAME(` line
 ## up to the next line that begins a new top-level `func ` at column zero.

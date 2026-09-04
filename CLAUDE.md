@@ -9,7 +9,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 
 ```bash
 godot                          # play, from the project root
-tools/run_tests.sh             # 56 suites + the perf gate
+tools/run_tests.sh             # 61 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 godot --headless -s res://tests/test_build.gd     # one suite
 godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)
@@ -191,6 +191,30 @@ the site; this is the index.
   submissions are benign wherever a record arrives twice, and the host
   re-forwards (stages) only newly stored INPUT. `transport.gd` is still
   the only ENet-touching class; the tick still reads records only.
+- **No libm transcendental may reach hashed state, on any platform.** `sin`,
+  `cos`, `atan2` and `pow` are not correctly rounded in glibc, its aarch64 and
+  x86_64 builds differ by ~1 ULP, and it ifunc-selects `__sin_fma` variants by
+  CPU feature — so even two x86_64 machines can disagree. macOS and Windows use
+  different libms again. Everything below the world guard goes through
+  `DetMath` (`scripts/core/det_math.gd`), which is built only from operations
+  IEEE-754 requires to be correctly rounded. `test_determinism_rules`'s
+  `no_libm_reaches_hashed_state` scans every `.gd` under `scripts/` and `data/`
+  plus the probe and the perf fixture, and it fails CLOSED: presentation is an
+  explicit file and function ALLOWLIST, so a new simulation file is guarded the
+  day it is added. `Vector2.rotated()/.angle()/.angle_to()` are the sharpest
+  trap — they are `real_t` functions, so they call `sinf`/`cosf`/`atan2f` and
+  disagree across architectures far more often than the double-then-narrow
+  `Vector2(cos(a), sin(a))` form (measured: 78.6% of calls).
+- **`DetMath` must stay in GDScript, and the engine must keep FP contraction
+  off.** Each GDScript arithmetic operator is a separate VM instruction on
+  doubles and cannot be fused, which is why the polynomials are safe; a C++
+  rewrite "for speed" would reintroduce the bug. Separately,
+  `Vector2.dot/cross/length/normalized` are safe only because
+  `-ffp-contract=off` is appended in `platform/{linuxbsd,macos,windows}/detect.py`
+  (`/fp:strict` for MSVC) — with contraction on, aarch64 fuses `x*x + y*y` and
+  x86_64 SSE2 does not. This is an engine BUILD property, not IEEE-754, and no
+  suite can test it: run `tools/determinism_cross_arch.sh` on every engine bump.
+  The web platform sets no such flag.
 - **`SaveGame.MILESTONES` is the single source for the unlock ladder.** The shop's
   requirement text reads it via `milestone_text`; do not hardcode a second copy.
 - **`save.json` is user-editable and treated as hostile.** The `maxf(0.0, …)`

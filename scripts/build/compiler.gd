@@ -165,8 +165,25 @@ static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 ## goes NEGATIVE: the threshold is rank > 1/(1-f), so overclock (0.82) crosses at
 ## rank 6, one above max_rank. Compounding converges toward zero and never
 ## crosses it.
+## `rank` is typed float because `scale` is, and `scale` has a genuinely
+## fractional branch (VECTOR_RADIUS_RANK, 0.25 steps). The exponent that
+## actually reaches here is integral only because MUL_FOLD_KEYS is
+## [&"cadence_mult"] and the fractional branch is gated on radius/blast_radius
+## — true by DATA, not by construction. DetMath.powi takes an integer exponent
+## and would truncate silently, so a non-integral exponent is made LOUD here.
+##
+## The runtime protection is test_deterministic_math's MUL_FOLD_KEYS invariant,
+## not this branch: `assert` is compiled out of release exports, and by the time
+## a fractional exponent reached a player's machine the build would already be
+## wrong. push_error at least leaves a trace in the log.
 static func _rank_factor(f: float, rank: float) -> float:
-	return pow(f, rank) if f < 1.0 else 1.0 + (f - 1.0) * rank
+	if f >= 1.0:
+		return 1.0 + (f - 1.0) * rank
+	if rank != floorf(rank):
+		push_error("Compiler._rank_factor: non-integral exponent %f — a key was "
+			% rank + "added to MUL_FOLD_KEYS that also takes a fractional scale; "
+			+ "see test_deterministic_math.the_mul_fold_exponent_stays_integral")
+	return DetMath.powi(f, int(rank))
 
 static func _fold(r: ResolvedExploit, em: EquippedModule) -> void:
 	var m := em.module

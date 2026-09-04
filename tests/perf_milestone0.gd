@@ -209,16 +209,58 @@ var _cap_ticks := 0.0
 ## hit and kill floors are exactly what record. A gate that refused this
 ## re-pin would be demanding the fixture stay weaker than the game.
 ##
+## Re-pinned 2026-09-04 with the DetMath conversion (no libm transcendental
+## below the world guard). Vector2.rotated()/.angle()/.angle_to() are `real_t`
+## functions calling sinf/cosf/atan2f, so they computed in FLOAT32; DetMath
+## computes in double. Measured in-engine: rotated() and the double path
+## disagree on 78.6% of arguments, worst delta 4.17e-7 (~7 float32 ULPs). Every
+## homing projectile's velocity therefore differs from the old build on most
+## ticks and the 24000-tick trajectory is a different run. This was expected and
+## is not a regression: the three conversions were verified equivalent to the
+## engine functions they replace, agreeing to 1.3-1.9e-7 (2-3 float32 ULPs),
+## which is exactly the difference between a float32 and a double computation.
+##
+## Measured: DIED at tick 22484 (375s) — down from the 24000 cap — mean live
+## enemies 252.2 -> 239.2, hits/tick 2.50 -> 2.02, kills/tick 0.273 -> 0.271.
+##
+## The outcome moves DOWN, which the rule above forbids without a reason, so
+## here is the reason, measured rather than argued. The same code was run on
+## three seeds:
+##
+##   seed 20260830 (pinned)  died 22484   enemies 239.2  hits 2.02  kills 0.271
+##   seed 20260831           timeout      enemies 217.5  hits 0.72  kills 0.287
+##   seed 20260832           died 17157   enemies 269.0  hits 4.95  kills 0.359
+##
+## hits/tick spans 0.72 to 4.95 — a SEVEN-FOLD range — and both outcomes appear,
+## on one build. So neither the outcome nor the load means are a quality signal
+## at this resolution: they are one draw from a wide distribution over
+## trajectories, and the old baseline was one draw too. Seed 20260831 survives
+## the full run while landing a THIRD of the pinned seed's hits, which is the
+## clearest statement that "timeout" does not mean "the party played well".
+##
+## The honest conclusion is that this coverage pin is over-fitted to one
+## trajectory: any change that perturbs float arithmetic at all re-rolls it, and
+## the 97%/75% bands are far tighter than the natural spread. It still does the
+## job it was built for — catching a fixture that stops fighting — but it cannot
+## distinguish a 5% balance change from chaos, and it should not be read as if
+## it can. Re-pinning it to a trajectory rather than widening the bands keeps
+## the instrument sharp against the failure it CAN see (a fixture that dies
+## early or stops hitting), at the cost of needing a re-pin after any numeric
+## change. That trade is deliberate.
+##
+## The TIMING half was unaffected and is what the gate exists for: normalised
+## p95 7.567 ms against a 19.120 ms scaled budget on a 1.74x contended machine.
+##
 ## A "timeout" pin needs no death-tick slack: covered requires only that the
 ## outcome stay off "died" (see the covered branch below), so a future
 ## change is free to reach TIMEOUT by a different tick, or WIN outright,
 ## without re-pinning on tick alone — the enemy/hit/kill floors are what
 ## actually gate a lighter run.
-const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout"
-const BASELINE_END_TICK := 24000
-const BASELINE_MEAN_ENEMIES := 252.2
-const BASELINE_MEAN_HITS := 2.50
-const BASELINE_KILLS_PER_TICK := 0.273
+const BASELINE_OUTCOME := "died"      # "won", "died" or "timeout"
+const BASELINE_END_TICK := 22484
+const BASELINE_MEAN_ENEMIES := 239.2
+const BASELINE_MEAN_HITS := 2.02
+const BASELINE_KILLS_PER_TICK := 0.271
 
 
 func _initialize() -> void:
