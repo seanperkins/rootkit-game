@@ -33,11 +33,25 @@ var _download_req: HTTPRequest
 func _ready() -> void:
 	_check_req = HTTPRequest.new()
 	_check_req.request_completed.connect(_on_check_done)
+	# No timeout on a check means a hung connection never answers and the menu
+	# silently shows nothing — the one failure mode with no trace.
+	_check_req.timeout = 15.0
 	add_child(_check_req)
 	_download_req = HTTPRequest.new()
 	_download_req.request_completed.connect(_on_download_done)
 	add_child(_download_req)
 	_clear_stale_state()
+
+## The updater is designed to be quiet (background failures never nag the
+## player), which makes the "no update appeared" bug class invisible. Keep a
+## one-line log for support: every check/download result, timestamped.
+func _log(text: String) -> void:
+	var f := FileAccess.open("user://update_log.txt", FileAccess.READ_WRITE)
+	if f == null:
+		return
+	f.seek_end()
+	f.store_line("[%d] %s" % [Time.get_unix_time_from_system(), text])
+	f.close()
 
 func _process(_dt: float) -> void:
 	if not _downloading:
@@ -92,16 +106,20 @@ func _on_check_done(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
 	busy = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		_log("check failed: result %d, code %d" % [result, code])
 		update_failed.emit("cannot reach the update server")
 		return
 	var entry := UpdateFeed.parse_manifest(body.get_string_from_utf8(),
 		translated_platform())
 	if entry.is_empty():
+		_log("check: feed not readable")
 		update_failed.emit("the update feed is not readable")
 		return
 	if not UpdateFeed.should_update(current_version(), str(entry["version"])):
+		_log("check: up to date (%s)" % current_version())
 		return
 	available = entry
+	_log("check: update available v%s" % entry["version"])
 	update_ready.emit(available)
 
 ## Download + verify + install, then quit and relaunch the new build. The only

@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 18
+const EXPECTED_CHECKS := 20
 
 var failures := 0
 var checks := 0
@@ -109,6 +109,21 @@ func fits_the_viewport() -> void:
 	# The link column sits beside the shop, inside the viewport at 1280 wide and
 	# clear of the shop column, so neither can push the other off-screen at the
 	# smallest supported width.
+	# The update strip only appears on update signal; simulate it so a display
+	# bug cannot hide behind a network check. It must land INSIDE the viewport
+	# (bottom-anchored) with its buttons reachable.
+	main._on_update_ready({"version": "0.4.1"})
+	for i in 4:
+		await process_frame
+	var install: Node = _find(main, "Button", "install & restart")
+	_check("the update strip appears on update_ready", install != null
+		and (install as Control).visible, true)
+	if install != null:
+		var ir: Rect2 = (install as Control).get_global_rect()
+		_check("and its install button fits the viewport",
+			ir.end.x <= vw and ir.end.y <= vh, true)
+	main._on_update_state("")
+
 	var host: Node = _find(main, "Button", "host")
 	var join: Node = _find(main, "Button", "join")
 	var addr: Node = _find(main, "LineEdit", "")
