@@ -107,11 +107,25 @@ func _build() -> void:
 	centre.offset_bottom = 90
 	_hud.add_child(centre)
 
+	# Its own label rather than a line of the tally, because it is the one
+	# readout that changes colour on its own: the tally shares a single
+	# font_color, so a frame-rate line inside it could not go WARN without
+	# taking salvage and kills with it.
+	var fps := _mono(14)
+	fps.name = "Fps"
+	fps.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	fps.offset_top = 12
+	fps.offset_bottom = 32
+	fps.offset_right = -20
+	fps.add_theme_color_override("font_color", DIM)
+	_hud.add_child(fps)
+
 	var tally := _mono(14)
 	tally.name = "Tally"
 	tally.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	tally.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tally.offset_top = 12
+	tally.offset_top = 30
 	tally.offset_bottom = 90
 	tally.offset_right = -20
 	tally.add_theme_color_override("font_color", DIM)
@@ -369,6 +383,14 @@ func _refresh() -> void:
 	centre.add_theme_color_override("font_color",
 		WARN if banner != "" else FG)
 
+	# Display rate, not tick rate — the F1 net panel already reports the tick.
+	# Engine.get_frames_per_second() is averaged over the last second, so it
+	# does not flicker on a single long frame.
+	var fps := Engine.get_frames_per_second()
+	var fps_node: Label = _hud.get_node("Fps")
+	fps_node.text = "%d fps" % fps
+	fps_node.add_theme_color_override("font_color", DIM if fps >= 55 else WARN)
+
 	var tally := "salvage %d\nbotnet %d\nkills %d   flips %d" % [
 		run.salvage, run.botnet.count, run.kills[ls], run.flips[ls]]
 	# The stall notice: once lockstep has waited STALL_NOTICE callbacks on a
@@ -538,12 +560,11 @@ func _refresh_net() -> void:
 func _k(n: int) -> String:
 	return str(n) if n < 1000 else "%.1fk" % (float(n) / 1000.0)
 
-## The build number: release_mac.sh stamps the git tag into
-## application/config/version, so this reads the tag in release builds and
-## the project file's value in dev. Mirrors meta_screen._build.
+## The build number as a human reads it, so a dev run says so in the corner
+## (0.4.2.dev) and cannot be mistaken for the release it was cut from. The
+## DISPLAY form deliberately — the wire and the updater use BuildInfo.version().
 func _version_string() -> String:
-	var v: Variant = ProjectSettings.get_setting("application/config/version")
-	return "dev" if v == null else String(v)
+	return BuildInfo.display_version()
 
 func _build_lines() -> Array:
 	var lines := []

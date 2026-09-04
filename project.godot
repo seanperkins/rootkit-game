@@ -26,6 +26,21 @@ viewport/hdr_2d=true
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+; ADAPTIVE (2), not the default ENABLED (1). Blocking vsync has exactly two
+; speeds on a 60 Hz panel: a frame that fits shows at 60, and a frame that
+; misses by ONE MILLISECOND waits for the whole next interval and shows at 30.
+; Adaptive lets a missed frame through at the speed it actually ran instead of
+; halving it, and Godot falls back to ENABLED where the driver has no adaptive
+; mode, so it is safe on every target.
+;
+; Honest about what this was measured to do HERE: nothing. On an M2 at
+; fullscreen with a four-slot party and ~450 live enemies, tools/fps_probe.gd
+; reports the same distribution under both modes (median 16.66 ms, p95 17.5 vs
+; 17.4) because the uncapped frame is 9.5 ms and never misses — there is no
+; halving on this machine to prevent. It is kept as insurance for a machine
+; where the frame does sit on the line, where the difference is 60 fps against
+; 30, and it costs nothing to carry.
+window/vsync/vsync_mode=2
 
 [input]
 

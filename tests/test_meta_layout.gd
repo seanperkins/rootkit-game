@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 39
+const EXPECTED_CHECKS := 40
 
 var failures := 0
 var checks := 0
@@ -67,8 +67,12 @@ func fits_the_viewport() -> void:
 
 	var vh: float = ProjectSettings.get_setting("display/window/size/viewport_height")
 	var vw: float = ProjectSettings.get_setting("display/window/size/viewport_width")
-	var v: Variant = ProjectSettings.get_setting("application/config/version")
-	var expect_v := "dev" if v == null else str(v)
+	# From BuildInfo, not by re-deriving it from the project setting: this
+	# assertion re-derived it and so went on passing while the label said
+	# something else entirely. The label shows the DISPLAY form — the last tag
+	# plus ".dev" in a dev build — and the point of the check is that the
+	# label and BuildInfo agree, which a second copy of the rule cannot test.
+	var expect_v := BuildInfo.display_version()
 
 	# The CRT overlay is a project-wide autoload (persists across the menu
 	# <-> run scene swap), so it is reachable here regardless of which scene
@@ -118,6 +122,11 @@ func fits_the_viewport() -> void:
 			vr.position.y >= vh - 60.0 and vr.end.x <= vw and vr.position.x >= 0.0, true)
 		_check("and has a positive size", vr.size.x > 0.0 and vr.size.y > 0.0, true)
 		_check("and reads the build version", String(vlabel.text).begins_with("v%s" % expect_v), true)
+		# The suite is a dev build, so the label must SAY so: a screenshot of a
+		# dev run should never pass for the release it was cut from.
+		_check("and marks a dev build as one",
+			String(vlabel.text).begins_with("v%s%s" % [BuildInfo.version(), BuildInfo.DEV_SUFFIX]),
+			BuildInfo.is_dev())
 
 	# --- the multiplayer page ------------------------------------------------
 	main._open_page("multiplayer")
