@@ -2269,7 +2269,7 @@ func _step1_spawn(dt: float) -> void:
 		var b = enemy_types[EnemyTable.ICE]
 		var a := _rng.randf() * TAU
 		var bi := enemies.spawn(
-			_spawn_at(player_pos[ring_slot] + Vector2(cos(a), sin(a)) * 420.0),
+			_spawn_at(player_pos[ring_slot] + DetMath.unit(a) * 420.0),
 			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
 		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
 		# The arena was just emptied for mechanical reasons; the side effect is
@@ -2360,7 +2360,7 @@ func _spawn_miniboss(type_index: int) -> void:
 	# Shared simulation randomness: the spawn angle is the world's, not a player's.
 	var a := _rng.randf() * TAU
 	var ring_slot := maxi(_next_live_cycle(), 0)
-	var at := _spawn_at(player_pos[ring_slot] + Vector2(cos(a), sin(a)) * 620.0)
+	var at := _spawn_at(player_pos[ring_slot] + DetMath.unit(a) * 620.0)
 	var hp: float = t.integrity * _hp_mult()
 	var idx := enemies.spawn(at, Vector2.ZERO, hp, 26.0, type_index)
 	if idx < 0:
@@ -2515,8 +2515,7 @@ func _step2_integrate(dt: float) -> void:
 			# Re-anchored on the OWNING slot: an orbiter rides the player who
 			# fired it, never whoever happens to be slot zero.
 			var anchor := maxi(_owner_slot(_proj_owner[i]), 0)
-			projectiles.pos[i] = player_pos[anchor] + Vector2(cos(_orbit_phase[i]),
-				sin(_orbit_phase[i])) * 92.0
+			projectiles.pos[i] = player_pos[anchor] + DetMath.unit(_orbit_phase[i]) * 92.0
 			continue
 		# Mines sit still until something is close enough, then go off.
 		if _mine_left[i] > 0.0:
@@ -3820,7 +3819,7 @@ func _step9c_reapproach() -> void:
 		# the tick, and leaving prev_pos behind draws the straggler streaking the
 		# full width of the arena for exactly one frame.
 		enemies.teleport(i, _spawn_at(player_pos[ns]
-			+ Vector2(cos(a5), sin(a5)) * SPAWN_RING))
+			+ DetMath.unit(a5) * SPAWN_RING))
 		enemies.vel[i] = Vector2.ZERO
 		enemies.force[i] = Vector2.ZERO
 		_knock[i] = Vector2.ZERO

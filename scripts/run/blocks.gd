@@ -63,7 +63,7 @@ func tick(dt: float, player_pos: Vector2, allowed: bool, place: Callable,
 		if elapsed >= next_at:
 			var ang := rng.randf() * TAU
 			var d := rng.randf_range(MIN_DIST, MAX_DIST)
-			pos = place.call(player_pos + Vector2(cos(ang), sin(ang)) * d)
+			pos = place.call(player_pos + DetMath.unit(ang) * d)
 			alive = true
 			progress = 0.0
 		return false

@@ -676,7 +676,7 @@ func nearest_open(p: Vector2) -> Vector2:
 		var step := float(ring) * CELL
 		for k in 8:
 			var a := TAU * k / 8.0
-			var q := p + Vector2(cos(a), sin(a)) * step
+			var q := p + DetMath.unit(a) * step
 			if not is_solid(q):
 				return q
 	return p

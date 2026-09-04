@@ -31,6 +31,7 @@ func _initialize() -> void:
 	reduction_seams_are_exact()
 	golden_bits_are_unchanged()
 	powi_is_left_to_right()
+	the_mul_fold_exponent_stays_integral()
 	print("")
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
@@ -175,3 +176,22 @@ func powi_is_left_to_right() -> void:
 	# compiler's module rank.
 	_check("powi(1.55, 0) — subnet 1", DetMath.powi(1.55, 0), 1.0)
 	_check("powi(1.55, 2) — subnet 3", DetMath.powi(1.55, 2), 1.55 * 1.55)
+
+## The other half of powi's contract, and the only part that protects a release
+## build: `assert` is compiled out of an export, so Compiler._rank_factor's
+## push_error would never fire on a player's machine.
+##
+## `_rank_factor(f, rank)` takes a FLOAT exponent and hands it to
+## DetMath.powi(f, int(rank)), which truncates. That is safe today only because
+## the one key in MUL_FOLD_KEYS is not one of the keys that gets the fractional
+## VECTOR_RADIUS_RANK scale. Nothing in the type system says so, so this does.
+func the_mul_fold_exponent_stays_integral() -> void:
+	var fractional := [&"radius", &"blast_radius"]
+	for key in Compiler.MUL_FOLD_KEYS:
+		_check("MUL_FOLD key '%s' takes no fractional scale" % key,
+			key in fractional, false)
+	# And the values that actually reach it: em.rank is an int, so scale is
+	# float(em.rank) for every MUL_FOLD key.
+	for rank in range(1, 6):
+		var scale := float(rank)
+		_check("scale for rank %d is integral" % rank, scale == floorf(scale), true)
