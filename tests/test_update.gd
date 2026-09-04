@@ -13,7 +13,7 @@ var finished := {}
 const CASES := ["manifest_parse_is_strict", "versions_compare_numerically",
 	"dev_never_updates_itself", "archive_verification_rejects_tampering",
 	"sha256_of_file_matches_known", "the_embedded_public_key_loads",
-	"the_update_log_writes"]
+	"the_update_log_writes", "a_dev_build_does_not_check_by_default"]
 
 func _initialize() -> void:
 	print("ROOTKIT — update feed\n")
@@ -24,6 +24,7 @@ func _initialize() -> void:
 	dev_never_updates_itself()
 	archive_verification_rejects_tampering()
 	sha256_of_file_matches_known()
+	a_dev_build_does_not_check_by_default()
 	the_embedded_public_key_loads()
 	await the_update_log_writes()
 	print("")
@@ -171,6 +172,24 @@ func the_embedded_public_key_loads() -> void:
 		key.load_from_string(UpdateFeed.PUBKEY, true), OK)
 	_check("and it is public-only", key.is_public_only(), true)
 	finished["the_embedded_public_key_loads"] = true
+
+## A dev build does not phone home, because no release archive can replace a
+## `godot`-from-source run — there is no exported bundle to swap. The override
+## exists so the path can still be exercised deliberately.
+##
+## Driven through the static predicate rather than begin_check(), which
+## returns early on headless — and headless is every suite, so the guard would
+## otherwise be untestable.
+func a_dev_build_does_not_check_by_default() -> void:
+	var u = load("res://scripts/update/updater.gd")
+	_check("a dev build stays quiet", u.auto_check_allowed(true, ""), false)
+	_check("and an empty override does not count", u.auto_check_allowed(true, ""), false)
+	_check("and \"0\" means off, not set", u.auto_check_allowed(true, "0"), false)
+	_check("=1 puts it back", u.auto_check_allowed(true, "1"), true)
+	_check("so does any other value", u.auto_check_allowed(true, "true"), true)
+	_check("a shipped build always checks", u.auto_check_allowed(false, ""), true)
+	_check("and ignores the override", u.auto_check_allowed(false, "0"), true)
+	finished["a_dev_build_does_not_check_by_default"] = true
 
 ## The support log is the only trace for the silent-failure design; READ_WRITE
 ## refuses to create a missing file, so the first-ever write must take the

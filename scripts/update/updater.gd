@@ -99,9 +99,35 @@ func install_target() -> String:
 			return exe.substr(0, idx)
 	return exe.get_base_dir()
 
+## The environment variable that puts the update check back in a dev build.
+const CHECK_OVERRIDE_VAR := "ROOTKIT_UPDATE_CHECK"
+
+## Whether a BACKGROUND check should run at all.
+##
+## A dev build does not phone home. `godot` from the project root is not a
+## build any release archive can replace — the swap targets an exported app
+## bundle or executable, and there is none — so an update offer there is at
+## best noise between the developer and the menu, and at worst an invitation
+## to press a button whose install path cannot apply to what is running.
+##
+## Split out, and handed its inputs rather than reading them, because
+## begin_check() returns early on headless and headless is every suite: a
+## guard written inline there could never be driven by a test.
+static func auto_check_allowed(is_dev: bool, override_value: String) -> bool:
+	if not is_dev:
+		return true
+	# Any value but the empty string and "0" turns it back on, so
+	# ROOTKIT_UPDATE_CHECK=1 and =true both do what they look like they do.
+	return override_value != "" and override_value != "0"
+
 func begin_check() -> void:
 	# No networking in headless runs — the suites load this autoload too.
 	if OS.has_feature("headless") or busy:
+		return
+	# "editor" is set for any run that is not an exported template, which is
+	# exactly what "a dev build" means here.
+	if not auto_check_allowed(OS.has_feature("editor"),
+			OS.get_environment(CHECK_OVERRIDE_VAR)):
 		return
 	busy = true
 	var err := _check_req.request(FEED_URL)
