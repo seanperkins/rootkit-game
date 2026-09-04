@@ -3,6 +3,18 @@ extends SceneTree
 ## Real frame time in the actual engine loop — physics tick AND rendering — with
 ## every pool held at cap. The tick budget is a proxy; this is the thing that
 ## decides whether the architecture holds.
+##
+## 2026-09-03: measured 27.5-28.1 ms mean (36 fps) on a dev machine at load
+## average 3.7-5.0 (7 concurrent users) — on the pristine pre-session commit
+## too, so it is not a code regression. perf_milestone0.gd's BUDGET_MS
+## derivation quotes 16.65 ms mean / 17.63 ms p99 for this same absolute-cap
+## scenario; that figure has not been reproduced since, only assumed stale-
+## machine drift. Unconfirmed: whether 16.65 ms still holds on a quiet
+## machine, or whether it was itself measured under load this tool has no
+## way to detect (unlike perf_milestone0.gd's own calibration/scale factor,
+## this tool reports raw numbers with no load normalisation). Re-run this on
+## an otherwise-idle machine before trusting either figure as the real
+## render+present ceiling BUDGET_MS assumes is free.
 
 var run: Node2D
 var frames := 0

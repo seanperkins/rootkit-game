@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 36
+const EXPECTED_CHECKS := 39
 
 var failures := 0
 var checks := 0
@@ -69,6 +69,19 @@ func fits_the_viewport() -> void:
 	var vw: float = ProjectSettings.get_setting("display/window/size/viewport_width")
 	var v: Variant = ProjectSettings.get_setting("application/config/version")
 	var expect_v := "dev" if v == null else str(v)
+
+	# The CRT overlay is a project-wide autoload (persists across the menu
+	# <-> run scene swap), so it is reachable here regardless of which scene
+	# this suite booted. Its ColorRect used set_anchors_preset alone once,
+	# the same 0x0-forever trap the modal scrim hit — a screenshot cannot
+	# tell a deliberately faint shader effect apart from one that never
+	# covers anything, so pin the rect instead.
+	var crt := root.get_node_or_null("CRTOverlay")
+	_check("the CRT overlay autoload exists", crt != null, true)
+	if crt != null and crt.get_child_count() > 0:
+		var crect: Control = crt.get_child(0)
+		_check("and its ColorRect actually covers the viewport",
+			crect.get_global_rect().size, Vector2(vw, vh))
 
 	# --- the hub: six entries, continue disabled, version lower-right -------
 	var start: Node = _find(main, "Button", "start new run")
@@ -167,6 +180,10 @@ func fits_the_viewport() -> void:
 		var mscrim: Control = main._update_modal.get_child(0)
 		_check("and its scrim actually covers the viewport — not a 0x0 anchors_preset trap",
 			mscrim.get_global_rect().size, Vector2(vw, vh))
+		# Size alone would still pass a reintroduced translucent-black bug —
+		# the exact one a live screenshot caught: text bled straight through
+		# a 0.72-alpha scrim over an already-near-black background.
+		_check("and it is opaque, not translucent", mscrim.color.a, 1.0)
 	var install: Node = _find(main, "Button", "install & restart")
 	_check("and its install button exists", install != null, true)
 	if install != null:
