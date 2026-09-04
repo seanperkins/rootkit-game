@@ -1,7 +1,11 @@
 extends Control
 
-## The between-runs shell. Salvage banked by clearing a subnet is spent here, so
-## the meta economy has somewhere to land.
+## The between-runs shell. A hub menu: start a run, continue (not yet), join
+## the lobby, shop the permanent upgrades, or quit. The old single screen —
+## shop, launches and lobby in one column — became three: what is permanent
+## goes to the upgrades page, what is online goes to the multiplayer page, and
+## the hub is just the six choices. Salvage banked by clearing a subnet is
+## spent here, so the meta economy has somewhere to land.
 
 const FG := Color(0.55, 1.0, 0.72)
 ## How many still-locked modules the shop lists before summarising the rest.
@@ -29,12 +33,22 @@ var _salvage: Label
 var _status: Label
 var _settings: Control
 
+# ------------------------------------------------------------------ pages --
+# _page_open is "" while the hub shows; otherwise exactly that page shows and
+# the hub hides. Settings and the update modal sit ABOVE both as overlays.
+var _hub: VBoxContainer
+var _pages := {}
+var _page_open := ""
+var _version_label: Label
+var _link_start_btn: Button
+
 # ------------------------------------------------------------------- link ---
 #
 # The co-op lobby. It owns the Transport until START, drains the session inbox
 # every frame, and hands both to the run when the session starts — the run
 # reparents the transport under itself, so the connection is never dropped and
-# re-made between the lobby and play. No lobby open means ./intrude is solo.
+# re-made between the lobby and play. No lobby open means the hub's start new
+# run is solo.
 
 var _link: VBoxContainer
 var _name_edit: LineEdit
@@ -50,8 +64,18 @@ var _leave_btn: Button
 var _start_btn: Button
 var _players: Label
 var _link_status: Label
-var _update_row: HBoxContainer
-var _update_label: Label
+
+# ----------------------------------------------------------------- update --
+# On the menu, an update is loud: a scrimmed modal with install now / on quit
+# (or move-to-/Applications when translocated) plus not-now. In a run the menu
+# scene does not exist, so the HUD's version tag is the in-game signal.
+var _update_modal: Control
+## Set only by _on_update_ready — the single source the version tag and the
+## modal both read, so a suite with no Updater autoload can still drive both
+## by calling the handler directly, exactly as the real signal would.
+var _update_available := false
+var _update_body: Label
+var _update_status: Label
 var _update_now_btn: Button
 var _update_quit_btn: Button
 var _update_move_btn: Button
@@ -65,39 +89,136 @@ func _ready() -> void:
 	bg.color = Color(0.016, 0.031, 0.027)
 	add_child(bg)
 
-	var col := VBoxContainer.new()
-	col.position = Vector2(64, 52)
-	col.add_theme_constant_override("separation", 10)
-	add_child(col)
+	# Created here (not added yet) so _build_hub can bind its settings button
+	# to a real object; added to the tree below, AFTER the hub and pages, so
+	# it still draws on top of them once open() makes it visible.
+	_settings = SettingsPanel.new()
 
-	col.add_child(_label("ROOTKIT", 30, FG))
-	# The version rides the subtitle line, not its own row: test_meta_layout
-	# measures ./intrude against the viewport, and every added line eats the
-	# slack the 240px scroll height was tuned for. "v0.4.0" is a fact to show,
-	# not an element to inherit spacing for.
-	col.add_child(_label("rogue process // corporate network // subnet 01  —  v%s" % _build(),
-		14, DIM))
-	col.add_child(_spacer(18))
+	_build_hub()
+	_build_version_label()
+	_build_shop_page()
+	_build_link_page()
+
+	add_child(_settings)
+	_build_update_modal()
+
+	# Updater is the autoload, so it survives the menu -> run scene swap and
+	# can apply-on-quit from inside a run. The menu re-enters this scene every
+	# time a run ends, so guard the connections. Headless suites drive this
+	# scene without a project main loop, so the autoload may simply not exist.
+	if not OS.has_feature("headless"):
+		var updater := get_node_or_null("/root/Updater")
+		if updater != null and not updater.update_ready.is_connected(_on_update_ready):
+			updater.update_ready.connect(_on_update_ready)
+			updater.update_state.connect(_on_update_state)
+			updater.update_failed.connect(_on_update_failed)
+		# This menu may be the SECOND one this process (a run just ended): the
+		# autoload kept whatever it found, so re-show it; a fresh process gets
+		# the background check.
+		if updater != null and not updater.available.is_empty():
+			_on_update_ready(updater.available)
+		else:
+			updater.begin_check()
+
+	_refresh()
+
+## The hub: a centred column of the six entries. Continue Run is disabled until
+## mid-run state can actually be saved — sessions are seeded and deterministic,
+## but no checkpoint exists, so a "continue" would be a new run with a borrowed
+## title.
+func _build_hub() -> void:
+	var centre := CenterContainer.new()
+	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(centre)
+	_hub = VBoxContainer.new()
+	_hub.add_theme_constant_override("separation", 12)
+	centre.add_child(_hub)
+
+	var title := _label("ROOTKIT", 30, FG)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hub.add_child(title)
+	var sub := _label("rogue process // corporate network // subnet 01", 14, DIM)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hub.add_child(sub)
+	_hub.add_child(_spacer(26))
+
+	_start_btn = _menu_button("start new run")
+	_start_btn.pressed.connect(_start)
+	_hub.add_child(_start_btn)
+
+	var continue_btn := _menu_button("continue run")
+	continue_btn.disabled = true
+	continue_btn.tooltip_text = "no saved run - mid-run checkpoints do not exist yet"
+	_hub.add_child(continue_btn)
+
+	var multi_btn := _menu_button("multiplayer")
+	multi_btn.pressed.connect(_open_page.bind("multiplayer"))
+	_hub.add_child(multi_btn)
+
+	var shop_btn := _menu_button("upgrades")
+	shop_btn.pressed.connect(_open_page.bind("upgrades"))
+	_hub.add_child(shop_btn)
+
+	var settings_btn := _menu_button("settings")
+	settings_btn.pressed.connect(_settings.open)
+	_hub.add_child(settings_btn)
+
+	var exit_btn := _menu_button("exit")
+	exit_btn.pressed.connect(_quit)
+	_hub.add_child(exit_btn)
+
+	_start_btn.grab_focus()
+
+## Lower right on every menu view. A pending update lights the [update
+## available] tag next to it — the modal is the loud path while the player is
+## on the menu; the tag is what a dismissed modal leaves behind.
+func _build_version_label() -> void:
+	_version_label = _label("v%s" % _build(), 13, DIM)
+	_version_label.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_version_label.offset_left = -220
+	_version_label.offset_top = -42
+	_version_label.offset_right = -20
+	_version_label.offset_bottom = -12
+	_version_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	add_child(_version_label)
+	_refresh_version_tag()
+
+func _refresh_version_tag() -> void:
+	_version_label.text = "v%s%s" % [_build(),
+		"  [update available]" if _update_available else ""]
+
+## The shop: salvage, permanent upgrades, unlocks. No launch button — starting
+## is the hub's job.
+func _build_shop_page() -> void:
+	var page := VBoxContainer.new()
+	page.position = Vector2(64, 52)
+	page.add_theme_constant_override("separation", 10)
+	page.visible = false
+	_pages["upgrades"] = page
+	add_child(page)
+
+	var back := _menu_button("back")
+	back.custom_minimum_size = Vector2(220, 36)
+	back.add_theme_font_size_override("font_size", 15)
+	back.pressed.connect(_back)
+	page.add_child(back)
+	page.add_child(_spacer(10))
 
 	_salvage = _label("", 18, HOT)
-	col.add_child(_salvage)
-	col.add_child(_spacer(6))
-	col.add_child(_label("UPGRADES  ::  permanent, applied at run start", 13, DIM))
-	col.add_child(_spacer(4))
+	page.add_child(_salvage)
+	page.add_child(_spacer(6))
+	page.add_child(_label("UPGRADES  ::  permanent, applied at run start", 13, DIM))
+	page.add_child(_spacer(4))
 
-	# Eight rows at 40px each is 320px added to a column that already ran to
-	# roughly 505px in a 720px viewport, so the rows scroll and ./intrude does
-	# not. The explicit height is load-bearing: an unbounded ScrollContainer
-	# adopts its content's minimum height and pushes the start button off-screen
-	# exactly as the bare VBoxContainer would. Two columns were the other option
-	# and do not fit — one row is 644px wide and two need 1352 against 1280.
+	# Eight rows at 40px each is 320px of a column, so the rows scroll and the
+	# page does not. The explicit height is load-bearing: an unbounded
+	# ScrollContainer adopts its content's minimum height and would push the
+	# back button (or the whole page) off-screen. test_meta_layout measures a
+	# page that fits the viewport rather than trusting the number.
 	var scroll := ScrollContainer.new()
-	# 240, not 300: at 300 the measured bottom edge of ./intrude landed at y=762
-	# in a 720px viewport. 240 shows six rows and leaves ~60px of slack for font
-	# metrics. test_meta_layout.gd measures this rather than trusting the number.
 	scroll.custom_minimum_size = Vector2(680, 240)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	col.add_child(scroll)
+	page.add_child(scroll)
 
 	var rows := VBoxContainer.new()
 	rows.add_theme_constant_override("separation", 10)
@@ -119,51 +240,31 @@ func _ready() -> void:
 		rows.add_child(row)
 		_rows.append({"id": b[0], "label": b[1], "name": name_l, "buy": buy})
 
-	col.add_child(_spacer(14))
-	col.add_child(_label("UNLOCKS  ::  earned in-run, banked on a clear", 13, DIM))
+	page.add_child(_spacer(14))
+	page.add_child(_label("UNLOCKS  ::  earned in-run, banked on a clear", 13, DIM))
 	_status = _label("", 13, DIM)
-	col.add_child(_status)
-	col.add_child(_spacer(22))
+	page.add_child(_status)
 
-	# Beside ./intrude rather than under it. The column already ran to roughly
-	# 505px in a 720px viewport, which is what test_meta_layout measures, so a
-	# settings row of its own would have been exactly the overflow that suite
-	# exists to catch.
-	var launch := HBoxContainer.new()
-	launch.add_theme_constant_override("separation", 12)
-	col.add_child(launch)
+## The multiplayer page: the lobby content that used to sit beside the shop,
+## plus its own start-session button, plus a way back.
+func _build_link_page() -> void:
+	var page := VBoxContainer.new()
+	page.position = Vector2(64, 52)
+	page.add_theme_constant_override("separation", 8)
+	page.visible = false
+	_pages["multiplayer"] = page
+	add_child(page)
 
-	var start := Button.new()
-	start.text = "  ./intrude  --subnet 01     [ENTER]  "
-	start.custom_minimum_size = Vector2(340, 42)
-	start.add_theme_font_size_override("font_size", 16)
-	start.pressed.connect(_start)
-	launch.add_child(start)
-	_start_btn = start
+	var back := _menu_button("back")
+	back.custom_minimum_size = Vector2(220, 36)
+	back.add_theme_font_size_override("font_size", 15)
+	back.pressed.connect(_back)
+	page.add_child(back)
+	page.add_child(_spacer(10))
 
-	var settings_btn := Button.new()
-	settings_btn.text = "  settings  "
-	settings_btn.custom_minimum_size = Vector2(140, 42)
-	settings_btn.add_theme_font_size_override("font_size", 15)
-	launch.add_child(settings_btn)
-
-	_settings = SettingsPanel.new()
-	add_child(_settings)
-	settings_btn.pressed.connect(_settings.open)
-
-	_build_link()
-	start.grab_focus()
-
-	_refresh()
-
-## The link column, BESIDE the shop rather than under it: the shop column
-## already runs close to the viewport's height, which test_meta_layout
-## measures, so the lobby takes the empty right-hand side instead.
-func _build_link() -> void:
 	_link = VBoxContainer.new()
-	_link.position = Vector2(780, 52)
 	_link.add_theme_constant_override("separation", 8)
-	add_child(_link)
+	page.add_child(_link)
 	_link.add_child(_label("LINK  ::  online co-op", 14, DIM))
 	_link.add_child(_spacer(6))
 
@@ -213,7 +314,7 @@ func _build_link() -> void:
 	_players = _label("", 14, FG)
 	_players.custom_minimum_size = Vector2(440, 0)
 	_link.add_child(_players)
-	_link_status = _label("no link — ./intrude runs solo", 13, DIM)
+	_link_status = _label("no link - the hub's start new run runs solo", 13, DIM)
 	_link_status.custom_minimum_size = Vector2(440, 0)
 	_link_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_link.add_child(_link_status)
@@ -229,54 +330,101 @@ func _build_link() -> void:
 	_copy_btn.pressed.connect(func(): DisplayServer.clipboard_set(_transport.code if _transport != null else ""))
 	_link.add_child(_copy_btn)
 
-	# The update strip hugs the bottom edge, OUTSIDE the measured column:
-	# test_meta_layout gates the column against the viewport and every new
-	# element in it eats the slack the scroll height was tuned for. It stays
-	# hidden until the updater finds something worth saying.
-	_update_row = HBoxContainer.new()
-	_update_row.anchor_top = 1.0
-	_update_row.anchor_bottom = 1.0
-	_update_row.offset_top = -64
-	_update_row.offset_bottom = -28
-	_update_row.offset_left = 64
-	_update_row.add_theme_constant_override("separation", 10)
-	_update_row.visible = false
-	add_child(_update_row)
-	_update_label = _label("", 13, DIM)
-	_update_row.add_child(_update_label)
+	# The lobby's own start, for a host about to go; solo runs start from the
+	# hub. A client waits for the host, so the button is disabled in
+	# _set_link_buttons.
+	var start_row := HBoxContainer.new()
+	start_row.add_theme_constant_override("separation", 12)
+	_link.add_child(start_row)
+	_link_start_btn = _menu_button("start session")
+	_link_start_btn.pressed.connect(_start)
+	start_row.add_child(_link_start_btn)
+
+## The update modal: a scrimmed panel over the menu. On the MENU an update is
+## loud — a pending version is game-changing enough to interrupt the hub. In a
+## run the modal does not exist (the menu scene is gone); the HUD's version
+## tag is the in-game signal instead.
+func _build_update_modal() -> void:
+	_update_modal = Control.new()
+	_update_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_update_modal.visible = false
+	add_child(_update_modal)
+	var scrim := ColorRect.new()
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# OPAQUE, and the shell's own background colour rather than a translucent
+	# black: the hub stays in the tree underneath (page-switch precedent), so
+	# anything the scrim lets through is hub text drawn across the modal —
+	# exactly the bug settings_panel.gd's own scrim comment warns about.
+	scrim.color = ProjectSettings.get_setting(
+		"rendering/environment/defaults/default_clear_color")
+	_update_modal.add_child(scrim)
+	var centre := CenterContainer.new()
+	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_update_modal.add_child(centre)
+	var panel := VBoxContainer.new()
+	panel.add_theme_constant_override("separation", 12)
+	centre.add_child(panel)
+	_update_body = _label("", 15, FG)
+	_update_body.custom_minimum_size = Vector2(540, 0)
+	_update_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	panel.add_child(_update_body)
+	_update_status = _label("", 13, DIM)
+	_update_status.custom_minimum_size = Vector2(540, 22)
+	_update_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	panel.add_child(_update_status)
+	panel.add_child(_spacer(6))
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	panel.add_child(row)
 	_update_now_btn = Button.new()
 	_update_now_btn.text = "  install & restart  "
-	_update_now_btn.custom_minimum_size = Vector2(150, 30)
+	_update_now_btn.custom_minimum_size = Vector2(170, 36)
 	_update_now_btn.pressed.connect(_install_now)
-	_update_row.add_child(_update_now_btn)
+	row.add_child(_update_now_btn)
 	_update_quit_btn = Button.new()
 	_update_quit_btn.text = "  apply on quit  "
-	_update_quit_btn.custom_minimum_size = Vector2(130, 30)
+	_update_quit_btn.custom_minimum_size = Vector2(150, 36)
 	_update_quit_btn.pressed.connect(_install_on_quit)
-	_update_row.add_child(_update_quit_btn)
+	row.add_child(_update_quit_btn)
 	_update_move_btn = Button.new()
 	_update_move_btn.text = "  move to /Applications  "
-	_update_move_btn.custom_minimum_size = Vector2(180, 30)
+	_update_move_btn.custom_minimum_size = Vector2(200, 36)
 	_update_move_btn.pressed.connect(_move_to_applications)
-	_update_row.add_child(_update_move_btn)
+	row.add_child(_update_move_btn)
+	var later := Button.new()
+	later.text = "  not now  "
+	later.custom_minimum_size = Vector2(120, 36)
+	later.pressed.connect(func() -> void: _update_modal.visible = false)
+	row.add_child(later)
 
-	# Updater is the autoload, so it survives the menu -> run scene swap and
-	# can apply-on-quit from inside a run. The menu re-enters this scene every
-	# time a run ends, so guard the connections. Headless suites drive this
-	# scene without a project main loop, so the autoload may simply not exist.
-	if not OS.has_feature("headless"):
-		var updater := get_node_or_null("/root/Updater")
-		if updater != null and not updater.update_ready.is_connected(_on_update_ready):
-			updater.update_ready.connect(_on_update_ready)
-			updater.update_state.connect(_on_update_state)
-			updater.update_failed.connect(_on_update_failed)
-		# This menu may be the SECOND one this process (a run just ended): the
-		# autoload kept whatever it found, so re-show it; a fresh process gets
-		# the background check.
-		if updater != null and not updater.available.is_empty():
-			_on_update_ready(updater.available)
-		else:
-			updater.begin_check()
+## Page switching: one page visible at a time, the hub otherwise.
+func _open_page(name: String) -> void:
+	_page_open = name
+	_hub.visible = false
+	for p in _pages:
+		_pages[p].visible = (p == name)
+
+func _back() -> void:
+	_page_open = ""
+	for p in _pages:
+		_pages[p].visible = false
+	_hub.visible = true
+	_start_btn.grab_focus()
+
+func _quit() -> void:
+	# A pending apply-on-quit update must run even when the exit is a menu
+	# button rather than the window close control — the updater hooks
+	# WM_CLOSE_REQUEST, not SceneTree quitting on its own.
+	get_tree().root.propagate_notification(Node.NOTIFICATION_WM_CLOSE_REQUEST)
+	get_tree().quit()
+
+func _menu_button(text: String) -> Button:
+	var b := Button.new()
+	b.text = "  %s  " % text
+	b.custom_minimum_size = Vector2(380, 46)
+	b.add_theme_font_size_override("font_size", 16)
+	return b
 
 ## Six characters from the code alphabet route through the relay; anything
 ## else is a direct address.
@@ -295,7 +443,7 @@ func _profile() -> Dictionary:
 	return {"slot": 0, "name": SaveGame.string_pref("display_name"),
 		"counters": SaveGame.session_counters()}
 
-## The update strip's actions. The player is on the menu when they press
+## The update modal's actions. The player is on the menu when they press
 ## these — a session is never interrupted; apply happens either right away
 ## (spawn helper, restart) or at the next quit (the autoload's close hook).
 func _install_now() -> void:
@@ -315,33 +463,37 @@ func _move_to_applications() -> void:
 	var exe := OS.get_executable_path()
 	var idx := exe.find("ROOTKIT.app")
 	if idx <= 0:
-		_update_label.text = "could not find the app bundle to move"
+		_update_status.text = "could not find the app bundle to move"
 		return
 	var src := exe.substr(0, idx + "ROOTKIT.app".length())
 	var cmd := "ditto \"%s\" \"/Applications/ROOTKIT.app\" && rm -rf \"%s\"" % [src, src]
 	var ok := OS.execute("osascript", ["-e",
 		"do shell script \"%s\" with administrator privileges" % cmd.replace("\"", "\\\"")])
-	_update_label.text = "now quit and relaunch ROOTKIT from /Applications" if ok == 0 \
+	_update_status.text = "now quit and relaunch ROOTKIT from /Applications" if ok == 0 \
 		else "could not move it — drag ROOTKIT.app into /Applications and relaunch"
 
 func _on_update_ready(info: Dictionary) -> void:
-	_update_label.text = "update available: v%s" % str(info.get("version", "?"))
+	_update_available = true
+	_update_body.text = "a new version of ROOTKIT is available - v%s (you are on v%s)" \
+		% [str(info.get("version", "?")), _build()]
+	_update_status.text = ""
 	_update_move_btn.visible = Updater.translocated()
 	_update_now_btn.visible = not _update_move_btn.visible
 	_update_quit_btn.visible = not _update_move_btn.visible
-	_update_row.visible = true
+	_update_modal.visible = true
+	_refresh_version_tag()
 
 func _on_update_state(text: String) -> void:
-	_update_label.text = text
-	_update_row.visible = true
+	_update_status.text = text
+	_update_modal.visible = true
 
 func _on_update_failed(reason: String) -> void:
 	# A background check failing (offline, blocked CDN) is normal and common;
-	# only failures on a path the player clicked deserve the strip.
+	# only failures on a path the player clicked deserve the modal.
 	if not Updater.user_requested:
 		return
-	_update_label.text = reason
-	_update_row.visible = true
+	_update_status.text = reason
+	_update_modal.visible = true
 
 func _host() -> void:
 	_start_hosting(true)
@@ -384,7 +536,7 @@ func _start_hosting(relay: bool) -> void:
 		_link_status.text = "asking the relay for a room…"
 		_link_deadline = Time.get_ticks_msec() + 5000
 	else:
-		_link_status.text = "hosting on port %d — ./intrude starts when everyone is in" \
+		_link_status.text = "hosting on port %d — the host's start begins when everyone is in" \
 			% SessionRules.DEFAULT_PORT
 	_set_link_buttons(true)
 	_refresh_players()
@@ -393,7 +545,7 @@ func _on_room_ready(code: String) -> void:
 	_code_label.text = "room  %s" % code
 	_copy_btn.visible = true
 	_link_deadline = 0
-	_link_status.text = "hosting through the relay — friends join with the code; ./intrude starts when everyone is in"
+	_link_status.text = "hosting through the relay — friends join with the code; the host starts when everyone is in"
 
 func _join() -> void:
 	if _transport != null:
@@ -438,7 +590,7 @@ func _leave() -> void:
 	_link_deadline = 0
 	_code_label.text = ""
 	_copy_btn.visible = false
-	_link_status.text = "no link — ./intrude runs solo"
+	_link_status.text = "no link - the hub's start new run runs solo"
 	_players.text = ""
 	_set_link_buttons(false)
 	_start_btn.disabled = false
@@ -450,9 +602,10 @@ func _set_link_buttons(linked: bool) -> void:
 	_leave_btn.disabled = not linked
 	_name_edit.editable = not linked
 	_addr_edit.editable = not linked
-	# Only a host starts a session, and only once its server is up. A client's
-	# ./intrude waits for START.
+	# Only a host starts a session - a client waits for START.
 	_start_btn.disabled = linked and _session.role != NetworkSession.Role.HOST
+	if _link_start_btn != null:
+		_link_start_btn.disabled = linked and _session.role != NetworkSession.Role.HOST
 
 ## A client is connected to the host: introduce this profile.
 func _on_connected_to_host(_id: int) -> void:
@@ -662,9 +815,10 @@ func _refresh() -> void:
 			lines.append("  [ ] %-18s %s" % [id, SaveGame.milestone_text(id, d)])
 		else:
 			hidden += 1
-	# EXACTLY UNLOCK_ROWS + 1 lines, always. The panel sits above ./intrude in a
-	# fixed layout, so a list that grows with the table pushes the start button
-	# off the bottom of the screen — which is what fourteen locked modules did.
+	# EXACTLY UNLOCK_ROWS + 1 lines, always. The panel sits above the back
+	# button in a fixed layout, so a list that grows with the table pushes the
+	# page past the bottom of the screen — which is what fourteen locked
+	# modules did.
 	while lines.size() < UNLOCK_ROWS:
 		lines.append("")
 	lines.append("  %d of %d unlocked%s" % [have_n, ModuleTable.LOCKED.size(),
@@ -678,7 +832,7 @@ func _buy(id: StringName) -> void:
 	SaveGame.buy(id)
 	_refresh()
 
-## ./intrude: solo when no link is open; as host, freeze the roster, send START
+## Start: solo when no link is open; as host, freeze the roster, send START
 ## to every peer and go; as client, nothing — the host starts.
 func _start() -> void:
 	if _transport == null or _session == null:
@@ -695,10 +849,23 @@ func _start() -> void:
 	_launch_session()
 
 func _input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and e.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+	if not (e is InputEventKey and e.pressed):
+		return
+	if e.keycode in [KEY_ENTER, KEY_KP_ENTER]:
 		# Not while a field is being typed into: Enter there is text, not launch.
 		if _name_edit != null and (_name_edit.has_focus() or _addr_edit.has_focus()):
+			return
+		# The shop page has nothing to start; Enter is the start only on the hub
+		# and in the lobby.
+		if _page_open != "" and _page_open != "multiplayer":
 			return
 		if _start_btn != null and _start_btn.disabled:
 			return
 		_start()
+	elif e.keycode == KEY_ESCAPE:
+		if _update_modal.visible:
+			_update_modal.visible = false
+		elif _settings.visible:
+			_settings.close()
+		elif _page_open != "":
+			_back()

@@ -10,7 +10,7 @@ extends SceneTree
 ## readable headlessly, so the check that actually matters is automatable and
 ## nobody has to remember to look.
 
-const EXPECTED_CHECKS := 22
+const EXPECTED_CHECKS := 35
 
 var failures := 0
 var checks := 0
@@ -67,32 +67,83 @@ func fits_the_viewport() -> void:
 
 	var vh: float = ProjectSettings.get_setting("display/window/size/viewport_height")
 	var vw: float = ProjectSettings.get_setting("display/window/size/viewport_width")
+	var v: Variant = ProjectSettings.get_setting("application/config/version")
+	var expect_v := "dev" if v == null else str(v)
 
-	var start: Node = _find(main, "Button", "intrude")
-	_check("the start button exists", start != null, true)
+	# --- the hub: six entries, continue disabled, version lower-right -------
+	var start: Node = _find(main, "Button", "start new run")
+	_check("the start new run button exists", start != null, true)
 	if start == null:
 		main.queue_free()
 		await process_frame
 		return
 
-	# The build version rides the subtitle line (meta_screen._build reads
-	# application/config/version; "dev" when unset). Pin the text so a layout
-	# change cannot silently drop the only in-game display of it.
-	var subtitle: Node = _find(main, "Label", "subnet 01")
-	var v: Variant = ProjectSettings.get_setting("application/config/version")
-	var expect_v := "dev" if v == null else str(v)
-	_check("the boot subtitle names the build",
-		subtitle != null and ("v%s" % expect_v) in str(subtitle.get("text")), true)
+	var cont: Node = _find(main, "Button", "continue run")
+	_check("the continue run button exists", cont != null, true)
+	_check("and it is disabled — no mid-run checkpoint exists",
+		cont != null and (cont as Button).disabled, true)
+	_check("the multiplayer button exists", _find(main, "Button", "multiplayer") != null, true)
+	_check("the upgrades button exists", _find(main, "Button", "upgrades") != null, true)
+	_check("the settings button exists", _find(main, "Button", "settings") != null, true)
+	_check("the exit button exists", _find(main, "Button", "exit") != null, true)
 
 	var r: Rect2 = (start as Control).get_global_rect()
-	print("    ./intrude bottom edge at y=%.0f of %.0f" % [r.end.y, vh])
-	_check("./intrude fits inside the viewport height", r.end.y <= vh, true)
-	_check("./intrude fits inside the viewport width", r.end.x <= vw, true)
+	_check("start new run fits inside the viewport height", r.end.y <= vh, true)
+	_check("start new run fits inside the viewport width", r.end.x <= vw, true)
 
+	var subtitle: Node = _find(main, "Label", "subnet 01")
+	_check("the boot subtitle exists and no longer carries the version",
+		subtitle != null and String(subtitle.get("text")) ==
+			"rogue process // corporate network // subnet 01", true)
+
+	var vlabel: Label = main._version_label
+	_check("the version label exists", vlabel != null, true)
+	if vlabel != null:
+		var vr: Rect2 = vlabel.get_global_rect()
+		print("    version label rect %s" % vr)
+		_check("it sits in the lower right corner",
+			vr.position.y >= vh - 60.0 and vr.end.x <= vw and vr.position.x >= 0.0, true)
+		_check("and has a positive size", vr.size.x > 0.0 and vr.size.y > 0.0, true)
+		_check("and reads the build version", String(vlabel.text).begins_with("v%s" % expect_v), true)
+
+	# --- the multiplayer page ------------------------------------------------
+	main._open_page("multiplayer")
+	for i in 4:
+		await process_frame
+	var host: Node = _find(main, "Button", "host")
+	var join: Node = _find(main, "Button", "join")
+	var addr: Node = _find(main, "LineEdit", "")
+	var link_start: Node = _find(main, "Button", "start session")
+	_check("the host button exists", host != null, true)
+	_check("the join button exists", join != null, true)
+	_check("an address field exists", addr != null, true)
+	_check("a start session button exists on the multiplayer page", link_start != null, true)
+	if host != null and join != null:
+		var hr: Rect2 = (host as Control).get_global_rect()
+		var jr: Rect2 = (join as Control).get_global_rect()
+		_check("the link page fits inside the viewport width", jr.end.x <= vw, true)
+		_check("and above the viewport's bottom", jr.end.y <= vh, true)
+	main._back()
+	for i in 4:
+		await process_frame
+	_check("back returns to the hub", main._hub.visible, true)
+
+	# --- the upgrades page ----------------------------------------------------
+	main._open_page("upgrades")
+	for i in 4:
+		await process_frame
+	var scroll: Node = _find(main, "ScrollContainer", "")
+	_check("the upgrade rows are in a ScrollContainer", scroll != null, true)
+	_check("the salvage label is populated",
+		main._salvage != null and String(main._salvage.text).contains("salvage"), true)
+	main._back()
+	for i in 4:
+		await process_frame
+
+	# --- settings --------------------------------------------------------------
 	# The settings overlay must actually cover the shop: anchored from _ready
-	# with set_anchors_preset it stayed 0x0 and the shop showed through.
+	# with set_anchors_preset it stayed 0x0 and the page showed through.
 	var settings_btn: Node = _find(main, "Button", "settings")
-	_check("the settings button exists", settings_btn != null, true)
 	if settings_btn != null:
 		settings_btn.pressed.emit()
 		for i in 4:
@@ -103,53 +154,33 @@ func fits_the_viewport() -> void:
 		if shown != null:
 			shown.close()
 
-	var scroll: Node = _find(main, "ScrollContainer", "")
-	_check("the upgrade rows are in a ScrollContainer", scroll != null, true)
-
-	# The link column sits beside the shop, inside the viewport at 1280 wide and
-	# clear of the shop column, so neither can push the other off-screen at the
-	# smallest supported width.
-	# The update strip only appears on update signal; simulate it so a display
-	# bug cannot hide behind a network check. It must land INSIDE the viewport
-	# (bottom-anchored) with its buttons reachable.
-	main._on_update_ready({"version": "0.4.1"})
+	# --- the update modal --------------------------------------------------------
+	# It only appears on the update signal; simulate it so a display bug
+	# cannot hide behind a network check. It must land INSIDE the viewport,
+	# and dismissing it must leave the [update available] tag on the version.
+	main._on_update_ready({"version": "0.4.9"})
 	for i in 4:
 		await process_frame
+	_check("the update modal opens on update_ready",
+		main._update_modal != null and main._update_modal.visible, true)
 	var install: Node = _find(main, "Button", "install & restart")
-	_check("the update strip appears on update_ready", install != null
-		and (install as Control).visible, true)
+	_check("and its install button exists", install != null, true)
 	if install != null:
 		var ir: Rect2 = (install as Control).get_global_rect()
-		_check("and its install button fits the viewport",
-			ir.end.x <= vw and ir.end.y <= vh, true)
-		var row: Control = install.get_parent()
-		var rr: Rect2 = row.get_global_rect()
-		# Measured here: 448x36 at (64, 656) in a 720px viewport. Godot clamps
-		# the control to the row's minimum width (three buttons ≈ 448px), so
-		# the anchor-less right edge is not degenerate — but pin the shape
-		# anyway: a zero-sized strip renders nothing while every "fits the
-		# viewport" check above still passes.
-		_check("the strip has a positive size", rr.size.x > 0 and rr.size.y > 0, true)
-		_check("and starts inside the viewport",
-			rr.position.x >= 0 and rr.position.y >= 0, true)
-		print("    update strip rect %s; install button rect %s" % [rr, ir])
-	main._on_update_state("")
-
-	var host: Node = _find(main, "Button", "host")
-	var join: Node = _find(main, "Button", "join")
-	var addr: Node = _find(main, "LineEdit", "")
-	_check("the host button exists", host != null, true)
-	_check("the join button exists", join != null, true)
-	_check("an address field exists", addr != null, true)
-	if host != null and join != null:
-		var hr: Rect2 = (host as Control).get_global_rect()
-		var jr: Rect2 = (join as Control).get_global_rect()
-		_check("the link column fits inside the viewport width", jr.end.x <= vw, true)
-		_check("and its buttons sit clear of the shop column", hr.position.x >= r.end.x, true)
-		_check("and above the viewport's bottom", jr.end.y <= vh, true)
+		_check("and it fits the viewport", ir.end.x <= vw and ir.end.y <= vh, true)
+	_check("the version tag lights up while an update is pending",
+		String(main._version_label.text).contains("[update available]"), true)
+	var later: Node = _find(main, "Button", "not now")
+	_check("a not-now button exists", later != null, true)
+	if later != null:
+		later.pressed.emit()
+		for i in 4:
+			await process_frame
+		_check("not now dismisses the modal", main._update_modal.visible, false)
 
 	main.queue_free()
 	await process_frame
+
 
 
 ## Exact triples over 35 modules are not discoverable by play, so the panel is

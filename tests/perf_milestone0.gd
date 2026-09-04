@@ -156,13 +156,37 @@ var _cap_ticks := 0.0
 ## faster one: p95 8.439 ms against the 9.833 ms scaled budget on the same
 ## machine, and the stress block above is unchanged by any of this.
 ##
-## A "died" pin carries the 90% survival slack (19761 ticks), which is the
-## allowance for exactly how chaotic a death tick is.
-const BASELINE_OUTCOME := "died"   # "won", "died" or "timeout"
-const BASELINE_END_TICK := 21957
-const BASELINE_MEAN_ENEMIES := 304.1
-const BASELINE_MEAN_HITS := 1.65
-const BASELINE_KILLS_PER_TICK := 0.241
+## Re-pinned 2026-09-03 with the packet weapon's closest-enemy retarget
+## (run.gd's _emit_vector PACKET case: it now picks the nearest live enemy
+## at fire time instead of firing along the owner's facing — the change the
+## game wanted, so a new player's first shots land instead of sailing past
+## whatever they happened to be moving away from). This is the packet-based
+## fire path every slot in this fixture uses: slot 0's forward packet row,
+## and each pinned slot's rotating-facing forward row (the fused homers'
+## own aim is unaffected — they already targeted before this change).
+##
+## Measured on this tree: TIMEOUT at tick 24000 (400s) — up from a death at
+## 21957 — mean live enemies 264.5, mean hits/tick 1.94, kills/tick 0.257.
+## The outcome moved UP (died -> the full timeout): a packet that lands
+## kills more of what it fires at, so the party survives the run instead of
+## going down partway through subnet 02's HP-scaled field. Both rate floors
+## moved UP with it (hits 1.65 -> 1.94, kills/tick 0.241 -> 0.257). Only the
+## enemy-mean floor moves DOWN, with the reason the rule demands: a party
+## that kills more of what it hits keeps fewer enemies on screen at once —
+## the field is thinner because the party is winning it faster, the same
+## "out-fired the spawns" shape the five-exploit-row and corruption-budget
+## re-pins above already established, not a lighter tick.
+##
+## A "timeout" pin needs no death-tick slack: covered requires only that the
+## outcome stay off "died" (see the covered branch below), so a future
+## change is free to reach TIMEOUT by a different tick, or WIN outright,
+## without re-pinning on tick alone — the enemy/hit/kill floors are what
+## actually gate a lighter run.
+const BASELINE_OUTCOME := "timeout"   # "won", "died" or "timeout"
+const BASELINE_END_TICK := 24000
+const BASELINE_MEAN_ENEMIES := 264.5
+const BASELINE_MEAN_HITS := 1.94
+const BASELINE_KILLS_PER_TICK := 0.257
 
 ## The autopilot's hysteresis band and nudge cadence — see _kite. Measured
 ## on the pre-pass tree: a 120/190 band died at tick 10182 and 150/190 at

@@ -2938,18 +2938,20 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 				from = enemies.pos[picked]
 				hops += 1
 		_:
-			# Along the owner's facing, no target pick — except a homing fused
-			# module, which binds a target at spawn and launches TOWARD it: a
-			# seeker launched away would spend most of its travel coming about.
+			# Fire at the NEAREST enemy, not along the aim: direction-based
+			# shots waste themselves on empty ground, and the early weapon
+			# should not. The pick uses _pick_target's total order (distance,
+			# then index), so every peer agrees on the same target. A homing
+			# fused module still binds it and steers in flight (the projectile
+			# step re-acquires); an ordinary packet aims once and flies
+			# straight. No enemy in range → along the owner's facing.
 			# (VIEW_RANGE: the viewport covers ~1113x626 world units at this
 			# zoom, so the corner is ~640 away; a wider pick let seekers bind to
 			# enemies well off-screen and walked the entire grid.)
-			var t3 := -1
+			var t3 := _pick_target(VIEW_RANGE, r.targeting, at)
 			var dir2: Vector2 = player_facing[owner]
-			if r.homing > 0.0:
-				t3 = _pick_target(VIEW_RANGE, r.targeting, at)
-				if t3 >= 0:
-					dir2 = (enemies.pos[t3] - at).normalized()
+			if t3 >= 0:
+				dir2 = (enemies.pos[t3] - at).normalized()
 			_fx.append([FxKind.DASH, at, dir2, 26.0, FX_LIFE, Color(1.1, 1.7, 1.4)])
 			var shots: int = maxi(int(r.split_count), 1)
 			for sp in shots:

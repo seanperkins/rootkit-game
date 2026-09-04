@@ -14,7 +14,8 @@ const CASES := ["the_blocks_exist_and_populate", "integrity_warns_proportionally
 	"the_summary_reports_a_finished_run", "the_summary_survives_a_short_build",
 	"the_teammate_strip_names_everyone_else", "the_net_panel_is_session_only",
 	"the_stall_is_attributed", "settings_from_pause_cover_the_viewport",
-	"abandon_from_the_pause_menu_ends_a_solo_run"]
+	"abandon_from_the_pause_menu_ends_a_solo_run",
+	"the_version_tag_lights_up_when_an_update_is_pending"]
 
 func _initialize() -> void:
 	print("ROOTKIT — hud\n")
@@ -29,6 +30,7 @@ func _initialize() -> void:
 	await the_stall_is_attributed()
 	await settings_from_pause_cover_the_viewport()
 	await abandon_from_the_pause_menu_ends_a_solo_run()
+	await the_version_tag_lights_up_when_an_update_is_pending()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -65,7 +67,7 @@ func the_blocks_exist_and_populate() -> void:
 	var r := await _fresh_run()
 	var ui := _ui(r)
 	ui._refresh()
-	for n in ["Status", "Centre", "Tally", "Build"]:
+	for n in ["Status", "Centre", "Tally", "Build", "Version"]:
 		var node = ui._hud.get_node_or_null(n)
 		_check("the %s block exists" % n, node != null, true)
 		if node != null:
@@ -256,3 +258,26 @@ func abandon_from_the_pause_menu_ends_a_solo_run() -> void:
 	r.free()
 	await process_frame
 	finished["abandon_from_the_pause_menu_ends_a_solo_run"] = true
+
+## The in-game version label: always visible (unlike the menu, no modal can
+## ever show mid-run), with the same [update available] tag the menu's
+## dismissed modal leaves behind. pending_update is polled from the Updater
+## autoload each _refresh when one exists; this SceneTree-based suite has
+## none, so the driver sets it directly — the same idiom as input_override.
+func the_version_tag_lights_up_when_an_update_is_pending() -> void:
+	var r := await _fresh_run()
+	var ui := _ui(r)
+	ui._refresh()
+	var version: String = ui._hud.get_node("Version").text
+	_check("the version label names the running build",
+		version.begins_with("v"), true)
+	_check("and carries no tag while up to date",
+		version.contains("[update available]"), false)
+	ui.pending_update = true
+	ui._refresh()
+	version = ui._hud.get_node("Version").text
+	_check("a pending update lights the tag",
+		version.contains("[update available]"), true)
+	r.free()
+	await process_frame
+	finished["the_version_tag_lights_up_when_an_update_is_pending"] = true

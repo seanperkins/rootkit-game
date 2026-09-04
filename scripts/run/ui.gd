@@ -4,6 +4,10 @@ const FG := Color(0.55, 1.0, 0.72)
 const DIM := Color(0.35, 0.62, 0.48)
 const WARN := Color(1.0, 0.45, 0.42)
 
+## Polled from the Updater autoload each _refresh, when it exists. A
+## SceneTree-based suite has none, so a driver sets this directly instead —
+## the same idiom run.gd uses for input_override.
+var pending_update := false
 var run: Node2D
 var _hud: Control
 var _overlay: Control
@@ -42,7 +46,24 @@ func bind(r: Node2D) -> void:
 	run.offer_waiting.connect(_on_waiting)
 	run.run_ended.connect(_on_end)
 	run.stats_changed.connect(_refresh)
+	_bind_updater()
 	_refresh()
+
+## The in-game version tag. A check can complete WHILE already in a run (the
+## menu started it, the player hit start new run before it answered), so this
+## listens for the same signal the menu's modal does, once — never polled, so
+## a test can drive pending_update directly with no autoload required, the
+## same idiom run.gd uses for input_override.
+func _bind_updater() -> void:
+	var updater := get_node_or_null("/root/Updater")
+	if updater == null:
+		return
+	pending_update = not updater.available.is_empty()
+	if not updater.update_ready.is_connected(_on_updater_ready):
+		updater.update_ready.connect(_on_updater_ready)
+
+func _on_updater_ready(_info: Dictionary) -> void:
+	pending_update = true
 
 func _mono(size: int) -> Label:
 	var l := Label.new()
@@ -130,6 +151,20 @@ func _build() -> void:
 	build.position = Vector2(18, -74)
 	build.add_theme_color_override("font_color", DIM)
 	_hud.add_child(build)
+
+	# Bottom-right: the running build's version, visible in-game exactly like
+	# on the menu. No modal here — the menu scene does not exist mid-run —
+	# but a pending update still lights the same [update available] tag.
+	var version := _mono(13)
+	version.name = "Version"
+	version.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	version.offset_left = -220
+	version.offset_top = -42
+	version.offset_right = -20
+	version.offset_bottom = -12
+	version.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	version.add_theme_color_override("font_color", DIM)
+	_hud.add_child(version)
 
 	# The damage vignette. Screen space, because it is a fact about the player
 	# rather than about a place, and it fades rather than strobes.
@@ -351,6 +386,12 @@ func _refresh() -> void:
 
 	_hud.get_node("Build").text = "\n".join(_build_lines())
 
+	# pending_update is set once at bind() and by the update_ready signal
+	# (see _bind_updater) — never polled here, so it cannot be clobbered
+	# between real frames or by a test driving it directly.
+	_hud.get_node("Version").text = "v%s%s" % [_version_string(),
+		"  [update available]" if pending_update else ""]
+
 	if _net_panel != null and _net_panel.visible:
 		_refresh_net()
 
@@ -492,6 +533,13 @@ func _refresh_net() -> void:
 ## 1234 -> "1234", 12345 -> "12.3k": the panel's packet counts stay one word.
 func _k(n: int) -> String:
 	return str(n) if n < 1000 else "%.1fk" % (float(n) / 1000.0)
+
+## The build number: release_mac.sh stamps the git tag into
+## application/config/version, so this reads the tag in release builds and
+## the project file's value in dev. Mirrors meta_screen._build.
+func _version_string() -> String:
+	var v: Variant = ProjectSettings.get_setting("application/config/version")
+	return "dev" if v == null else String(v)
 
 func _build_lines() -> Array:
 	var lines := []

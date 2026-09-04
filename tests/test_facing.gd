@@ -11,7 +11,8 @@ const DT := 1.0 / 60.0
 const CASES := ["facing_follows_the_applied_record_and_holds",
 	"facing_survives_a_restore", "two_peers_agree_while_turning",
 	"a_return_resets_facing",
-	"packet_flies_along_facing", "a_homing_packet_still_binds",
+	"packet_flies_at_the_nearest_enemy", "packet_with_no_enemy_keeps_the_aim",
+	"a_homing_packet_still_binds",
 	"beam_hits_its_capsule_only", "spike_hits_its_wedge_only",
 	"beam_radius_floor_holds_in_the_tables",
 	"mines_drop_behind_on_open_ground", "mines_avoid_a_wall",
@@ -29,7 +30,8 @@ func _initialize() -> void:
 	await facing_survives_a_restore()
 	await two_peers_agree_while_turning()
 	await a_return_resets_facing()
-	await packet_flies_along_facing()
+	await packet_flies_at_the_nearest_enemy()
+	await packet_with_no_enemy_keeps_the_aim()
 	await a_homing_packet_still_binds()
 	await beam_hits_its_capsule_only()
 	await spike_hits_its_wedge_only()
@@ -163,10 +165,11 @@ func _targets_hit(r: Node2D, gid: int) -> Array:
 			out.append(r.queue.target[k])
 	return out
 
-func packet_flies_along_facing() -> void:
+func packet_flies_at_the_nearest_enemy() -> void:
 	var r := await _fresh_run()
 	var gid := _with(r, &"packet")
-	_spawn(r, Vector2(0.0, -300.0))            # an enemy up, off the facing axis
+	var near: int = _spawn(r, Vector2(0.0, -300.0))   # 300 up, closer
+	var far: int = _spawn(r, Vector2(-430.0, 0.0))    # 430 left, farther
 	_face(r, Vector2.LEFT)
 	r.queue.begin_tick()
 	r._step3_rebuild()
@@ -174,10 +177,29 @@ func packet_flies_along_facing() -> void:
 	r._emit_vector(gid, r.resolved[gid])
 	_check("a packet spawned", r.projectiles.count, before + 1)
 	var i: int = r.projectiles.count - 1
-	_check_true("it flies along facing, not at the enemy", r.projectiles.vel[i].normalized().dot(Vector2.LEFT) > 0.999)
+	# The facing is LEFT; the nearest enemy is UP. The shot must go at the
+	# enemy, and must pick the NEAREST of the two, not the first in the grid.
+	_check_true("it aims at the nearest enemy, not the facing",
+		r.projectiles.vel[i].normalized().dot(Vector2.UP) > 0.99)
+	_check("and binds that target", r._proj_target[i], near)
+	_check("it picked the nearer of the two", near != far, true)
+	r.free(); await process_frame
+	finished["packet_flies_at_the_nearest_enemy"] = true
+
+func packet_with_no_enemy_keeps_the_aim() -> void:
+	var r := await _fresh_run()
+	var gid := _with(r, &"packet")
+	_face(r, Vector2.LEFT)
+	r.queue.begin_tick()
+	r._step3_rebuild()
+	var before: int = r.projectiles.count
+	r._emit_vector(gid, r.resolved[gid])
+	var i: int = r.projectiles.count - 1
+	_check("empty ground falls back to the aim",
+		r.projectiles.vel[i].normalized().dot(Vector2.LEFT) > 0.999, true)
 	_check("and binds no target", r._proj_target[i], -1)
 	r.free(); await process_frame
-	finished["packet_flies_along_facing"] = true
+	finished["packet_with_no_enemy_keeps_the_aim"] = true
 
 func a_homing_packet_still_binds() -> void:
 	var r := await _fresh_run()
