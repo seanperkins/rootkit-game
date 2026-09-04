@@ -83,6 +83,7 @@ func _build() -> void:
 	_hud = Control.new()
 	_hud.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.theme = TerminalStyle.build_theme()
 	add_child(_hud)
 
 	# Three blocks, not one line. Eleven unrelated values sharing a single
@@ -187,6 +188,7 @@ func _build() -> void:
 	_overlay = Control.new()
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_overlay.visible = false
+	_overlay.theme = TerminalStyle.build_theme()
 	add_child(_overlay)
 
 	var scrim := ColorRect.new()
@@ -262,6 +264,7 @@ func _build() -> void:
 	_pause_panel = Control.new()
 	_pause_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_pause_panel.visible = false
+	_pause_panel.theme = TerminalStyle.build_theme()
 	add_child(_pause_panel)
 	var pscrim := ColorRect.new()
 	pscrim.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -308,6 +311,7 @@ func _build() -> void:
 	_end = Control.new()
 	_end.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_end.visible = false
+	_end.theme = TerminalStyle.build_theme()
 	add_child(_end)
 	var escrim := ColorRect.new()
 	escrim.set_anchors_preset(Control.PRESET_FULL_RECT)

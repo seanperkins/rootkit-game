@@ -83,6 +83,7 @@ var _session: NetworkSession = null
 var _transport: Transport = null
 
 func _ready() -> void:
+	theme = TerminalStyle.build_theme()
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	var bg := ColorRect.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -364,6 +365,8 @@ func _build_update_modal() -> void:
 	var panel := VBoxContainer.new()
 	panel.add_theme_constant_override("separation", 12)
 	centre.add_child(panel)
+	var title := _label("UPDATE AVAILABLE", 20, HOT)
+	panel.add_child(title)
 	_update_body = _label("", 15, FG)
 	_update_body.custom_minimum_size = Vector2(540, 0)
 	_update_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

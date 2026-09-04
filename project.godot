@@ -9,6 +9,7 @@ run/main_scene="res://scenes/main.tscn"
 [autoload]
 
 Updater="*res://scripts/update/updater.gd"
+CRTOverlay="*res://scripts/ui/crt_overlay.gd"
 
 [physics]
 common/physics_ticks_per_second=60

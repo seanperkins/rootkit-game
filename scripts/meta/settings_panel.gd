@@ -36,6 +36,7 @@ func _ready() -> void:
 	# scrim covers nothing, so the pause menu (or the shop) shows straight
 	# through the settings screen. test_meta_layout and test_hud measure it.
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	theme = TerminalStyle.build_theme()
 	visible = false
 
 	# OPAQUE, and the shell's own background colour rather than black. This is
