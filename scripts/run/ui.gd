@@ -560,12 +560,11 @@ func _refresh_net() -> void:
 func _k(n: int) -> String:
 	return str(n) if n < 1000 else "%.1fk" % (float(n) / 1000.0)
 
-## The build number: release_mac.sh stamps the git tag into
-## application/config/version, so this reads the tag in release builds and
-## the project file's value in dev. Mirrors meta_screen._build.
+## The build number as a human reads it, so a dev run says so in the corner
+## (0.4.2.dev) and cannot be mistaken for the release it was cut from. The
+## DISPLAY form deliberately — the wire and the updater use BuildInfo.version().
 func _version_string() -> String:
-	var v: Variant = ProjectSettings.get_setting("application/config/version")
-	return "dev" if v == null else String(v)
+	return BuildInfo.display_version()
 
 func _build_lines() -> Array:
 	var lines := []

@@ -68,9 +68,11 @@ func _process(_dt: float) -> void:
 	if total > 0:
 		update_state.emit("downloading update — %d%%" % (got * 100 / total))
 
+## The CANONICAL version, not the display one: UpdateFeed.should_update refuses
+## anything called "dev", so a ".dev" string here would make
+## ROOTKIT_UPDATE_CHECK=1 unable to exercise the path it exists to exercise.
 func current_version() -> String:
-	var v: Variant = ProjectSettings.get_setting("application/config/version")
-	return "dev" if v == null else str(v)
+	return BuildInfo.version()
 
 func translated_platform() -> String:
 	match OS.get_name():

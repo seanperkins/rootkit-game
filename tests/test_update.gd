@@ -13,7 +13,8 @@ var finished := {}
 const CASES := ["manifest_parse_is_strict", "versions_compare_numerically",
 	"dev_never_updates_itself", "archive_verification_rejects_tampering",
 	"sha256_of_file_matches_known", "the_embedded_public_key_loads",
-	"the_update_log_writes", "a_dev_build_does_not_check_by_default"]
+	"the_update_log_writes", "a_dev_build_does_not_check_by_default",
+	"the_dev_suffix_is_display_only"]
 
 func _initialize() -> void:
 	print("ROOTKIT — update feed\n")
@@ -25,6 +26,7 @@ func _initialize() -> void:
 	archive_verification_rejects_tampering()
 	sha256_of_file_matches_known()
 	a_dev_build_does_not_check_by_default()
+	the_dev_suffix_is_display_only()
 	the_embedded_public_key_loads()
 	await the_update_log_writes()
 	print("")
@@ -190,6 +192,33 @@ func a_dev_build_does_not_check_by_default() -> void:
 	_check("a shipped build always checks", u.auto_check_allowed(false, ""), true)
 	_check("and ignores the override", u.auto_check_allowed(false, "0"), true)
 	finished["a_dev_build_does_not_check_by_default"] = true
+
+## A dev build says so in the corner (0.4.2.dev) and nowhere else.
+##
+## The suffix is DISPLAY ONLY on purpose, and both halves of that matter. It
+## must reach the HUD, or a screenshot of a dev run is indistinguishable from
+## the release it was cut from. It must NOT reach the wire, or a local build
+## and a shipped build of the same tag refuse each other and co-op between the
+## two cannot be tested; and it must not reach the updater, or
+## UpdateFeed.should_update refuses it as "dev" and ROOTKIT_UPDATE_CHECK=1
+## cannot exercise the path it exists for.
+func the_dev_suffix_is_display_only() -> void:
+	_check("a v-prefixed tag comes back bare", BuildInfo.from_git(0, ["v0.4.2\n"], "0.1.0"), "0.4.2")
+	_check("a bare tag is left alone", BuildInfo.from_git(0, ["0.4.2"], "0.1.0"), "0.4.2")
+	_check("a failed git falls back to the stamp", BuildInfo.from_git(1, ["fatal"], "0.1.0"), "0.1.0")
+	_check("so does no output at all", BuildInfo.from_git(0, [], "0.1.0"), "0.1.0")
+	_check("and an empty tag", BuildInfo.from_git(0, ["  "], "0.1.0"), "0.1.0")
+	# The suite runs as a dev build, so both forms are live here.
+	_check("the suite is a dev build", BuildInfo.is_dev(), true)
+	_check("the canonical version carries no suffix",
+		BuildInfo.version().ends_with(BuildInfo.DEV_SUFFIX), false)
+	_check("the display version does",
+		BuildInfo.display_version(), BuildInfo.version() + BuildInfo.DEV_SUFFIX)
+	# The one that protects the handshake: should_update refuses "dev", so a
+	# canonical version that ended in it would silently disable the updater.
+	_check("and the canonical version is updatable",
+		UpdateFeed.should_update(BuildInfo.version(), "99.0.0"), true)
+	finished["the_dev_suffix_is_display_only"] = true
 
 ## The support log is the only trace for the silent-failure design; READ_WRITE
 ## refuses to create a missing file, so the first-ever write must take the

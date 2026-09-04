@@ -174,7 +174,7 @@ func _build_hub() -> void:
 ## available] tag next to it — the modal is the loud path while the player is
 ## on the menu; the tag is what a dismissed modal leaves behind.
 func _build_version_label() -> void:
-	_version_label = _label("v%s" % _build(), 13, DIM)
+	_version_label = _label("v%s" % _build_display(), 13, DIM)
 	_version_label.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	_version_label.offset_left = -220
 	_version_label.offset_top = -42
@@ -185,7 +185,7 @@ func _build_version_label() -> void:
 	_refresh_version_tag()
 
 func _refresh_version_tag() -> void:
-	_version_label.text = "v%s%s" % [_build(),
+	_version_label.text = "v%s%s" % [_build_display(),
 		"  [update available]" if _update_available else ""]
 
 ## The shop: salvage, permanent upgrades, unlocks. No launch button — starting
@@ -478,7 +478,7 @@ func _move_to_applications() -> void:
 func _on_update_ready(info: Dictionary) -> void:
 	_update_available = true
 	_update_body.text = "a new version of ROOTKIT is available - v%s (you are on v%s)" \
-		% [str(info.get("version", "?")), _build()]
+		% [str(info.get("version", "?")), _build_display()]
 	_update_status.text = ""
 	_update_move_btn.visible = Updater.translocated()
 	_update_now_btn.visible = not _update_move_btn.visible
@@ -782,12 +782,17 @@ func _spacer(h: int) -> Control:
 	c.custom_minimum_size = Vector2(0, h)
 	return c
 
-## The build number: release_mac.sh stamps the git tag into
-## application/config/version, so this reads the tag in release builds and the
-## project file's value in dev.
+## The CANONICAL build version — the one peers refuse each other over. Every
+## handshake site below uses this, never the display form: a dev tree and a
+## release build cut from the same tag must still be able to play together,
+## which is exactly what stamping ".dev" into the wire would prevent.
 func _build() -> String:
-	var v: Variant = ProjectSettings.get_setting("application/config/version")
-	return "dev" if v == null else String(v)
+	return BuildInfo.version()
+
+## The same version as a human should read it, carrying ".dev" in a dev build.
+## Labels and the update modal only — see BuildInfo.
+func _build_display() -> String:
+	return BuildInfo.display_version()
 
 func _refresh() -> void:
 	var d := SaveGame.load_state()
