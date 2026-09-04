@@ -79,46 +79,70 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every platform the game SHIPS, not just the CI-cheap ones.
+        # export_presets.cfg builds macOS, Windows and Linux, and nothing in
+        # the handshake restricts a session to one OS — a Windows client
+        # against a Linux host is a supported session. Each OS uses a different
+        # libm (glibc, Apple's, MSVC's), which is exactly the difference this
+        # job exists to catch.
         include:
           - runner: ubuntu-latest
-            arch: x86_64
+            arch: linux-x86_64
+            asset: linux.x86_64
+            bin: Godot_v4.7-stable_linux.x86_64
           - runner: ubuntu-24.04-arm
-            arch: arm64
+            arch: linux-arm64
+            asset: linux.arm64
+            bin: Godot_v4.7-stable_linux.arm64
+          - runner: macos-latest
+            arch: macos-arm64
+            asset: macos.universal
+            bin: Godot.app/Contents/MacOS/Godot
+          - runner: windows-latest
+            arch: windows-x86_64
+            asset: win64.exe
+            bin: Godot_v4.7-stable_win64.exe
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        # Git Bash on the Windows runner, so one script serves all three OSes.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/cache@v4
         id: editor
         with:
-          path: ~/.godot-bin
-          key: godot-editor-${{ env.GODOT_VERSION }}-linux-${{ matrix.arch }}
+          path: godot-bin
+          key: godot-editor-${{ env.GODOT_VERSION }}-${{ matrix.arch }}
 
       - name: Install Godot
         if: steps.editor.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-          curl -sSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.${{ matrix.arch }}.zip"
-          unzip -q godot.zip
-          mkdir -p "$HOME/.godot-bin"
-          mv "Godot_v${GODOT_VERSION}-stable_linux.${{ matrix.arch }}" "$HOME/.godot-bin/godot"
-
-      - name: Put Godot on PATH
-        run: |
-          chmod +x "$HOME/.godot-bin/godot"
-          echo "$HOME/.godot-bin" >> "$GITHUB_PATH"
+          curl -sSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_${{ matrix.asset }}.zip"
+          mkdir -p godot-bin
+          # unzip is absent from the Windows runner's Git Bash; 7z is present
+          # on every runner image.
+          7z x -y -ogodot-bin godot.zip > /dev/null
+          chmod -R +x godot-bin || true
 
       - name: Import
-        run: godot --headless --import || true
+        run: ./godot-bin/${{ matrix.bin }} --headless --import || true
 
       # One tick hash per tick from the full state manifest. Only the probe's
       # own lines are kept: the engine banner and any driver chatter around
       # them is not part of the claim and does differ between machines.
+      #
+      # tr -d '\r' because Git Bash on Windows leaves CRLF on the pipe, and a
+      # line-ending difference would read as a determinism failure — the one
+      # way this job can lie.
       - name: Probe
         run: |
           set -euo pipefail
-          godot --headless -s res://tools/determinism_probe.gd \
+          ./godot-bin/${{ matrix.bin }} --headless -s res://tools/determinism_probe.gd \
+            | tr -d '\r' \
             | grep -E '^(# determinism probe|[0-9]+ -?[0-9]+$)' > probe.txt
           wc -l probe.txt
           head -3 probe.txt
@@ -137,13 +161,24 @@ jobs:
         with:
           pattern: probe-*
 
-      # Lockstep rests on two machines agreeing tick for tick, so the artefact
+      # Lockstep rests on every peer agreeing tick for tick, so the artefact
       # that claim is reproduced from is a byte-identical diff, not a summary.
-      - name: Diff the two probes
+      # Compared pairwise against the first leg rather than naming two, so
+      # adding a platform to the matrix above needs no change here.
+      - name: Diff every probe against the first
         run: |
           set -euo pipefail
-          diff probe-x86_64/probe.txt probe-arm64/probe.txt
-          echo "identical: $(wc -l < probe-x86_64/probe.txt) lines"
+          mapfile -t legs < <(find . -name probe.txt | sort)
+          if [ "${#legs[@]}" -lt 2 ]; then
+            echo "expected at least two probes, found ${#legs[@]}" >&2
+            exit 1
+          fi
+          ref="${legs[0]}"
+          for f in "${legs[@]:1}"; do
+            echo "== $ref  vs  $f"
+            diff "$ref" "$f"
+          done
+          echo "identical across ${#legs[@]} platforms: $(wc -l < "$ref") lines"
 
   export:
     name: export smoke
