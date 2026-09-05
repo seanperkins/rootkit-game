@@ -62,7 +62,34 @@ var target: Node2D
 ## terrain.rects, which is stable for the life of an arena.
 var _falling: Dictionary = {}
 
+## Geometry is built once per visible wall, then reused through camera travel
+## and collapse. These are records, not one scene node per obstacle.
+class WallVisual:
+	var height: float
+	var hue: Color
+	var top_color: Color
+	var near_color: Color
+	var side_color: Color
+	var phase: float
+	var top: PackedVector2Array
+	var near: PackedVector2Array
+	var side: PackedVector2Array
+	var back: PackedVector2Array
+	var outline: PackedVector2Array
+	var detail := PackedVector2Array()
+	var lights := PackedVector2Array()
+
+const WALL_HEIGHTS := [22.0, 42.0, 32.0]
+const WALL_HUES := [Color(0.40, 0.95, 0.70), Color(0.40, 0.80, 0.94),
+	Color(0.65, 0.76, 0.94)]
+var _wall_cache: Dictionary = {}
+var _terrain: Terrain
+
 func _process(d: float) -> void:
+	if target != null and _terrain != target.terrain:
+		_terrain = target.terrain
+		_wall_cache.clear()
+		_falling.clear()
 	# The frame delta, clamped. The hitstop freezes the world for whole ticks now
 	# rather than scaling a process-global clock, so a collapsing wall keeps
 	# falling at display rate with nothing to divide back out.
@@ -131,11 +158,88 @@ func draw_box(r: Rect2, height: float, top: Color, near: Color, side: Color,
 	draw_line(g11, g11 + up, edge, 1.5)
 	draw_line(g10, g10 + up, edge, 1.0)
 
+func _wall_visual(r: Rect2) -> WallVisual:
+	if _wall_cache.has(r):
+		return _wall_cache[r]
+	var v := WallVisual.new()
+	var key := absi(hash(r))
+	var kind := key % WALL_HEIGHTS.size()
+	v.height = WALL_HEIGHTS[kind]
+	v.hue = WALL_HUES[kind]
+	v.top_color = v.hue * 0.27
+	v.near_color = v.hue * 0.16
+	v.side_color = v.hue * 0.09
+	v.phase = float(key % 29) * 0.73
+	var up := Vector2(0, -v.height)
+	var a: Vector2 = target.to_iso(r.position)
+	var b: Vector2 = target.to_iso(Vector2(r.end.x, r.position.y))
+	var c: Vector2 = target.to_iso(r.end)
+	var d: Vector2 = target.to_iso(Vector2(r.position.x, r.end.y))
+	v.back = PackedVector2Array([a, b, a, d, a, a + up])
+	v.near = PackedVector2Array([d, c, c + up, d + up])
+	v.side = PackedVector2Array([b, c, c + up, b + up])
+	v.top = PackedVector2Array([a + up, b + up, c + up, d + up])
+	v.outline = PackedVector2Array([a + up, b + up, b + up, c + up,
+		c + up, d + up, d + up, a + up, d, c, b, c,
+		d, d + up, c, c + up, b, b + up])
+	match kind:
+		0: # Heat sink: low, with five cooling fins and a front vent.
+			for fin in 5:
+				var x := 0.18 + float(fin) * 0.16
+				_wall_path(v.detail, r, [Vector2(x, 0.16), Vector2(x, 0.84)], v.height)
+			_wall_path(v.detail, r, [Vector2(0.12, 1), Vector2(0.88, 1)], v.height * 0.48)
+		1: # Server housing: three recessed lid panels and rack seams.
+			for panel in 3:
+				var x := 0.12 + float(panel) * 0.27
+				_wall_path(v.detail, r, [Vector2(x, 0.16), Vector2(x + 0.20, 0.16),
+					Vector2(x + 0.20, 0.78), Vector2(x, 0.78), Vector2(x, 0.16)], v.height)
+			for shelf in 2:
+				_wall_path(v.detail, r, [Vector2(0.10, 1), Vector2(0.90, 1)],
+					v.height * (0.35 + float(shelf) * 0.30))
+		2: # Relay module: a central socket with four short connections.
+			_wall_path(v.detail, r, [Vector2(0.50, 0.15), Vector2(0.85, 0.50),
+				Vector2(0.50, 0.85), Vector2(0.15, 0.50), Vector2(0.50, 0.15)], v.height)
+			_wall_path(v.detail, r, [Vector2(0.35, 0.35), Vector2(0.65, 0.35),
+				Vector2(0.65, 0.65), Vector2(0.35, 0.65), Vector2(0.35, 0.35)], v.height)
+			for x in [0.25, 0.75]:
+				_wall_path(v.detail, r, [Vector2(x, 0.10), Vector2(x, 0.25)], v.height)
+				_wall_path(v.detail, r, [Vector2(x, 0.75), Vector2(x, 0.90)], v.height)
+	# Recessed front status strips. Their mild, offset activity leaves both
+	# the silhouette and the surface engraving steadily visible.
+	_wall_path(v.lights, r, [Vector2(0.16, 1), Vector2(0.30, 1)], v.height * 0.78)
+	_wall_path(v.lights, r, [Vector2(0.38, 1), Vector2(0.48, 1)], v.height * 0.78)
+	_wall_cache[r] = v
+	return v
+
+func _wall_path(out: PackedVector2Array, r: Rect2, points: Array, height: float) -> void:
+	var up := Vector2(0, -height)
+	for i in points.size() - 1:
+		out.append(target.to_iso(r.position + r.size * points[i]) + up)
+		out.append(target.to_iso(r.position + r.size * points[i + 1]) + up)
+
+func _draw_wall(r: Rect2, drop: float, fade: float, time: float) -> void:
+	var v := _wall_visual(r)
+	if drop != 0.0:
+		draw_set_transform(Vector2(0, drop))
+	# Five commands for the box, instead of twelve separate face/edge calls.
+	# All faces retain the original transparency, including taller housings.
+	draw_multiline(v.back, Color(v.hue, BACK_EDGE_SCALE * fade), 1.0)
+	draw_colored_polygon(v.near, Color(v.near_color, FACE_ALPHA * fade))
+	draw_colored_polygon(v.side, Color(v.side_color, FACE_ALPHA * fade))
+	draw_colored_polygon(v.top, Color(v.top_color, FACE_ALPHA * fade))
+	draw_multiline(v.outline, Color(v.hue, fade), 1.25)
+	draw_multiline(v.detail, Color(v.hue * 0.52, fade), 1.0)
+	var activity := 0.78 + 0.22 * sin(time * 1.6 + v.phase)
+	draw_multiline(v.lights, Color(v.hue * activity, fade), 2.0)
+	if drop != 0.0:
+		draw_set_transform(Vector2.ZERO)
+
 func _draw() -> void:
 	if target == null or target.terrain == null:
 		return
 	var view: Rect2 = target._visible_world_rect()
 	var terrain: Terrain = target.terrain
+	var time := Time.get_ticks_msec() * 0.001
 
 	for ri in terrain.rects.size():
 		var entry = terrain.rects[ri]
@@ -156,12 +260,7 @@ func _draw() -> void:
 		var fade: float = 1.0
 		if _falling.has(ri):
 			fade = clampf(1.0 - float(_falling[ri]) / PROP_FALL_LIFE, 0.0, 1.0)
-		draw_box(tr, WALL_HEIGHT,
-			Color(WALL_TOP.r, WALL_TOP.g, WALL_TOP.b, WALL_TOP.a * fade),
-			Color(WALL_NEAR.r, WALL_NEAR.g, WALL_NEAR.b, WALL_NEAR.a * fade),
-			Color(WALL_SIDE.r, WALL_SIDE.g, WALL_SIDE.b, WALL_SIDE.a * fade),
-			Color(WALL_EDGE.r, WALL_EDGE.g, WALL_EDGE.b, WALL_EDGE.a * fade),
-			drop)
+		_draw_wall(tr, drop, fade, time)
 
 	for gi in terrain.gates.size():
 		var g: Terrain.Gate = terrain.gates[gi]

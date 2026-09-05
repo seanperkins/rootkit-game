@@ -13,7 +13,8 @@ var finished := {}
 
 const CASES := ["standing_objects_draw_over_everything_that_moves",
 	"every_live_player_is_drawn_and_the_camera_follows_the_view",
-	"circuit_canvases_are_bounded_culled_and_presentation_only"]
+	"circuit_canvases_are_bounded_culled_and_presentation_only",
+	"terrain_details_preserve_state_depth_and_recharge"]
 
 func _initialize() -> void:
 	SaveGame.use_test_paths()
@@ -21,6 +22,7 @@ func _initialize() -> void:
 	await standing_objects_draw_over_everything_that_moves()
 	await every_live_player_is_drawn_and_the_camera_follows_the_view()
 	await circuit_canvases_are_bounded_culled_and_presentation_only()
+	await terrain_details_preserve_state_depth_and_recharge()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -139,3 +141,45 @@ func circuit_canvases_are_bounded_culled_and_presentation_only() -> void:
 	_check("camera travel reuses cached geometry", backdrop.get_child(0), first)
 	r.free()
 	finished["circuit_canvases_are_bounded_culled_and_presentation_only"] = true
+
+func terrain_details_preserve_state_depth_and_recharge() -> void:
+	var r := await _fresh_run()
+	var props := _named(r, "Props")
+	var panels := _named(r, "ZonePanels")
+	var before: int = r._state_hash()
+	panels._process(0.0)
+	props._process(0.0)
+	var heights := {}
+	var seen_kinds := {}
+	var zone := -1
+	for i in r.terrain.rects.size():
+		var entry: Array = r.terrain.rects[i]
+		if entry[1] == Terrain.Kind.WALL:
+			var v = props._wall_visual(entry[0])
+			heights[v.height] = true
+		else:
+			var v = panels._panel_visual(entry[0], entry[1])
+			if not seen_kinds.has(entry[1]):
+				_check("panel geometry is reused", panels._panel_visual(entry[0], entry[1]), v)
+				seen_kinds[entry[1]] = true
+			if entry[1] == Terrain.Kind.CORRUPTION:
+				zone = i
+	_check("wall heights have three visual variants", heights.size(), 3)
+	_check("all details leave simulation untouched", r._state_hash(), before)
+	_check("panel markings stay below missing-ground masks", panels.z_index < r.z_index, true)
+	_check("and above ambient circuitry", panels.z_index > r.get_node("Backdrop").z_index, true)
+	_check("corruption zone available", zone >= 0, true)
+	if zone >= 0:
+		r._zone_recharge[zone] = Terrain.ZONE_RECHARGE
+		_check("depleted indicator is empty", panels._charge(zone, Terrain.Kind.CORRUPTION), 0.0)
+		r._zone_recharge[zone] = Terrain.ZONE_RECHARGE * 0.5
+		_check("indicator follows half recharge", panels._charge(zone, Terrain.Kind.CORRUPTION), 0.5)
+		r._zone_recharge[zone] = 0.0
+		_check("charged indicator is full", panels._charge(zone, Terrain.Kind.CORRUPTION), 1.0)
+	r.terrain = Terrain.new(r.ARENA_SIZE)
+	props._process(0.0)
+	panels._process(0.0)
+	_check("replacing terrain clears wall geometry", props._wall_cache.size(), 0)
+	_check("replacing terrain clears panel geometry", panels._cache.size(), 0)
+	r.free()
+	finished["terrain_details_preserve_state_depth_and_recharge"] = true

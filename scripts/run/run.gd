@@ -4609,6 +4609,13 @@ func _build_environment() -> void:
 	add_child(grid_lines)
 	grid_lines.set("target", self)
 
+	var panels := Node2D.new()
+	panels.name = "ZonePanels"
+	panels.set_script(load("res://scripts/run/zone_panels.gd"))
+	panels.z_index = -5 # above circuitry, below zone tints and missing ground
+	add_child(panels)
+	panels.set("target", self)
+
 	# Above every entity pool: walls, rails and gate posts are things you walk
 	# BEHIND, and sharing this node's canvas drew them under the swarm.
 	var props := Node2D.new()
