@@ -57,3 +57,30 @@ Metal reported no GPU timing. This verifies live rendering under load but is
 not an uncapped comparison with the previous designs or proof of zero overhead.
 The live capture was inspected for player visibility, hostile fire, orbiters,
 articulated worms, pickups, and wall occlusion.
+
+## Boss integrity in the armor
+
+Bosses no longer have a separate health ring. Their existing materials receive
+current integrity divided by spawn integrity in the fourth custom-data channel.
+ICE has six powered facets; fork bombs have four chambers; packet filters have
+six front shield plates; null pointers have four frame sections; kernel panics
+have eight reactor sections. Sections lose illumination as health falls, with
+continuous dimming inside the currently draining section. Unpowered armor stays
+faintly visible so the silhouette and collision footprint remain readable.
+The exposed core heats from white toward orange and pulses gently at low health.
+
+The health signal follows the original spawn HP for each enemy, including split
+children. It adds no persistent state, nodes, or draw calls, and removes the
+old per-boss ground-ring commands. Arrival and attack telegraphs remain separate
+signals. The QuadMesh's inverted vertical UV convention is corrected before
+applying facing, so the filter's armored front matches its protected half-plane.
+
+`godot -s res://tools/shot_boss_integrity.gd` captures all five boss types at
+100%, 75%, 50%, 25%, and 5% integrity in `.tmp/boss-integrity.png`. This is the
+actual material and body scale. The capture was inspected, and the draw-order,
+arrival, manifest, mini-boss, and determinism suites passed without script errors.
+The windowed timings above predate this follow-up and are not measurements of
+its additional material work.
+
+The follow-up simulation gate also passed: real-run p95 9.460 ms within its
+9.929 ms load-scaled budget, with no script errors.

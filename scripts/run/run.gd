@@ -4773,7 +4773,12 @@ func _update_renderers() -> void:
 		if t.behaviour == EnemyTable.Behaviour.CHARGER and _ai_phase[i] == CH_DASH:
 			heading = _ai_aim[i]
 		var angle := to_iso(heading).angle() + PI * 0.5 if heading.length_squared() > 0.01 else 0.0
-		mm.set_instance_custom_data(n, Color(float(t.glyph), angle, float(i % 17) / 17.0, 0.0))
+		# Integrity powers the boss's armor segments in the material itself.
+		# Read spawn HP so subnet scaling and fork children share the same range.
+		var integrity := 1.0
+		if enemies.type_index[i] == EnemyTable.ICE or _is_miniboss(enemies.type_index[i]):
+			integrity = clampf(enemies.integrity[i] / maxf(_spawn_hp[i], 0.001), 0.0, 1.0)
+		mm.set_instance_custom_data(n, Color(float(t.glyph), angle, float(i % 17) / 17.0, integrity))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	# Glyph and colour per frame: spawn happens inside the tick, which may not
@@ -5090,39 +5095,6 @@ func _draw() -> void:
 			ring.append(to_iso(_rp(enemies, i)
 				+ Vector2(cos(ta), sin(ta)) * (14.0 + 26.0 * tell)))
 		draw_polyline(ring, Color(1.9, 0.9, 0.4, 0.85 * (1.0 - tell)), 2.0)
-
-	# Boss integrity, without a number and without a bar.
-	#
-	# Three channels at once, because any one of them alone is ambiguous at a
-	# glance: the ring THINS as it drops, its colour walks from the type's own
-	# toward a hot red, and it FRAGMENTS into fewer, shorter arcs. A healthy
-	# boss wears a solid bright band; a nearly-dead one is a few dim red
-	# scratches. Reading "it is coming apart" needs no calibration.
-	for i in enemies.count:
-		if _arriving[i] > 0.0 or _submerged[i] != 0:
-			continue
-		var ti2 := enemies.type_index[i]
-		if ti2 != EnemyTable.ICE and not _is_miniboss(ti2):
-			continue
-		var frac2: float = clampf(
-			enemies.integrity[i] / maxf(_spawn_hp[i], 0.001), 0.0, 1.0)
-		var centre := to_iso(_rp(enemies, i))
-		var rad2: float = (58.0 if ti2 == EnemyTable.ICE else 34.0)
-		var width: float = 1.0 + 3.2 * frac2
-		var col2: Color = enemy_types[ti2].color.lerp(
-			Color(2.2, 0.30, 0.25), 1.0 - frac2)
-		col2.a = 0.45 + 0.5 * frac2
-		# Twelve arcs at full, three at death. Integer, so the fragmenting is a
-		# visible step rather than a fade nobody registers.
-		var arcs: int = maxi(3, int(round(12.0 * frac2)))
-		var span: float = TAU / float(arcs) * (0.35 + 0.55 * frac2)
-		for a4 in arcs:
-			var base := TAU * float(a4) / float(arcs)
-			var pts2 := PackedVector2Array()
-			for stp in 5:
-				var ang := base + span * float(stp) / 4.0
-				pts2.append(centre + Vector2(cos(ang), sin(ang) * 0.5) * rad2)
-			draw_polyline(pts2, col2, width)
 
 	# Support links, and the ranged aim tell. Both are the same argument the
 	# charger and ambusher telegraphs above already make: a thing that happens

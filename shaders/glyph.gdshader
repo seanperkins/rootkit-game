@@ -1,10 +1,11 @@
 shader_type canvas_item;
 
 // Procedural hardware: dark armor, a bright bevel, and a small emissive core.
-// r = identity, g = screen-facing angle (zero faces up), b = stable phase.
+// r = identity, g = screen-facing angle (zero faces up), b = stable phase,
+// a = boss integrity / spawn integrity. Other glyphs ignore this channel.
 // All animation is presentation-only; the four packed MultiMeshes stay intact.
-varying flat vec3 design;
-void vertex() { design = INSTANCE_CUSTOM.rgb; }
+varying flat vec4 design;
+void vertex() { design = INSTANCE_CUSTOM; }
 
 float box(vec2 p, vec2 b) {
 	vec2 q = abs(p) - b;
@@ -14,7 +15,8 @@ float band(float d, float r, float w) { return abs(d - r) - w; }
 float diamond(vec2 p, float r) { return (abs(p.x) + abs(p.y) - r) * 0.7071; }
 
 void fragment() {
-	vec2 uv = UV - vec2(0.5);
+	// QuadMesh UVs have V increasing upward; canvas facing uses Y downward.
+	vec2 uv = vec2(UV.x, 1.0 - UV.y) - vec2(0.5);
 	float cs = cos(design.g), sn = sin(design.g);
 	vec2 p = mat2(vec2(cs, -sn), vec2(sn, cs)) * uv;
 	int g = int(design.r + 0.5);
@@ -122,5 +124,36 @@ void fragment() {
 	vec3 col = mix(armor, tint * 0.85, edge);
 	col = mix(col, tint * 0.48, engraving * (1.0 - edge));
 	col = mix(col, mix(tint, vec3(1.8), 0.55) * pulse, light);
+	if (g == 3 || (g >= 10 && g <= 13)) {
+		// Health belongs to the hardware: six ICE facets, four fork chambers,
+		// six front shield plates, four aperture corners, eight reactor teeth.
+		// The original hull stays solid and faintly visible even when a plate
+		// loses power, preserving both enemy identity and its contact footprint.
+		float health = clamp(design.a, 0.0, 1.0);
+		float around = fract(atan(p.y, p.x) / 6.283185 + 1.25);
+		float cells = around * 6.0;
+		if (g == 10 || g == 12) { cells = around * 4.0; }
+		if (g == 11) {
+			// Only the protected FRONT carries plating. The exposed rear core
+			// remains a bright target as the shield's power drains.
+			cells = clamp((atan(p.x, -p.y) / 3.141593 + 0.5) * 6.0, 0.0, 5.999);
+		}
+		if (g == 13) { cells = around * 8.0; }
+		float count = (g == 10 || g == 12) ? 4.0 : (g == 13 ? 8.0 : 6.0);
+		float power = clamp(health * count - floor(cells), 0.0, 1.0);
+		float seam = 1.0 - smoothstep(0.02, 0.065, min(fract(cells), 1.0 - fract(cells)));
+		// A broad dark seam separates neighboring armor plates, while a
+		// powered plate has a lit face and bevel. One plate drains continuously.
+		vec3 dead_plate = mix(vec3(0.06, 0.07, 0.08), tint * 0.18, edge);
+		vec3 live_plate = mix(col, tint * 0.38, (1.0 - edge) * (1.0 - engraving) * 0.65);
+		col = mix(dead_plate, live_plate, power);
+		col = mix(col, vec3(0.025, 0.032, 0.04), seam * 0.88);
+		// The exposed core heats up as armor fails. A slow, shallow pulse at
+		// critical health reads as an unstable reactor without flashing the body.
+		float stress = 1.0 - health;
+		float heartbeat = 0.88 + 0.12 * sin(TIME * 4.0 + design.b * 6.2832);
+		vec3 reactor = mix(mix(tint, vec3(1.8), 0.55), vec3(2.0, 0.48, 0.16), stress);
+		col = mix(col, reactor * mix(1.0, heartbeat, stress), light);
+	}
 	COLOR = vec4(col, COLOR.a * alpha);
 }
