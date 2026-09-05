@@ -116,7 +116,9 @@ func walking_out_is_continuous() -> void:
 	var arrived: Vector2 = g.end + g.dir * 8.0
 	r.player_pos[r.local_slot] = arrived
 	r._physics_process(1.0 / 60.0)
-	_check("the first step onto the next arena advances", r.subnet, 2)
+	_check("the first step onto the next arena opens a vote", r.route_pending, true)
+	r._apply_first(r.local_slot)
+	_check("the route choice advances", r.subnet, 2)
 	_check("and stays fighting", r.phase, r.Phase.FIGHTING)
 	_check("the player is exactly where they walked to", r.player_pos[r.local_slot], arrived)
 	_check("standing on the next arena", r.terrain.current, 1)

@@ -262,6 +262,7 @@ static func decode_control(kind: int, tick: int, body: PackedByteArray) -> Dicti
 			out = {"protocol": SessionRules.PROTOCOL, "name": name,
 				"session_id": int(_num(raw.get("session_id", 0))), "slot": slot,
 				"counters": SaveGame.sanitise_session_counters(raw.get("counters", null)),
+				"program": ProgramTable.clean(raw.get("program", "operator")),
 				"version": version}
 		Message.WELCOME, Message.START:
 			var desc := NetworkSession.validate_descriptor(raw.get("descriptor", null))

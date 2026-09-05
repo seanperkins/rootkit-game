@@ -127,6 +127,14 @@ func _ready() -> void:
 ## mid-run state can actually be saved — sessions are seeded and deterministic,
 ## but no checkpoint exists, so a "continue" would be a new run with a borrowed
 ## title.
+var _program_select: OptionButton
+var _program_detail: Label
+
+func _select_program(index: int) -> void:
+	SaveGame.set_string_pref("program", ProgramTable.IDS[index])
+	SaveGame.save_state()
+	_program_detail.text = ProgramTable.DETAILS[index]
+
 func _build_hub() -> void:
 	var centre := CenterContainer.new()
 	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -141,7 +149,16 @@ func _build_hub() -> void:
 	var sub := _label("rogue process // corporate network // subnet 01", 14, DIM)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hub.add_child(sub)
-	_hub.add_child(_spacer(26))
+	_hub.add_child(_spacer(8))
+	_program_select = OptionButton.new()
+	for name in ProgramTable.NAMES:
+		_program_select.add_item("STARTING PROGRAM / " + name)
+	var pi := ProgramTable.index(SaveGame.string_pref("program"))
+	_program_select.select(pi)
+	_program_select.item_selected.connect(_select_program)
+	_hub.add_child(_program_select)
+	_program_detail = _label(ProgramTable.DETAILS[pi], 14, FG)
+	_hub.add_child(_program_detail)
 
 	_start_btn = _menu_button("start new run")
 	_start_btn.pressed.connect(_start)
@@ -449,7 +466,7 @@ func _profile() -> Dictionary:
 	SaveGame.set_string_pref("last_address", _addr_edit.text)
 	SaveGame.save_state()
 	return {"slot": 0, "name": SaveGame.string_pref("display_name"),
-		"counters": SaveGame.session_counters()}
+		"counters": SaveGame.session_counters(), "program": SaveGame.string_pref("program")}
 
 ## The update modal's actions. The player is on the menu when they press
 ## these — a session is never interrupted; apply happens either right away
@@ -604,6 +621,7 @@ func _leave() -> void:
 	_start_btn.disabled = false
 
 func _set_link_buttons(linked: bool) -> void:
+	_program_select.disabled = linked
 	_host_btn.disabled = linked
 	_host_lan_btn.disabled = linked
 	_join_btn.disabled = linked
@@ -623,7 +641,7 @@ func _on_connected_to_host(_id: int) -> void:
 	var p := _profile()
 	_transport.send_control(Protocol.Message.HELLO, 0, {
 		"protocol": SessionRules.PROTOCOL, "name": p["name"],
-		"counters": p["counters"], "session_id": 0, "slot": -1,
+		"counters": p["counters"], "program": p["program"], "session_id": 0, "slot": -1,
 		"version": _build()})
 	_link_status.text = "connected — waiting for a slot"
 
@@ -749,7 +767,7 @@ func _refresh_players() -> void:
 	for row in _session.lobby_rows:
 		var tag := "  (you)" if int(row["slot"]) == _session.local_slot else ""
 		lines.append("slot %d   %s%s" % [int(row["slot"]),
-			row["name"] if String(row["name"]) != "" else "anonymous", tag])
+			row["name"] if String(row["name"]) != "" else "anonymous", tag + " / " + ProgramTable.NAMES[ProgramTable.index(row.get("program", "operator"))]])
 	_players.text = "\n".join(lines)
 
 ## Hand the live session and its connection to the run and replace the scene.

@@ -472,6 +472,7 @@ static func _sanitise_profile(raw, slot: int) -> Dictionary:
 		"slot": slot,
 		"name": name,
 		"counters": SaveGame.sanitise_session_counters(counters),
+		"program": ProgramTable.clean(raw.get("program", "operator") if typeof(raw) == TYPE_DICTIONARY else "operator"),
 	}
 
 static func _is_number(v) -> bool:

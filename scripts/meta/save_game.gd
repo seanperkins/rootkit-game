@@ -37,6 +37,7 @@ const PREF_RANGES := {
 ## [max_length, whitelist_kind]. Applied on read AND on write, like the numeric
 ## ranges, because save.json is user-editable and treated as hostile.
 const PREF_STRINGS := {
+	"program": [16, "program"],
 	"display_name": [SessionRules.NAME_MAX, "printable"],
 	"last_address": [SessionRules.ADDRESS_MAX, "hostname"],
 }
@@ -94,6 +95,7 @@ static func _default() -> Dictionary:
 			"shake": 1.0,
 			"damage_numbers": 1.0,
 			"display_name": "",
+			"program": "operator",
 			"last_address": "127.0.0.1",
 		},
 	}
@@ -243,6 +245,8 @@ static func sanitise_string_pref(key: String, value) -> String:
 	if typeof(value) != TYPE_STRING:
 		return fallback
 	var kind: String = row[1]
+	if kind == "program":
+		return ProgramTable.clean(value)
 	var out := ""
 	for ch in String(value):
 		var code := ch.unicode_at(0)

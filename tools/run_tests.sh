@@ -18,6 +18,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 SUITES=(
+  test_network_expansion
   test_terrain test_terrain_run test_gates test_campaign test_collapse
   test_build test_slots test_fusion test_fusion_run test_blocks test_cadence test_drain test_corruption test_dispatch
   test_triggers test_worms test_wards test_multipliers test_travel

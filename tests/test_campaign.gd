@@ -132,6 +132,8 @@ func _walk_the_gate(r: Node2D) -> void:
 	# first pace onto the next arena's floor IS arriving on the next subnet.
 	r.player_pos[r.local_slot] = r.terrain.gate().end + r.terrain.gate().dir * 8.0
 	r._physics_process(1.0 / 60.0)
+	if r.route_pending:
+		r._apply_first(r.local_slot)
 
 
 ## SaveGame.bank() ACCUMULATES. A run that banks at every subnet clear must hand

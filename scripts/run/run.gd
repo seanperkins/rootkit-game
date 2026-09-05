@@ -314,7 +314,25 @@ var _rec_offers: PackedInt32Array
 # input record whose `offer` field names the open sequence; a stale or bad
 # choice is no choice. The card/fusion SIGNALS are presentation notices derived
 # from this state for the local slot, never the state itself.
-enum OfferKind { LEVEL, SEEDED, RANK_ONLY, FUSION }
+enum OfferKind { LEVEL, SEEDED, RANK_ONLY, FUSION, ROUTE }
+signal route_offered()
+
+# One optional operation per subnet: vault, relay, upload. Completion is latched.
+var ops_state := 0 # 0 scheduled, 1 available, 2 completed
+var ops_pos := Vector2.ZERO
+var ops_start := Vector2.ZERO
+var ops_end := Vector2.ZERO
+var ops_progress := 0.0
+var ops_pulse := 0.0
+var ops_alarm := 0.0
+var route_active := -1
+var route_pending := false
+var route_votes := PackedInt32Array([-1, -1, -1, -1])
+var _route_rng := RandomNumberGenerator.new()
+const OPS_RADIUS := 90.0
+const RELAY_RADIUS := 210.0
+const OPS_NAMES := ["VAULT BREACH", "RELAY HIJACK", "UPLOAD ESCORT"]
+
 var _offer_seq: PackedInt32Array
 var _offer_open: Array = []      # per slot: {seq, kind, contents, deadline} or {}
 var _offer_queue: Array = []     # per slot: Array of the same rows, deadline -1
@@ -852,6 +870,7 @@ func _on_peer_joined(_id: int) -> void:
 	_transport.send_control(Protocol.Message.HELLO, 0, {
 		"protocol": SessionRules.PROTOCOL, "name": p.get("name", ""),
 		"counters": p.get("counters", {}),
+		"program": p.get("program", "operator"),
 		"session_id": int(_session.descriptor.get("session_id", 0)),
 		"slot": local_slot,
 		"version": str(_session.descriptor.get("version", ""))})
@@ -970,6 +989,9 @@ func _return(slot: int, t: int) -> void:
 		slot_state[slot] = SlotState.LIVE
 		lockstep.mark_live(slot)
 		lockstep.prime_slot(slot, t + 1, t + lockstep.delay)
+		if route_pending:
+			route_votes[slot] = -1
+			_open_offer(slot, OfferKind.ROUTE, PackedInt32Array([0, 1, 2]))
 		# Somebody is LIVE again: whatever no-LIVE verdict this peer held is
 		# void. A win stands.
 		if _session.end_outcome == NetworkSession.Outcome.LOSS:
@@ -1416,6 +1438,7 @@ func _default_solo_session() -> NetworkSession:
 		"slot": 0,
 		"name": "",
 		"counters": SaveGame.session_counters(),
+		"program": SaveGame.string_pref("program"),
 	}
 	var desc := NetworkSession.validate_descriptor(
 		NetworkSession.solo_descriptor(profile, DEFAULT_SEED))
@@ -1433,6 +1456,7 @@ func _ready() -> void:
 	var base: int = int(_session.descriptor.get("seed", 0))
 	_rng.seed = base + _SEED_SIM
 	_block_rng.seed = base + _SEED_BLOCK
+	_route_rng.seed = base + 87139
 	_card_rng.resize(SessionRules.MAX_PLAYERS)
 	for s in SessionRules.MAX_PLAYERS:
 		var cr := RandomNumberGenerator.new()
@@ -1679,10 +1703,16 @@ func _derive_roster() -> void:
 		player_prev_pos[s] = player_pos[s]
 		player_render_pos[s] = player_pos[s]
 		var lo := Loadout.new()
-		lo.start(table[&"packet"])
+		var program := ProgramTable.clean(row.get("program", "operator"))
+		lo.start(table[ProgramTable.VECTORS[ProgramTable.index(program)]])
+		if program == "virus":
+			lo.exploits[0].place(table[&"corrupt"])
 		lo.mult = PlayerStats.mults(SaveGame.multipliers_from(counters))
+		if program == "virus":
+			lo.mult[&"attack"] *= 0.80
 		loadouts[s] = lo
 		_sheet[s] = PlayerStats.sheet(SaveGame.player_sheet_from(counters))
+		ProgramTable.apply_sheet(_sheet[s], program)
 		player_health[s] = _sheet[s][&"integrity"]
 		pickup_radius[s] = _sheet[s][&"pickup_radius"]
 		_unlocked[s] = SaveGame.unlocked_modules_from(counters)
@@ -2039,6 +2069,7 @@ func _step_world() -> void:
 	_step2c_gate()
 	_step2d_collapse(sdt)
 	_step2e_blocks(sdt)
+	_step_network_ops(sdt)
 	_step2b_zones(sdt)
 	_step3_rebuild()
 	# Only while something reads it. _approach_dir consults the field for bosses
@@ -2312,7 +2343,7 @@ func _step1_spawn(dt: float) -> void:
 				director.dropped += 1
 			continue
 		var t = enemy_types[ti]
-		var hp: float = t.integrity * _hp_mult()
+		var hp: float = t.integrity * _hp_mult() * (RouteTable.HP[route_active] if route_active >= 0 else 1.0)
 		var idx := enemies.spawn(s[1], Vector2.ZERO,
 			hp, ENEMY_RADIUS, ti)
 		if idx < 0:
@@ -2452,7 +2483,7 @@ func _spawn_worm(at: Vector2) -> bool:
 	_worm_trail[id] = trail
 	_worm_cursor[id] = 0
 	for k in n:
-		var whp: float = t.integrity * _hp_mult()
+		var whp: float = t.integrity * _hp_mult() * (RouteTable.HP[route_active] if route_active >= 0 else 1.0)
 		var idx := enemies.spawn(_spawn_at(at), Vector2.ZERO,
 			whp, ENEMY_RADIUS, WORM_TYPE)
 		if idx < 0:
@@ -3782,7 +3813,7 @@ func _on_death(i: int) -> void:
 		feel.add_trauma(0.8)
 		feel.emit("ice_kill")
 		_hitstop()
-		salvage += 500
+		salvage += 500 + (150 if route_active == 1 else 0)
 		if subnet < SpawnDirector.CAMPAIGN_SUBNETS:
 			# CLEARED, not advanced. The advance is the player's move now: walk
 			# to the gate. Safe to set inside the drain because it is a flag and
@@ -3840,7 +3871,7 @@ func _on_flip(i: int) -> void:
 ## The botnet is ONE shared pool, so its cap SUMS over every slot's build — the
 ## one offensive stat that folds across players rather than per owner.
 func _botnet_cap() -> int:
-	var cap := BOTNET_BASE_CAP
+	var cap := BOTNET_BASE_CAP + (4 if route_active == 2 else 0)
 	for r in resolved:
 		if r != null:
 			cap += int(r.botnet_cap)
@@ -3848,7 +3879,7 @@ func _botnet_cap() -> int:
 
 func _drop_shards(i: int) -> void:
 	var t = enemy_types[enemies.type_index[i]]
-	for s in t.shard_value:
+	for s in t.shard_value + (1 if route_active == 0 else 0):
 		shards.spawn(enemies.pos[i] + Vector2(_rng.randf_range(-8, 8),
 			_rng.randf_range(-8, 8)), Vector2.ZERO, 1.0, 4.0, 0)
 
@@ -3982,7 +4013,7 @@ func _hp_mult() -> float:
 		* SpawnDirector.party_hp_mult(_players) * SpawnDirector.HP_ROWS
 
 func _refresh_thresholds() -> void:
-	var f := SpawnDirector.threshold_mult(subnet)
+	var f := SpawnDirector.threshold_mult(subnet) * (0.75 if route_active == 2 else 1.0)
 	for i in enemy_types.size():
 		thresholds[i] = enemy_types[i].corruption_threshold * f
 
@@ -4206,12 +4237,16 @@ func _step2c_gate() -> void:
 		if slot_state[s] == SlotState.LIVE \
 				and (player_pos[s] - g.end).dot(g.dir) <= 0.5:
 			return
-	_advance_subnet()
+	_open_route_vote()
 
 func spawned_total() -> int:
 	return _spawned_before + director.spawned
 
 func _advance_subnet() -> void:
+	ops_state = 0
+	ops_progress = 0.0
+	ops_pulse = 0.0
+	ops_alarm = 0.0
 	blocks.reset()
 	_spawned_before += director.spawned
 	subnet += 1
@@ -4240,6 +4275,7 @@ func _advance_subnet() -> void:
 		var cap := _eff_integrity(s)
 		player_health[s] = minf(cap, player_health[s] + cap * SUBNET_CLEAR_HEAL)
 	director.reset()
+	director.rate_mult = float(_players) * (RouteTable.RATE[route_active] if route_active >= 0 else 1.0)
 	_refresh_thresholds()
 	# No teleport and no regeneration: the next arena was plotted before the
 	# first frame and the player already walked into it. All that moves is which
@@ -4386,6 +4422,14 @@ func _apply_choice(slot: int, card: int, target: int, offer: int) -> void:
 	if open.is_empty() or offer != int(open["seq"]):
 		return
 	var contents: PackedInt32Array = open["contents"]
+	if int(open["kind"]) == OfferKind.ROUTE:
+		if card < 0 or card >= 3 or not route_pending or target != -1:
+			return
+		route_votes[slot] = card
+		_resolve_offer(slot)
+		_finish_route_vote()
+		emit_signal("stats_changed")
+		return
 	if int(open["kind"]) == OfferKind.FUSION:
 		if card == -2:
 			salvage += 25
@@ -4427,7 +4471,7 @@ func _apply_first(slot: int) -> void:
 	var open: Dictionary = _offer_open[slot]
 	if open.is_empty():
 		return
-	_apply_choice(slot, 0, 0, int(open["seq"]))
+	_apply_choice(slot, 0, -1 if int(open["kind"]) == OfferKind.ROUTE else 0, int(open["seq"]))
 	# A first card with no legal target (an empty pool) is a decline.
 	if not (_offer_open[slot] as Dictionary).is_empty() \
 			and int(_offer_open[slot]["seq"]) == int(open["seq"]):
@@ -4447,12 +4491,20 @@ func _resolve_deadlines() -> void:
 ## A slot that dies or parks with offers pending resolves every one of them to
 ## its first option at once, so it can never hold a round open.
 func _resolve_offer_on_slot_exit(slot: int) -> void:
+	# Departed voters abstain, including votes already cast. A timeout, unlike
+	# a departure, takes the first option just like other offers.
+	if route_pending:
+		route_votes[slot] = -1
+		var open: Dictionary = _offer_open[slot]
+		if not open.is_empty() and int(open["kind"]) == OfferKind.ROUTE:
+			_resolve_offer(slot)
 	var guard := 0
 	while not (_offer_open[slot] as Dictionary).is_empty() and guard < 64:
 		_apply_first(slot)
 		guard += 1
 	(_offer_queue[slot] as Array).clear()
 	_settle_offers()
+	_finish_route_vote()
 
 ## The round bookkeeping and the pause flag, from primitive state. A round is
 ## finished when no slot holds a LEVEL offer open or queued; then one owed
@@ -4502,6 +4554,9 @@ func _emit_local_offer() -> void:
 		emit_signal("offer_waiting", _unresolved_count())
 		return
 	var contents: PackedInt32Array = open["contents"]
+	if int(open["kind"]) == OfferKind.ROUTE:
+		emit_signal("route_offered")
+		return
 	if int(open["kind"]) == OfferKind.FUSION:
 		var recipes := RecipeTable.all()
 		var matches := []
@@ -4592,7 +4647,7 @@ func _offer_cards(slot: int, mode: int = CardMode.NORMAL,
 
 func choose_card(m, target) -> void:
 	var open: Dictionary = _offer_open[local_slot]
-	if open.is_empty() or int(open["kind"]) == OfferKind.FUSION:
+	if open.is_empty() or int(open["kind"]) in [OfferKind.FUSION, OfferKind.ROUTE]:
 		return
 	var contents: PackedInt32Array = open["contents"]
 	var want := _encode_card(m)
@@ -4612,7 +4667,7 @@ func choose_card(m, target) -> void:
 
 func decline_card() -> void:
 	var open: Dictionary = _offer_open[local_slot]
-	if open.is_empty() or int(open["kind"]) == OfferKind.FUSION:
+	if open.is_empty() or int(open["kind"]) in [OfferKind.FUSION, OfferKind.ROUTE]:
 		return
 	_local_choice = Vector3i(-2, -1, int(open["seq"]))
 
@@ -4956,6 +5011,7 @@ func _ground_quad(a: Vector2, b: Vector2) -> PackedVector2Array:
 		to_iso(a), to_iso(Vector2(b.x, a.y)), to_iso(b), to_iso(Vector2(a.x, b.y))])
 
 func _draw() -> void:
+	_draw_network_ops()
 	var view := _visible_world_rect()
 	# Terrain first, so it sits under every entity.
 	#
@@ -5424,7 +5480,7 @@ var NOT_IN_MANIFEST: Dictionary = {}
 
 ## Which source file each object key's vars live in, for the structural suite.
 const MANIFEST_FILES := {
-	"run": "run", "rng_sim": "run", "rng_block": "run",
+	"run": "run", "rng_route": "run", "rng_sim": "run", "rng_block": "run",
 	"rng_card0": "run", "rng_card1": "run", "rng_card2": "run", "rng_card3": "run",
 	"enemies": "population", "projectiles": "population", "shards": "population",
 	"botnet": "population", "hostiles": "population",
@@ -5436,6 +5492,10 @@ const MANIFEST_FILES := {
 
 func _build_manifest() -> void:
 	var f: Array = []
+	for prop in ["ops_state", "ops_pos", "ops_start", "ops_end", "ops_progress",
+			"ops_pulse", "ops_alarm", "route_active", "route_pending", "route_votes"]:
+		f.append(["run", prop, SH, "", []])
+	f.append(["rng_route", "state", SH, "", ["_route_rng"]])
 	# --- populations: sliced to count -----------------------------------------
 	for pk in ["enemies", "projectiles", "shards", "botnet", "hostiles"]:
 		f.append([pk, "count", SH, "", []])
@@ -5490,7 +5550,7 @@ func _build_manifest() -> void:
 		f.append(["terrain", prop, SH | VARLEN, "", []])
 	for prop in ["alive", "pos", "progress", "elapsed", "next_at"]:
 		f.append(["blocks", prop, SH, "", []])
-	for prop in ["elapsed", "spawned", "dropped", "boss_spawned", "miniboss_fired"]:
+	for prop in ["elapsed", "spawned", "dropped", "boss_spawned", "miniboss_fired", "rate_mult"]:
 		f.append(["director", prop, SH, "", []])
 	f.append(["director", "@milli", SH | VARLEN, "", ["_milli"]])
 	f.append(["director_rng", "state", SH, "", ["rng"]])
@@ -5537,7 +5597,7 @@ func _build_manifest() -> void:
 			"_pending_splits": "filled and drained within one tick",
 			"_fork_bomb_index": "constant", "_packet_filter_index": "constant",
 			"player_render_pos": "presentation", "_alpha": "presentation",
-			"_sheet": "derived from the descriptor counters",
+			"_sheet": "derived from descriptor counters and program",
 			"alive": "derived: _any_live() after restore",
 			"_route": "local presentation; recomputed from player_pos[local_slot]",
 			"_route_cell": "local presentation; reset so the route recomputes",
@@ -5592,7 +5652,7 @@ func _build_manifest() -> void:
 			"just_voided": "filled and drained within one tick",
 		},
 		"blocks": {},
-		"director": {"waves": "constant", "rate_mult": "derived from the immutable roster"},
+		"director": {"waves": "constant"},
 		"flow_field": {},
 		"grid": {
 			"cell_size": "rebuilt before first read", "_cols": "rebuilt",
@@ -5638,6 +5698,7 @@ func _manifest_object(key: String) -> Variant:
 		"director": return director
 		"director_rng": return director.rng
 		"lockstep": return lockstep
+		"rng_route": return _route_rng
 		"rng_sim": return _rng
 		"rng_block": return _block_rng
 	if key.begins_with("rng_card"):
@@ -6024,6 +6085,20 @@ func _valid_value(key: String, prop: String, v) -> bool:
 		return true
 	if key == "run":
 		match prop:
+			"ops_state":
+				return v >= 0 and v <= 2
+			"route_active":
+				return v >= -1 and v < 3
+			"route_votes":
+				for vote in v:
+					if vote < -1 or vote > 2:
+						return false
+			"ops_progress":
+				return is_finite(v) and v >= 0.0 and v <= 12.0
+			"ops_pulse", "ops_alarm":
+				return is_finite(v) and v >= 0.0 and v <= 5.0
+			"ops_pos", "ops_start", "ops_end":
+				return v.is_finite() and terrain.arenas.any(func(a): return a.has_point(v))
 			"slot_state":
 				for b in v:
 					if b > SlotState.ABSENT:
@@ -6040,6 +6115,8 @@ func _valid_value(key: String, prop: String, v) -> bool:
 				for w in v:
 					if w < 0:
 						return false
+	if key == "director" and prop == "rate_mult":
+		return is_finite(v) and v >= 0.85 and v <= SessionRules.MAX_PLAYERS * 1.25
 	if key == "terrain":
 		match prop:
 			"current":
@@ -6096,3 +6173,165 @@ func _after_restore(after_tick: int, raw: Dictionary) -> void:
 		_session.end_outcome = NetworkSession.Outcome.NONE
 	_emit_local_offer()
 	emit_signal("stats_changed")
+
+
+# ------------------------------------------------ network operations / votes ---
+func program_name(slot: int) -> String:
+	for row in _session.descriptor.get("roster", []):
+		if int(row["slot"]) == slot:
+			return ProgramTable.NAMES[ProgramTable.index(row.get("program", "operator"))]
+	return "OFFLINE"
+
+func _ops_near(at: Vector2, radius: float) -> PackedInt32Array:
+	var near := PackedInt32Array()
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] == SlotState.LIVE and player_pos[s].distance_squared_to(at) <= radius * radius:
+			# A wall cannot contribute a remote hack or a shield tether.
+			if _ops_clear_line(player_pos[s], at):
+				near.append(s)
+	return near
+
+func _ops_clear_line(a: Vector2, b: Vector2, margin: float = 0.0) -> bool:
+	var steps := maxi(1, int(ceil(a.distance_to(b) / 16.0)))
+	for i in range(steps + 1):
+		var p := a.lerp(b, float(i) / float(steps))
+		if terrain.is_solid(p):
+			return false
+		if margin > 0.0:
+			for offset in [Vector2(-margin, -margin), Vector2(margin, -margin), Vector2(margin, margin), Vector2(-margin, margin)]:
+				if terrain.is_solid(p + offset):
+					return false
+	return true
+
+func _place_network_op() -> void:
+	var live := _live_slots()
+	if live.is_empty():
+		return
+	var at: Vector2 = player_pos[live[0]]
+	# Pick a visible, walkable straight approach. Failed placement retries on
+	# a later tick; it never creates an objective behind an impassable wall.
+	for direction in [Vector2.RIGHT, Vector2.DOWN, Vector2.LEFT, Vector2.UP]:
+		var p: Vector2 = at + direction * 320.0
+		var end: Vector2 = p + direction * 240.0 if subnet == 3 else p
+		if not terrain.arena().grow(-100.0).has_point(end):
+			continue
+		if not _ops_clear_line(at, end, 24.0):
+			continue
+		ops_pos = p
+		ops_start = p
+		ops_end = end
+		ops_state = 1
+		return
+
+func _step_network_ops(dt: float) -> void:
+	if phase != Phase.FIGHTING or director.boss_spawned:
+		return
+	if ops_state == 0:
+		if director.elapsed >= 20.0 and tick % 60 == 0:
+			_place_network_op()
+		return
+	var near := _ops_near(ops_pos, OPS_RADIUS)
+	if ops_state == 1:
+		if near.is_empty():
+			return # progress persists; leaving costs time and forfeits protection
+		var rate := 1.0 + 0.40 * float(near.size() - 1)
+		ops_progress = minf(12.0, ops_progress + dt * rate)
+		if subnet == 3:
+			ops_pos = ops_start.lerp(ops_end, ops_progress / 12.0)
+		# Holding ground attracts a bounded reinforcement every four seconds.
+		ops_alarm += dt
+		if ops_alarm >= 4.0:
+			ops_alarm -= 4.0
+			var p := _spawn_at(ops_pos + Vector2(220.0, -180.0))
+			var hp: float = enemy_types[0].integrity * _hp_mult() * (RouteTable.HP[route_active] if route_active >= 0 else 1.0)
+			var i := enemies.spawn(p, Vector2.ZERO, hp, ENEMY_RADIUS, 0)
+			if i >= 0:
+				_spawn_enemy_state(i, hp, enemy_types[0].behaviour)
+				director.spawned += 1
+			else:
+				director.dropped += 1
+		if ops_progress >= 12.0:
+			ops_state = 2 # latch BEFORE rewards can open an offer
+			salvage += 75
+			if subnet != 2:
+				for s in _live_slots():
+					_offer_cards(s, CardMode.RANK_ONLY, null)
+				if subnet == 3:
+					for s in _live_slots():
+						player_health[s] = minf(_eff_integrity(s), player_health[s] + _eff_integrity(s) * 0.20)
+			emit_signal("stats_changed")
+	elif subnet == 2:
+		# Captured relay: nearby players share a shield recharge and combine
+		# their uplinks into a stronger automated pulse. Still useful solo.
+		ops_pulse += dt
+		if ops_pulse < 1.0:
+			return
+		ops_pulse -= 1.0
+		var linked := _ops_near(ops_pos, RELAY_RADIUS)
+		if linked.is_empty():
+			return
+		for s in linked:
+			player_shield[s] = maxf(player_shield[s], minf(18.0, player_shield[s] + 2.0 * linked.size()))
+		for i in enemies.count:
+			if enemies.pos[i].distance_squared_to(ops_pos) <= RELAY_RADIUS * RELAY_RADIUS:
+				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i], 6.0 * linked.size())
+
+func _open_route_vote() -> void:
+	if route_pending or phase != Phase.CLEARED or subnet >= SpawnDirector.CAMPAIGN_SUBNETS:
+		return
+	route_pending = true
+	route_votes.fill(-1)
+	for s in _live_slots():
+		_open_offer(s, OfferKind.ROUTE, PackedInt32Array([0, 1, 2]))
+
+func choose_route(index: int) -> void:
+	var open: Dictionary = _offer_open[local_slot]
+	if open.is_empty() or int(open["kind"]) != OfferKind.ROUTE or index < 0 or index >= 3:
+		return
+	_local_choice = Vector3i(index, -1, int(open["seq"]))
+
+func _finish_route_vote() -> void:
+	if not route_pending:
+		return
+	var live := _live_slots()
+	if live.is_empty():
+		return
+	var counts := PackedInt32Array([0, 0, 0])
+	for s in live:
+		if route_votes[s] < 0:
+			return
+		counts[route_votes[s]] += 1
+	var best := maxi(counts[0], maxi(counts[1], counts[2]))
+	var tied := PackedInt32Array()
+	for i in 3:
+		if counts[i] == best:
+			tied.append(i)
+	route_active = tied[0] if tied.size() == 1 else tied[_route_rng.randi_range(0, tied.size() - 1)]
+	route_pending = false
+	_advance_subnet()
+
+func _draw_network_ops() -> void:
+	if ops_state == 0 or phase != Phase.FIGHTING or director.boss_spawned:
+		return
+	var c := Color(0.3, 0.9, 0.95) if ops_state == 1 else Color(0.4, 1.0, 0.6)
+	if ops_state == 2 and subnet != 2:
+		return
+	var p := to_iso(ops_pos)
+	var half := Vector2(OPS_RADIUS, OPS_RADIUS)
+	draw_colored_polygon(_ground_quad(ops_pos - half, ops_pos + half), Color(c, 0.08))
+	var corners := _ground_quad(ops_pos - half, ops_pos + half)
+	for i in 4:
+		draw_line(corners[i], corners[(i + 1) % 4], Color(c, 0.6), 1.5)
+	draw_rect(Rect2(p - Vector2(24, 38), Vector2(48, 42)), Color(0.025, 0.07, 0.1))
+	draw_rect(Rect2(p - Vector2(24, 38), Vector2(48, 42)), c, false, 2.0)
+	for i in 4:
+		draw_line(p + Vector2(-16, -28 + i * 7), p + Vector2(16, -28 + i * 7), Color(c, 0.65), 2.0)
+	draw_rect(Rect2(p + Vector2(-36, 15), Vector2(72, 5)), Color(0.04, 0.1, 0.13))
+	draw_rect(Rect2(p + Vector2(-36, 15), Vector2(72 * ops_progress / 12.0, 5)), c)
+	draw_string(ThemeDB.fallback_font, p + Vector2(-65, -51), OPS_NAMES[subnet - 1], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, c)
+	if subnet == 3:
+		draw_line(to_iso(ops_pos), to_iso(ops_end), Color(c, 0.5), 2.0)
+		draw_rect(Rect2(to_iso(ops_end) - Vector2(10, 10), Vector2(20, 20)), c, false, 2.0)
+	if ops_state == 2 and subnet == 2:
+		for s in _ops_near(ops_pos, RELAY_RADIUS):
+			draw_line(p, to_iso(player_pos[s]), Color(c, 0.45), 2.0)

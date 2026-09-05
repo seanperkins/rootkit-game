@@ -370,7 +370,11 @@ func the_gate_waits_for_every_live_slot() -> void:
 	_check("one slot through is not enough", r.subnet, 1)
 	r.player_pos[1] = g.end + g.dir * 8.0
 	r._step2c_gate()
-	_check("both through advances", r.subnet, 2)
+	_check("both through opens the vote", r.route_pending, true)
+	_check("the vote holds the old subnet", r.subnet, 1)
+	r._apply_first(0)
+	r._apply_first(1)
+	_check("both votes advance", r.subnet, 2)
 	await _done(r, "the_gate_waits_for_every_live_slot")
 
 ## A completed block heals the holder when they can use it; otherwise the value

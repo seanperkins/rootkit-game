@@ -44,6 +44,8 @@ const NAV_REPEAT_EVERY := 0.16
 var _nav_held := {}
 var _nav_repeat_left := NAV_REPEAT_DELAY
 var _on_decline := false
+var _route_screen := false
+var _route_status: Label
 var _end: Control
 
 func bind(r: Node2D) -> void:
@@ -51,6 +53,7 @@ func bind(r: Node2D) -> void:
 	_build()
 	run.level_up_offered.connect(_on_cards)
 	run.fusion_offered.connect(_on_fusion)
+	run.route_offered.connect(_on_route)
 	run.offer_waiting.connect(_on_waiting)
 	run.run_ended.connect(_on_end)
 	run.stats_changed.connect(_refresh)
@@ -130,6 +133,16 @@ func _build() -> void:
 	alert.offset_bottom = 121
 	alert.add_theme_color_override("font_color", WARN)
 	_hud.add_child(alert)
+
+	var objective_panel := PanelContainer.new()
+	objective_panel.position = Vector2(20, 160)
+	objective_panel.add_theme_stylebox_override("panel", _panel(Color(0.15, 0.4, 0.46)))
+	_hud.add_child(objective_panel)
+	var objective := _mono(13)
+	objective.name = "Objective"
+	objective_panel.name = "ObjectivePanel"
+	objective.custom_minimum_size = Vector2(290, 0)
+	objective_panel.add_child(objective)
 
 	var fps := _mono(11)
 	fps.name = "Fps"
@@ -382,6 +395,23 @@ func _build() -> void:
 	again.pressed.connect(_restart)
 
 func _refresh() -> void:
+	if run != null:
+		var text: String = run.program_name(run.view_slot)
+		text += " / " + (RouteTable.NAMES[run.route_active] if run.route_active >= 0 else "ENTRY NETWORK")
+		if run.phase == run.Phase.FIGHTING and not run.director.boss_spawned:
+			if run.ops_state == 0:
+				text += "\nOPTIONAL JOB / scanning network..."
+			else:
+				var distance: int = int(run.player_pos[run.view_slot].distance_to(run.ops_pos))
+				var heading: Vector2 = run.to_iso(run.ops_pos - run.player_pos[run.view_slot])
+				var bearing := ("N" if heading.y < -40 else "S" if heading.y > 40 else "") + ("E" if heading.x > 40 else "W" if heading.x < -40 else "")
+				text += "\n%s / %dm %s" % [run.OPS_NAMES[run.subnet - 1], distance, bearing]
+				if run.ops_state == 1:
+					text += "\n%s / %d%% / %d linked" % ["Escort node" if run.subnet == 3 else "Hold marked zone", int(run.ops_progress / 12.0 * 100.0), run._ops_near(run.ops_pos, run.OPS_RADIUS).size()]
+					text += "\n" + ["Reward: rank upgrade + 75 salvage", "Reward: shield / pulse + 75 salvage", "Reward: rank upgrade / heal + 75 salvage"][run.subnet - 1]
+				else:
+					text += "\n" + ("ONLINE / stay nearby to link defenses" if run.subnet == 2 else "COMPLETE / rewards acquired")
+		_hud.get_node("ObjectivePanel/Objective").text = text
 	if run == null:
 		return
 	var t: float = run.time_left()
@@ -696,6 +726,8 @@ func _on_cards(cards: Array) -> void:
 	_overlay.visible = true
 
 func _show_cards() -> void:
+	_route_screen = false
+	_decline.visible = true
 	_fusion_buttons = []
 	_recipes.visible = false
 	_overlay.get_node("Title").text = \
@@ -735,6 +767,8 @@ func _show_cards() -> void:
 ## fusion screen — which never clears _pending_fusions and wrongly decrements
 ## pending_levels.
 func _decline_current() -> void:
+	if _route_screen:
+		return
 	if _fusion_buttons.is_empty():
 		run.decline_card()
 	else:
@@ -748,6 +782,8 @@ func _decline_current() -> void:
 ## up — the world is still held — but shows only the wait, never another
 ## player's cards: the HUD renders local_slot and nothing else.
 func _on_waiting(unresolved: int) -> void:
+	_route_screen = false
+	_decline.visible = true
 	_cards_data = []
 	_fusion_buttons = []
 	var row: HBoxContainer = card_row()
@@ -764,6 +800,8 @@ func _on_waiting(unresolved: int) -> void:
 	_overlay.visible = true
 
 func _on_fusion(matches: Array) -> void:
+	_route_screen = false
+	_decline.visible = true
 	_recipes.visible = false
 	_cards_data = []
 	_fusion_buttons = []
@@ -1211,6 +1249,8 @@ func decline_button() -> Button:
 ## Down past the last row lands on decline, and once more wraps to the top, so
 ## every option is reachable without knowing a shortcut exists.
 func _move_row(delta: int) -> void:
+	if _route_screen:
+		return
 	if _nav.is_empty():
 		return
 	var n: int = (_nav[_col] as Array).size()
@@ -1289,7 +1329,7 @@ func _mark(b: Button, on: bool) -> void:
 	var base: String = b.get_meta("base", b.text)
 	var tint: Color = b.get_meta("tint", FG)
 	b.text = (">" + base.substr(1)) if on else base
-	var col := tint if on else tint.darkened(0.45)
+	var col := tint if on else tint.darkened(0.15 if _route_screen else 0.45)
 	for state in ["normal", "hover", "pressed", "focus"]:
 		b.add_theme_stylebox_override(state, _panel(col, 2 if on else 1))
 	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
@@ -1365,6 +1405,8 @@ func _abandon() -> void:
 	run._die(run.local_slot)
 
 func _toggle_recipes() -> void:
+	if _route_screen:
+		return
 	_recipes.visible = not _recipes.visible
 	if _recipes.visible:
 		_recipes_body.text = "\n".join(recipe_lines())
@@ -1439,6 +1481,20 @@ func _nav_repeat(d: float) -> void:
 		_nav_move(held)
 
 func _process(d: float) -> void:
+	if _route_status != null:
+		_route_status.visible = run.route_pending
+		if run.route_pending:
+			var counts := [0, 0, 0]
+			for slot in run._live_slots():
+				var v: int = run.route_votes[slot]
+				if v >= 0:
+					counts[v] += 1
+			_route_status.text = "VOTES / swarm %d   archive %d   corruption %d" % counts
+			var offer: Dictionary = run._offer_open[run.local_slot]
+			if not offer.is_empty() and int(offer["kind"]) == run.OfferKind.ROUTE:
+				var deadline: int = offer["deadline"]
+				if deadline >= 0:
+					_route_status.text += "   /   auto-vote swarm in %ds" % maxi(0, ceili(float(deadline - run.tick) / 60.0))
 	if run != null and _vignette != null:
 		_vignette.color.a = clampf(run._vignette, 0.0, 1.0) * 0.30
 	if _overlay.visible:
@@ -1451,3 +1507,51 @@ func _process(d: float) -> void:
 		# The modal-offer guard above stops refreshing while `paused` is set,
 		# which would leave the pause panel drawn over a frozen HUD.
 		_refresh()
+
+
+func _on_route() -> void:
+	if _route_status == null:
+		_route_status = _mono(15)
+		_route_status.position = Vector2(60, 445)
+		_overlay.add_child(_route_status)
+	_on_waiting(0)
+	_route_screen = true
+	_decline.visible = false
+	_recipes.visible = false
+	_overlay.get_node("Title").text = "  ROUTE VOTE / SUBNET %02d  ::  arrows + enter / most votes win; ties are random" % (run.subnet + 1)
+	var row := card_row()
+	var builds := []
+	for s in run._live_slots():
+		for e in Loadout.MAX_EXPLOITS:
+			builds.append(run.resolved[run._gid(s, e)])
+	for i in 3:
+		var card := PanelContainer.new()
+		card.custom_minimum_size = Vector2(300, 260)
+		var body := VBoxContainer.new()
+		body.add_theme_constant_override("separation", 18)
+		card.add_child(body)
+		var head := _mono(20)
+		head.text = RouteTable.NAMES[i]
+		body.add_child(head)
+		var detail := _mono(16)
+		detail.text = RouteTable.DETAILS[i]
+		body.add_child(detail)
+		var fit := _mono(14)
+		fit.custom_minimum_size = Vector2(275, 64)
+		fit.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		fit.text = "PARTY BUILD\n" + RouteTable.affinity(i, builds)
+		fit.add_theme_color_override("font_color", Color(0.4, 0.9, 1.0))
+		body.add_child(fit)
+		var button := Button.new()
+		button.text = " vote for this route"
+		button.set_meta("base", button.text)
+		button.focus_mode = Control.FOCUS_NONE
+		button.custom_minimum_size.y = 40
+		button.pressed.connect(run.choose_route.bind(i))
+		button.mouse_entered.connect(_hover.bind(i, 0))
+		body.add_child(button)
+		row.add_child(card)
+		_cards.append(card)
+		_nav.append([button])
+	_overlay.visible = true
+	_reset_selection()

@@ -7,10 +7,9 @@ class_name SessionRules extends RefCounted
 
 ## Wire-protocol version. Two peers with different values cannot share a
 ## simulation, so the handshake refuses a mismatch and the descriptor carries it.
-const PROTOCOL := 4   # 2: the input record carries an aim; 3: five exploit rows;
-                      # 4: the session tracks the game BUILD version
-                      # (HELLO/WELCOME/REFUSED), so a skew refuses cleanly
-                      # instead of desyncing.
+# 2: aim records; 3: five exploit rows; 4: build-version handshake;
+# 5: starting programs, network jobs and route voting.
+const PROTOCOL := 5
 
 ## Longest a player display name may be, in characters. A roster row past this is
 ## rejected by descriptor validation rather than truncated — a hostile peer does
@@ -78,7 +77,7 @@ const SNAPSHOT_MAX := 1 << 20
 
 ## Snapshot payload version. A peer refuses any other value rather than guessing
 ## at a layout.
-const SNAPSHOT_VERSION := 1
+const SNAPSHOT_VERSION := 2
 
 ## A peer that has sent this many packets the codec refused is disconnected.
 ## Twenty, not one: a single corrupt datagram is noise, twenty is a bad actor
