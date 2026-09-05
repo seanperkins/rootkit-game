@@ -271,6 +271,7 @@ func _draw() -> void:
 	for gi in terrain.gates.size():
 		var g: Terrain.Gate = terrain.gates[gi]
 		var cr: Rect2 = g.corridor
+		if not cr.has_area(): continue
 		if not view.intersects(cr):
 			continue
 		var along := Vector2(absf(g.dir.x), absf(g.dir.y))

@@ -88,10 +88,12 @@ func _arm_loadouts() -> void:
 ## Top the field up to the enemy cap around the party, deterministically:
 ## spawn positions come from the run's own seeded stream.
 func _fill() -> void:
-	var types: int = run.enemy_types.size() - 1      # never ICE
+	var ordinary := []
+	for i in run.enemy_types.size():
+		if not EnemyTable.BOSS_IDS.has(run.enemy_types[i].id): ordinary.append(i)
 	var k: int = run.enemies.count
 	while run.enemies.count < run.MAX_ENEMIES:
-		var ti: int = k % types
+		var ti: int = ordinary[k % ordinary.size()]
 		var b = run.enemy_types[ti]
 		var a := float(k) * 2.399963
 		var slot := k % SessionRules.MAX_PLAYERS

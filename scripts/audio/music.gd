@@ -36,7 +36,18 @@ const BPM_HOT := 124.0
 const STEPS_PER_BAR := 8
 const VOICES := 8
 
-var run: Node2D
+var run: Node2D:
+	set(value):
+		if is_instance_valid(run): run.feel.drain_voice()
+		run = value
+		if is_instance_valid(run): run.feel.drain_voice()
+
+const VOICE_DEGREES := [0, 0, 4, 0, 2, 4, 0, 2, 4, 7]
+const VOICE_OCTAVES := [0, 1, 2, 0, 1, 2, 1, 1, 1, 1]
+var _ensemble: Array[AudioStreamPlayer] = []
+var _voice_bank: Dictionary = {}
+var _ensemble_allowed := false
+static var _listeners: Array[WeakRef] = []
 
 var _bass: Array[AudioStreamWAV] = []
 var _arp: Array[AudioStreamWAV] = []
@@ -70,8 +81,24 @@ static func apply_volume(linear: float) -> void:
 	var idx := AudioServer.get_bus_index(BUS)
 	if idx < 0:
 		return
+	# Clear on BOTH mute edges, even if both happen between beat steps.
+	if AudioServer.is_bus_mute(idx) != (linear <= 0.0):
+		var keep: Array[WeakRef] = []
+		for listener in _listeners:
+			var node = listener.get_ref()
+			if node != null:
+				node._discard_ensemble()
+				keep.append(listener)
+		_listeners = keep
 	AudioServer.set_bus_mute(idx, linear <= 0.0)
 	AudioServer.set_bus_volume_db(idx, linear_to_db(maxf(linear, 0.0001)))
+
+static func semitones(degree: int, octave: int = 0) -> int:
+	return SCALE[posmod(degree, SCALE.size())] + 12 * (octave + int(floor(float(degree) / SCALE.size())))
+
+static func voice_pitch(index: int, root: int) -> float:
+	if index == Feel.VOICE_CHASE: return 1.0
+	return pow(2.0, float(semitones(root + VOICE_DEGREES[index], VOICE_OCTAVES[index]) - 12 * VOICE_OCTAVES[index]) / 12.0)
 
 func _hz(degree: int, octave: int) -> float:
 	var semis: float = float(SCALE[degree % SCALE.size()]) \
@@ -109,7 +136,16 @@ func _ready() -> void:
 		p.bus = BUS
 		add_child(p)
 		_players.append(p)
+	_voice_bank = Synth.build_bank()
+	for i in Feel.VOICE_COUNT:
+		var player := AudioStreamPlayer.new()
+		player.bus = BUS
+		add_child(player)
+		_ensemble.append(player)
+	_listeners.append(weakref(self))
 	apply_volume(float(SaveGame.prefs().get("volume_music", 0.5)))
+	_discard_ensemble()
+	_ensemble_allowed = ensemble_allowed()
 
 func _play(stream: AudioStreamWAV, pitch: float = 1.0) -> void:
 	if stream == null:
@@ -121,7 +157,8 @@ func _play(stream: AudioStreamWAV, pitch: float = 1.0) -> void:
 	p.play()
 
 func _process(dt: float) -> void:
-	if run == null:
+	_sync_ensemble()
+	if not is_instance_valid(run):
 		return
 	# The frame delta, clamped. The hitstop no longer touches a process-global
 	# time scale — it freezes the world for whole ticks while presentation clocks
@@ -132,7 +169,7 @@ func _process(dt: float) -> void:
 
 	# Silence rather than a sad cadence: the run summary is the beat, and music
 	# under it would be scoring a defeat the player already feels.
-	if not run.alive:
+	if not run.alive or run.won or run._session.ended:
 		return
 
 	_clock += udt
@@ -143,6 +180,11 @@ func _process(dt: float) -> void:
 		spb = 60.0 / _bpm * 0.5
 
 func _on_step() -> void:
+	_sync_ensemble()
+	# Hitch policy: the first catch-up step takes the pending mask; later
+	# steps in that same burst are empty. Events are never backdated.
+	var mask: int = run.feel.drain_voice() if is_instance_valid(run) else 0
+	if not is_instance_valid(run): return
 	var in_bar := _step % STEPS_PER_BAR
 	if in_bar == 0:
 		# Sampled once a bar. Tempo included — a continuously-lerped BPM
@@ -152,6 +194,14 @@ func _on_step() -> void:
 
 	var bar := (_step / STEPS_PER_BAR) % PROGRESSION.size()
 	var root: int = PROGRESSION[bar]
+	if ensemble_allowed():
+		for index in Feel.VOICE_COUNT:
+			if mask & (1 << index) == 0: continue
+			var pool: Array = _voice_bank[Feel.VOICE_IDS[index]]
+			var player := _ensemble[index]
+			player.stream = pool[_rng.randi() % pool.size()]
+			player.pitch_scale = voice_pitch(index, root)
+			player.play()
 
 	# BASS — always. This is the layer that makes it music rather than an
 	# effects bed, so it plays at zero threat too.
@@ -182,3 +232,27 @@ func _on_step() -> void:
 		_play(_pedal[_rng.randi() % _pedal.size()])
 
 	_step += 1
+
+func ensemble_allowed() -> bool:
+	if not is_instance_valid(run): return false
+	var bus := AudioServer.get_bus_index(BUS)
+	return bus >= 0 and not AudioServer.is_bus_mute(bus) and run.alive and not run.won \
+		and not run._session.ended and not run._session.terminated and not run.paused \
+		and run.transfer_ticks == 0 and not (run.user_paused and run._session.role == NetworkSession.Role.SOLO)
+
+func _discard_ensemble() -> void:
+	if is_instance_valid(run): run.feel.drain_voice()
+	for player in _ensemble: player.stop()
+
+func _sync_ensemble() -> void:
+	var allowed := ensemble_allowed()
+	if not allowed or allowed != _ensemble_allowed: _discard_ensemble()
+	_ensemble_allowed = allowed
+
+func _exit_tree() -> void:
+	_discard_ensemble()
+	var keep: Array[WeakRef] = []
+	for listener in _listeners:
+		var node = listener.get_ref()
+		if node != null and node != self: keep.append(listener)
+	_listeners = keep

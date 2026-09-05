@@ -1,0 +1,8 @@
+Godot Engine v4.7.stable.official.5b4e0cb0f - https://godotengine.org
+
+host_relayed: OK
+room code: 'FKFFY7' after 132 ms (error '')
+join_relayed: OK
+host saw [2], joiner saw [1] after 52 ms
+joiner->host record: true in 27 ms
+host->joiner bundle: true in 23 ms

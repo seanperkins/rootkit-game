@@ -38,6 +38,7 @@ const PARTY_OFFSETS := [Vector2.ZERO, Vector2(2000.0, 2000.0),
 ## (with or without the dash flee; with it the hit mean is higher, 2.70
 ## against 1.95), so the band is 190/190: flee inside 190 as the old kite
 ## did, and HOLD facing with zero records once nothing is inside it.
+var _objective_nav := CampaignNavigation.new()
 var _kite_fleeing := false
 var _kite_hold := 0
 const KITE_FLEE_IN := 190.0
@@ -53,6 +54,7 @@ const KITE_DASH_RANGE := 300.0
 func reset() -> void:
 	_kite_fleeing = false
 	_kite_hold = 0
+	_objective_nav = CampaignNavigation.new()
 	_next.clear()
 
 ## slot -> the first tick not yet submitted for it. Only used when drive() is
@@ -72,6 +74,7 @@ func party_run(tree: SceneTree) -> Node2D:
 	g.configure_session(NetworkSession.create(desc, 0, NetworkSession.Role.HOST))
 	tree.root.add_child(g)
 	await tree.process_frame
+	g.route_offered.connect(func(): g.choose_route(0))
 	return g
 
 ## Every slot carries the worst-case loadout the stress block uses — packet,
@@ -151,9 +154,8 @@ func drive(g: Node2D, t: int, lead: int = 0) -> void:
 	# slots alive: a teammate that dies shrinks the window and lightens the
 	# tick, and a gate that gets easier as the fixture takes damage is not
 	# measuring the worst case it claims to.
-	# Through a gate the party RIDES on slot 0: the advance needs every
-	# LIVE slot past the corridor's end plane, and a slot pinned 2000
-	# units off never gets there. The offsets return with the next fight.
+	# During escape the party rides on slot 0 so all LIVE slots can gather
+	# on the teleporter. Full-leash offsets return in the next fight.
 	var walking: bool = g.phase == g.Phase.CLEARED and g.terrain.gate() != null and g.terrain.gate().open
 	for s in range(1, SessionRules.MAX_PLAYERS):
 		g.player_pos[s] = g.player_pos[0] + (Vector2.ZERO if walking else PARTY_OFFSETS[s])
@@ -166,7 +168,7 @@ func drive(g: Node2D, t: int, lead: int = 0) -> void:
 		var c := Vector3i(-1, -1, -1)
 		var open: Dictionary = g._offer_open[s]
 		if not open.is_empty():
-			c = Vector3i(0, 0, int(open["seq"]))
+			c = Vector3i(0, -1 if int(open["kind"]) == g.OfferKind.ROUTE else 0, int(open["seq"]))
 		# A slowly rotating unit vector, one turn per 600 ticks, so the
 		# pinned slots' facing sweeps and their forward rows fire in every
 		# direction. The drift it would cause is erased by the force-write
@@ -204,6 +206,10 @@ func drive(g: Node2D, t: int, lead: int = 0) -> void:
 ## survival rests on its aura and its homing row; the forward packet is drain
 ## coverage, which the load pin measures.
 func kite(g: Node2D) -> Vector2:
+	if g.subnet == 1 and g.director.boss_spawned and g._sentinel_spires_left > 0:
+		for k in g.terrain.spire_points.size():
+			if g._spire_captured[k] == 0:
+				return _objective_nav.toward(g.terrain, g.player_pos[g.local_slot], g.terrain.spire_points[k])
 	# The CLEARED branch stays FIRST and unconditional: a cleared subnet has
 	# nothing inside 120, and a kite that held there would never reach the
 	# gate. Standing still in CLEARED would shrink the gate's coverage the same
@@ -211,14 +217,9 @@ func kite(g: Node2D) -> Vector2:
 	if g.phase == g.Phase.CLEARED:
 		var gate = g.terrain.gate()
 		if gate != null and gate.open:
-			# The mouth first, then the far end: a straight line to the end
-			# from anywhere but the mouth's row runs into the arena's edge and
-			# oscillates there (measured: 5400 idle ticks in subnet 1).
-			var here: Vector2 = g.player_pos[g.local_slot]
-			var target: Vector2 = gate.end
-			if (here - gate.pos).dot(gate.dir) < 0.0 and here.distance_to(gate.pos) > Terrain.GATE_RADIUS * 0.5:
-				target = gate.pos
-			return _around_walls(g, (target - here).normalized())
+			# The campaign teleporter is inside the arena. Follow connected
+			# cells: local wall avoidance can stall after the capture circuit.
+			return _objective_nav.toward(g.terrain, g.player_pos[g.local_slot], gate.pos)
 	var me: Vector2 = g.player_pos[g.local_slot]
 	var nearest := -1
 	var nd := INF

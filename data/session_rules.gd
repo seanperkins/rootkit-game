@@ -9,7 +9,9 @@ class_name SessionRules extends RefCounted
 ## simulation, so the handshake refuses a mismatch and the descriptor carries it.
 # 2: aim records; 3: five exploit rows; 4: build-version handshake;
 # 5: starting programs, network jobs and route voting.
-const PROTOCOL := 5
+# 6: generated destinations, frozen route ballots, transfer ticks and hidden rooms.
+# 7: themed boss state and progressive late-level XP costs.
+const PROTOCOL := 7
 
 ## Longest a player display name may be, in characters. A roster row past this is
 ## rejected by descriptor validation rather than truncated — a hostile peer does
@@ -77,7 +79,8 @@ const SNAPSHOT_MAX := 1 << 20
 
 ## Snapshot payload version. A peer refuses any other value rather than guessing
 ## at a layout.
-const SNAPSHOT_VERSION := 2
+# 4: Sentinel captures, Worm.exe regeneration and Root Cause phases.
+const SNAPSHOT_VERSION := 4
 
 ## A peer that has sent this many packets the codec refused is disconnected.
 ## Twenty, not one: a single corrupt datagram is noise, twenty is a bad actor

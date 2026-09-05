@@ -25,7 +25,7 @@ func _process(_dt: float) -> bool:
 			_label(center + run.from_iso(Vector2(-290 + col * 170, -220)),
 				"%d%%" % int(health[col] * 100), 15)
 		for row in 5:
-			var ti: int = [EnemyTable.ICE, 8, 9, 10, 11][row]
+			var ti: int = [EnemyTable.boss_index(run.subnet), 8, 9, 10, 11][row]
 			var y := -165 + row * 95
 			_label(center + run.from_iso(Vector2(-450, y + 5)), String(run.enemy_types[ti].id))
 			for col in health.size():

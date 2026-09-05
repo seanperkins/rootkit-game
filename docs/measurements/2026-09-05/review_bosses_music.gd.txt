@@ -1,0 +1,102 @@
+extends SceneTree
+const Music = preload("res://scripts/audio/music.gd")
+var g: Node2D
+var music: Node
+
+func snap(label: String, focus: Vector2) -> void:
+	g.player_prev_pos = g.player_pos.duplicate()
+	g.player_render_pos = g.player_pos.duplicate()
+	g._camera.position = g.to_iso(focus)
+	g.enemies.prev_pos = g.enemies.pos.duplicate()
+	g._depth_sort()
+	g._update_renderers()
+	g.queue_redraw()
+	for i in 5: await process_frame
+	await RenderingServer.frame_post_draw
+	root.get_texture().get_image().save_png("res://.tmp/boss-" + label + ".png")
+
+func _initialize() -> void:
+	if DisplayServer.get_name() == "headless":
+		printerr("Windowed rendering required")
+		quit(1)
+		return
+	SaveGame.PATH = "user://boss_review.json"
+	SaveGame.BAK = "user://boss_review.json.bak"
+	SaveGame.TMP = "user://boss_review.json.tmp"
+	SaveGame.use_fresh_state()
+	await process_frame
+	g = load("res://scenes/run.tscn").instantiate()
+	g.external_drive = true
+	g.input_override = Vector2.ZERO
+	root.add_child(g)
+	for child in g.get_children():
+		if child.get_script() == Music: music = child
+	music.set_process(false)
+	g.director.elapsed = SpawnDirector.SUBNET_SECONDS
+	g._step1_spawn(0)
+	g._arriving.fill(0)
+	g.player_pos[0] = Vector2(0, 180)
+	await snap("sentinel-core", Vector2.ZERO)
+	g.player_pos[0] = g.terrain.spire_points[0]
+	g._step2f_boss(3.5)
+	await snap("sentinel-capture", g.player_pos[0])
+	for k in 4:
+		g.player_pos[0] = g.terrain.spire_points[k]
+		g._step2f_boss(g.SENTINEL_CAPTURE_TIME)
+	g._step2f_boss(SessionRules.TICK_DT)
+	g.player_pos[0] = Vector2(0, 180)
+	await snap("sentinel-exposed", Vector2.ZERO)
+	g._advance_subnet()
+	g.director.elapsed = SpawnDirector.SUBNET_SECONDS
+	g._step1_spawn(0)
+	g._arriving.fill(0)
+	g.enemies.pos[0] = g.player_pos[0] + Vector2(140, -100)
+	for i in range(1, g.enemies.count): g.enemies.pos[i] = g.enemies.pos[0] + Vector2(i * 55, i * 12)
+	await snap("worm", g.player_pos[0] + Vector2(180, 0))
+	g._advance_subnet()
+	g.director.elapsed = SpawnDirector.SUBNET_SECONDS
+	g._step1_spawn(0)
+	g._arriving.fill(0)
+	g.enemies.pos[0] = g.player_pos[0] + Vector2(150, -100)
+	g._refresh_live_cache()
+	g._target_slot = 0
+	g.enemies.integrity[0] = g._spawn_hp[0] * 0.5
+	g._root_cause_behave(0, 46, Vector2(200, 0), 0)
+	g._root_cause_behave(0, 46, Vector2(200, 0), 1.7)
+	await snap("root-barrage", g.player_pos[0])
+	g.enemies.integrity[0] = g._spawn_hp[0] * 0.2
+	g._root_cause_behave(0, 46, Vector2(200, 0), 0)
+	await snap("root-charge", g.player_pos[0])
+	# The real Music bus/mixer records isolated timbres, all four harmonies,
+	# then repeated SUPPORT notes at the fastest supported subdivision.
+	var bus := Music.ensure_bus()
+	var capture := AudioEffectRecord.new()
+	AudioServer.add_bus_effect(bus, capture)
+	for p in music._players: p.volume_db = -80
+	Music.apply_volume(0.8)
+	music._sync_ensemble()
+	capture.set_recording_active(true)
+	for index in range(0, 7):
+		print("LISTEN voice ", Feel.VOICE_IDS[index])
+		for note in 3:
+			g.feel.emit_voice(index)
+			music._on_step()
+			await create_timer(0.30).timeout
+		await create_timer(0.4).timeout
+	for root_bar in range(4):
+		music._step = root_bar * Music.STEPS_PER_BAR
+		print("LISTEN chord ", Music.PROGRESSION[root_bar])
+		for note in 4:
+			for index in range(6, 10): g.feel.emit_voice(index)
+			music._on_step()
+			await create_timer(0.30).timeout
+	for note in 12:
+		g.feel.emit_voice(Feel.VOICE_SUPPORT)
+		music._on_step()
+		await create_timer(60.0 / Music.BPM_HOT * 0.5).timeout
+	await create_timer(0.5).timeout
+	capture.set_recording_active(false)
+	capture.get_recording().save_to_wav("res://.tmp/ensemble-review.wav")
+	print("REVIEW_COMPLETE")
+	g.free()
+	quit()

@@ -3,6 +3,15 @@
 Date: 2026-09-04. Source: `ideas.md` and the one-question-at-a-time interview.
 Status: the user approved the instrument mapping, bounce numbers, and three-boss mapping. This is a design package, not an implementation report. Gameplay source remains unchanged by this documentation pass.
 
+## Implementation update — September 5
+
+Weapons/trigger ownership and reserved spawns are implemented. The shared
+route/teleporter pass now includes seven route categories, animated upload and
+arrival, larger main arenas and hidden archive rooms. The user explicitly
+replaced the pre-generated connected campaign with one loaded subnet at a time.
+See [the implementation record](../../teleporter-subnets.md). Leveling pace,
+action-driven music and the three bespoke bosses remain separate work.
+
 ## Read the detailed pairs
 
 ### Combat and progression
@@ -177,3 +186,5 @@ Generalize boss identity and clear/win checks through an explicit current-subnet
 5. Run the repository runner after source edits settle, exercise real windowed/audio/controller/co-op scenarios, and re-measure combined campaign balance. Finish maintained documentation and remove disposable probes only after successful smoke.
 
 No code, build, gameplay, audio-listening or multiplayer verification is claimed by this design approval. The current pass checks document links, coverage, source facts and numerical examples only. Implementation needs the evidence named in each plan.
+
+Implementation update, 2026-09-05: progression, themed bosses and the action ensemble are now present. See [implementation and validation](../../progression-bosses-music.md) for measured outcomes, rejected XP candidates and outstanding checks; design approval itself is not test evidence.

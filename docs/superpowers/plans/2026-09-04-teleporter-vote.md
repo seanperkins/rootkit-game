@@ -1,6 +1,8 @@
 # Teleporter vote implementation plan
 
-Date: 2026-09-04. Status: planning only; example card bundles/magnitudes remain recommendations.
+Date: 2026-09-04. Historical plan. The September 5 user decision supersedes the
+preplanned campaign/bridge work with one loaded subnet, larger arenas and hidden
+archives. See [implementation record](../../teleporter-subnets.md).
 
 Spec: [Teleporter and vote](../specs/2026-09-04-teleporter-vote-design.md).
 

@@ -8,8 +8,8 @@ extends Node2D
 ## mid-tile would put every arena edge part way through a lattice cell — which
 ## is exactly the seam the backdrop used to draw.
 ##
-## 74 x 46 tiles. ARENA_ORIGIN is derived, never written twice.
-const ARENA_SIZE := Vector2(7104, 4416)
+## 86 x 52 tiles. ARENA_ORIGIN is derived, never written twice.
+const ARENA_SIZE := Vector2(8256, 4992)
 const ARENA_ORIGIN := -ARENA_SIZE * 0.5
 const CELL := 32.0
 
@@ -327,6 +327,12 @@ var ops_pulse := 0.0
 var ops_alarm := 0.0
 var route_active := -1
 var route_pending := false
+var route_candidates := PackedInt32Array([0, 1, 2])
+var route_voters := PackedByteArray([0, 0, 0, 0])
+var route_selected := -1
+## Ninety consumed ticks: charge, transfer at 36 remaining, then materialize.
+var transfer_ticks := 0
+var room_claimed := false
 var route_votes := PackedInt32Array([-1, -1, -1, -1])
 var _route_rng := RandomNumberGenerator.new()
 const OPS_RADIUS := 90.0
@@ -484,19 +490,52 @@ var _banked: Array = []
 
 var level := 1
 var xp := 0
+const SENTINEL_CAPTURE_RADIUS := 90.0
+const SENTINEL_CAPTURE_TIME := 7.0
+const SENTINEL_DRAIN_RATE := 1.5
+const WORM_HEAD_INTEGRITY_BASE := 550.0
+const WORM_SEGMENT_INTEGRITY_BASE := 80.0
+const WORM_REGEN_INTERVAL := 12.0
+const WORM_REGEN_BUDGET := 4
+const WORM_MAX_SEGMENTS_BOSS := 10
+const WORM_HEAD_REGEN_FRAC := 0.15
+# The original 15 saturated nearly every beat in a busy four-player field.
+# At 210 the same measured force crossings occupied 95/225 subdivisions,
+# with gaps between bursts. This threshold affects presentation only.
+const CHASE_JOSTLE_FORCE := 210.0
+const FLANK_COMMIT_BIAS := 0.5
+var _chase_jostling := PackedByteArray()
+var _flank_arcing := PackedByteArray()
+var _boss_row := -1
+var _sentinel_spires_left := 0
+var _sentinel_exposed := true
+var _spire_progress := PackedFloat64Array([0, 0, 0, 0])
+var _spire_captured := PackedByteArray([0, 0, 0, 0])
+var _worm_regens_left := 0
+var _worm_regen_timer := 0.0
+var _worm_boss_hit_this_interval := false
+var _root_cause_phase := 0
+var _worm_boss_regen_flash := 0.0
 var xp_needed := _xp_for(1)
 var salvage := 0
 ## Kills and flips are attributed PER SLOT; salvage, level and XP are shared.
 var kills: PackedInt32Array
 var flips: PackedInt32Array
 var pending_levels := 0
-var paused := false
+var paused := false:
+	set(value):
+		if paused != value: _clear_voice_edges()
+		paused = value
 ## The PLAYER's pause, kept separate from `paused` on purpose. `paused` means
 ## "a modal offer is open" and four sites clear it unconditionally
 ## (choose_fusion, decline_fusion, choose_card, decline_card); sharing one bool
 ## would let a card decline release a pause it never took, and ui.gd's
 ## `not run.paused` force-hide would then strand a pending fusion.
-var user_paused := false
+var user_paused := false:
+	set(value):
+		if user_paused != value and _session != null and _session.role == NetworkSession.Role.SOLO:
+			_clear_voice_edges()
+		user_paused = value
 var pickup_radius: PackedFloat32Array
 ## Presentation state. Pure, and deliberately not part of any simulation step.
 var feel := Feel.new()
@@ -989,9 +1028,6 @@ func _return(slot: int, t: int) -> void:
 		slot_state[slot] = SlotState.LIVE
 		lockstep.mark_live(slot)
 		lockstep.prime_slot(slot, t + 1, t + lockstep.delay)
-		if route_pending:
-			route_votes[slot] = -1
-			_open_offer(slot, OfferKind.ROUTE, PackedInt32Array([0, 1, 2]))
 		# Somebody is LIVE again: whatever no-LIVE verdict this peer held is
 		# void. A win stands.
 		if _session.end_outcome == NetworkSession.Outcome.LOSS:
@@ -1463,6 +1499,11 @@ func _ready() -> void:
 		cr.seed = base + s * _SEED_CARD_STEP
 		_card_rng[s] = cr
 	enemy_types = EnemyTable.all()
+	_boss_row = EnemyTable.boss_index(subnet)
+	for number in range(1, SpawnDirector.CAMPAIGN_SUBNETS + 1):
+		if EnemyTable.boss_index(number) < 0:
+			_refuse_generation("Missing required boss identity")
+			return
 	thresholds = PackedFloat32Array()
 	thresholds.resize(enemy_types.size())
 	_refresh_thresholds()
@@ -1505,11 +1546,9 @@ func _ready() -> void:
 	for ri in recipes.size():
 		_recipe_index[recipes[ri].fused.id] = ri
 	_build_manifest()
-	var tseed: int = base + _SEED_TERRAIN
-	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, tseed)
-	# Generation is descriptor-owned; local identity never picks its anchor.
-	terrain.generate(tseed, Vector2.ZERO)
-	var spawn_error := terrain.validate_spawners(PLAYER_RADIUS)
+	terrain = _make_subnet_terrain(subnet, route_active)
+	var spawn_error := terrain.generation_error
+	if spawn_error.is_empty(): spawn_error = terrain.validate_spawners(PLAYER_RADIUS)
 	if not spawn_error.is_empty():
 		_refuse_generation(spawn_error)
 		return
@@ -1538,6 +1577,8 @@ func _ready() -> void:
 	_orbit_phase = PackedFloat32Array(); _orbit_phase.resize(MAX_PROJECTILES)
 	_slow_left = PackedFloat32Array(); _slow_left.resize(MAX_ENEMIES)
 	_ai_phase = PackedInt32Array(); _ai_phase.resize(MAX_ENEMIES)
+	_chase_jostling.resize(MAX_ENEMIES)
+	_flank_arcing.resize(MAX_ENEMIES)
 	_ai_timer = PackedFloat32Array(); _ai_timer.resize(MAX_ENEMIES)
 	_ai_aim = PackedVector2Array(); _ai_aim.resize(MAX_ENEMIES)
 	_enemy_target = PackedInt32Array(); _enemy_target.resize(MAX_ENEMIES)
@@ -1988,7 +2029,9 @@ func _physics_process(_dt: float) -> void:
 	# lockstep, the world and the hashes keep going, because one player's menu
 	# cannot stop three others' game.
 	var solo := _session.role == NetworkSession.Role.SOLO
-	if hitstop_ticks > 0:
+	if transfer_ticks > 0:
+		_step_transfer()
+	elif hitstop_ticks > 0:
 		hitstop_ticks -= 1
 	elif not (paused or (user_paused and solo) or not alive or won or _session.ended):
 		_step_world()
@@ -2067,8 +2110,11 @@ func _step_world() -> void:
 		_step1_spawn(sdt)
 	_step2_integrate(sdt)
 	_step2c_gate()
+	if route_pending:
+		return
 	_step2d_collapse(sdt)
 	_step2e_blocks(sdt)
+	_step2f_boss(sdt)
 	_step_network_ops(sdt)
 	_step2b_zones(sdt)
 	_step3_rebuild()
@@ -2335,6 +2381,8 @@ func _step1_spawn(dt: float) -> void:
 		return
 	for s in director.step(dt, player_pos[ring_slot], SPAWN_RING):
 		var ti: int = s[0]
+		if route_active == 4 and (director.spawned + director.dropped) % 3 == 2:
+			ti = EnemyTable.index_of(&"tracer")
 		s[1] = _spawn_at(s[1])
 		if ti == WORM_TYPE:
 			if _spawn_worm(s[1]):
@@ -2351,7 +2399,7 @@ func _step1_spawn(dt: float) -> void:
 		else:
 			_spawn_enemy_state(idx, hp, t.behaviour)
 			director.spawned += 1
-	for mb in director.due_minibosses(dt):
+	for mb in director.due_minibosses(dt, 25.0 if route_active == 5 else 0.0):
 		_spawn_miniboss(mb)
 	if director.should_spawn_boss():
 		director.boss_spawned = true
@@ -2365,17 +2413,7 @@ func _step1_spawn(dt: float) -> void:
 			enemies.despawn(enemies.count - 1)
 		_worm_trail.clear()
 		_worm_cursor.clear()
-		var b = enemy_types[EnemyTable.ICE]
-		var a := _rng.randf() * TAU
-		var bi := enemies.spawn(
-			_spawn_at(player_pos[ring_slot] + DetMath.unit(a) * 420.0),
-			Vector2.ZERO, b.integrity * _hp_mult(), 48.0, EnemyTable.ICE)
-		assert(bi >= 0, "boss failed to spawn into a freshly emptied pool")
-		# The arena was just emptied for mechanical reasons; the side effect is
-		# a set-piece beat — empty ground, a held second, then the thing walks
-		# in. ICE arrives into that rather than into a swarm.
-		_arriving[bi] = ARRIVAL_TOTAL
-		feel.emit("ice_charge")
+		_spawn_boss(ring_slot)
 		emit_signal("stats_changed")
 
 ## Longer worms later in the run: two segments at the start, up to six by the
@@ -2414,7 +2452,7 @@ func boss_present() -> bool:
 		if _arriving[i] > 0.0:
 			continue
 		var ti := enemies.type_index[i]
-		if ti == EnemyTable.ICE or _is_miniboss(ti):
+		if _is_boss_type(ti) or _is_miniboss(ti):
 			return true
 	return false
 
@@ -2560,9 +2598,10 @@ func _step2_integrate(dt: float) -> void:
 			# The crossing, not the value: one flash per arrival rather than one
 			# per frame of the pop.
 			if was > ARRIVAL_POP and _arriving[i] <= ARRIVAL_POP:
-				var ice := enemies.type_index[i] == EnemyTable.ICE
+				var ice := _is_boss_type(enemies.type_index[i])
 				feel.add_trauma(0.8 if ice else 0.5)
-				feel.emit("ice_arrive" if ice else "miniboss_arrive")
+				if ice: _boss_sound(1)
+				else: feel.emit("miniboss_arrive")
 				_fx.append([FxKind.RIPPLE, enemies.pos[i], Vector2.RIGHT, 40.0, FX_LIFE * 5.0, Color(2.4, 2.2, 2.0)])
 			# THE pass that matters. _behave dispatches to _charge / _ranged /
 			# _pulse / _support / _ambush / _flank, so without this gate an
@@ -2572,6 +2611,10 @@ func _step2_integrate(dt: float) -> void:
 			# involved at all. Skipping _step4_steer instead — as an earlier
 			# draft of the spec proposed — would have stopped none of that.
 			enemies.vel[i] = Vector2.ZERO
+			continue
+		if not _sentinel_exposed and enemies.type_index[i] == _boss_row:
+			enemies.vel[i] = Vector2.ZERO
+			enemies.force[i] = Vector2.ZERO
 			continue
 		var t = enemy_types[enemies.type_index[i]]
 		enemies.vel[i] = _behave(i, t, dt) + enemies.force[i] + _knock[i]
@@ -2598,6 +2641,9 @@ func _step2_integrate(dt: float) -> void:
 		if wid == 0 or _worm_seg[i] == 0:
 			continue
 		if not _worm_trail.has(wid):
+			continue
+		if _arriving[i] > 0.0:
+			_arriving[i] = maxf(0.0, _arriving[i] - dt)
 			continue
 		var prev := enemies.pos[i]
 		enemies.pos[i] = _worm_sample(wid, _worm_seg[i] * WORM_SEG_STEPS)
@@ -2738,6 +2784,7 @@ func _leash(slot: int, proposed: Vector2) -> Vector2:
 	return out
 
 func _age_fx(dt: float) -> void:
+	_worm_boss_regen_flash = maxf(0.0, _worm_boss_regen_flash - dt)
 	for f in enemies.count:
 		if _hit_flash[f] > 0.0:
 			_hit_flash[f] = maxf(0.0, _hit_flash[f] - dt * HIT_FLASH_DECAY)
@@ -2760,7 +2807,7 @@ func _step3_rebuild() -> void:
 	_counts[Grid.Pop.SHARD] = shards.count
 	# Rebuilt whole, every tick.
 	for i in enemies.count:
-		_no_grid[i] = 1 if (_submerged[i] != 0 or _arriving[i] > 0.0) else 0
+		_no_grid[i] = 1 if (_submerged[i] != 0 or _arriving[i] > 0.0 or (not _sentinel_exposed and enemies.type_index[i] == _boss_row)) else 0
 	_skips[Grid.Pop.ENEMY] = _no_grid
 	grid.set_window(_party_window())
 	grid.rebuild(_pos_arrays, _counts, _skips)
@@ -2824,6 +2871,10 @@ func _step4_steer() -> void:
 			var dl := d.length()
 			if dl > 0.001:
 				push += d / dl * (SEPARATION_RADIUS - dl)
+		if enemy_types[enemies.type_index[i]].behaviour == EnemyTable.Behaviour.CHASE:
+			var over := (push * 2.2).length_squared() > CHASE_JOSTLE_FORCE * CHASE_JOSTLE_FORCE
+			if over and _chase_jostling[i] == 0: feel.emit_voice(Feel.VOICE_CHASE)
+			_chase_jostling[i] = 1 if over else 0
 		enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos[ts] - here)
 		i += STEER_SLICES
 
@@ -2884,6 +2935,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 		return
 	var at := player_pos[owner]
 	feel.emit(Synth.fire_id(r.vector_kind))
+	feel.emit_voice(Feel.VOICE_PLAYER0 + owner)
 	feel.kick(owner)
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	# Before the match, deliberately. CHAIN returns early when it has no
@@ -3316,6 +3368,8 @@ func _die(slot: int) -> void:
 ## previous occupant was slowed. A stale slow is a live bug, not a cosmetic one:
 ## it makes a newly spawned enemy crawl for no reason the player can see.
 func _clear_ai(i: int) -> void:
+	_chase_jostling[i] = 0
+	_flank_arcing[i] = 0
 	_knock[i] = Vector2.ZERO
 	_split_gen[i] = 0
 	_rewarded[i] = 0
@@ -3342,6 +3396,8 @@ func _clear_ai(i: int) -> void:
 ## dash phase. `_order` is deliberately NOT here — `_depth_sort` refills it
 ## wholesale every tick.
 func _relocate_enemy(i: int, last: int) -> void:
+	_chase_jostling[i] = _chase_jostling[last]
+	_flank_arcing[i] = _flank_arcing[last]
 	_worm_id[i] = _worm_id[last]
 	_worm_seg[i] = _worm_seg[last]
 	_spawn_hp[i] = _spawn_hp[last]
@@ -3387,7 +3443,7 @@ func _spawn_enemy_state(i: int, hp: float,
 func _approach_dir(i: int, to_player: Vector2) -> Vector2:
 	var straight := to_player.normalized()
 	var ti := enemies.type_index[i]
-	if ti != EnemyTable.ICE and not _is_miniboss(ti):
+	if ti != _boss_row and not _is_miniboss(ti):
 		return straight
 	var f: Vector2 = _flow[_target_slot].dir_at(terrain, enemies.pos[i])
 	return f if f != Vector2.ZERO else straight
@@ -3421,6 +3477,8 @@ func _behave(i: int, t, dt: float) -> Vector2:
 	_target_slot = _live_of[mk]
 	_enemy_target[i] = _target_slot
 	var to_player := player_pos[_target_slot] - ep
+	if subnet == 3 and _is_boss_type(enemies.type_index[i]):
+		return _root_cause_behave(i, sp, to_player, dt)
 	match t.behaviour:
 		EnemyTable.Behaviour.CHARGER:
 			return _charge(i, sp, to_player, dt)
@@ -3443,20 +3501,22 @@ func _behave(i: int, t, dt: float) -> Vector2:
 ## cannot be dodged and reads as the game cheating, while one that commits is a
 ## timing puzzle with a fair answer — sidestep late. The overshoot is the
 ## reward for reading it.
-func _charge(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+func _charge(i: int, sp: float, to_player: Vector2, dt: float, lock_warning: bool = false) -> Vector2:
 	_ai_timer[i] -= dt
 	match _ai_phase[i]:
 		CH_APPROACH:
 			if to_player.length() <= CHARGE_RANGE:
 				_ai_phase[i] = CH_WINDUP
 				_ai_timer[i] = CHARGE_WINDUP
+				if lock_warning: _ai_aim[i] = to_player.normalized()
 				return Vector2.ZERO
 			return _approach_dir(i, to_player) * sp
 		CH_WINDUP:
 			if _ai_timer[i] <= 0.0:
 				_ai_phase[i] = CH_DASH
+				feel.emit_voice(Feel.VOICE_CHARGER)
 				_ai_timer[i] = CHARGE_DASH
-				_ai_aim[i] = to_player.normalized()
+				if not lock_warning: _ai_aim[i] = to_player.normalized()
 				return _ai_aim[i] * sp * CHARGE_SPEED
 			# Still. A telegraph the player cannot see is not a telegraph.
 			return Vector2.ZERO
@@ -3505,13 +3565,14 @@ func _ranged(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 		return -toward * sp
 	return Vector2.ZERO
 
-func _fire_hostile(from: Vector2) -> void:
+func _fire_hostile(from: Vector2, direction: Vector2 = Vector2.ZERO) -> void:
 	# Lead the TARGET player, so standing still is punished and moving is rewarded.
 	var lead := player_pos[_target_slot] + player_vel[_target_slot] * 0.35
-	var dir := (lead - from).normalized()
+	var dir := (lead - from).normalized() if direction == Vector2.ZERO else direction
 	var h := hostiles.spawn(from, dir * HOSTILE_SPEED, 1.0, HOSTILE_RADIUS, 0)
 	if h >= 0:
 		_hostile_life[h] = 4.0
+		feel.emit_voice(Feel.VOICE_RANGED)
 
 ## Hostile shots: move, expire, die on terrain, and hit exactly one thing.
 func _step6b_hostiles(dt: float) -> void:
@@ -3553,8 +3614,10 @@ func _support(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 			continue
 		# The cap is the HP its type and subnet gave it at spawn, so a healer can
 		# restore an enemy but never inflate one.
+		var before := enemies.integrity[j]
 		enemies.integrity[j] = minf(_spawn_hp[j],
 			enemies.integrity[j] + SUPPORT_HEAL * dt)
+		if enemies.integrity[j] > before: feel.emit_voice(Feel.VOICE_SUPPORT)
 		# Remembered for the draw: a heal nobody can see is a fight the player
 		# is losing for reasons they cannot name. Last one wins — the link is a
 		# tell that healing IS happening and where, not an audit of every
@@ -3592,6 +3655,7 @@ func _ambush(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
 			_submerged[i] = 1
 			if _ai_timer[i] <= 0.0:
 				_ai_phase[i] = AM_ACTIVE
+				feel.emit_voice(Feel.VOICE_AMBUSHER)
 				_ai_timer[i] = AMBUSH_ACTIVE
 				_submerged[i] = 0
 			# Still, and visible as a tell, while it comes up.
@@ -3620,6 +3684,9 @@ func _flank(i: int, sp: float, to_player: Vector2) -> Vector2:
 	# Tangential component scaled by how fast the player is ACTUALLY moving:
 	# circling a stationary target is just a worse chase.
 	var speed_frac := clampf(pv.length() / 220.0, 0.0, 1.0)
+	var arcing := speed_frac > FLANK_COMMIT_BIAS
+	if arcing and _flank_arcing[i] == 0: feel.emit_voice(Feel.VOICE_FLANKER)
+	_flank_arcing[i] = 1 if arcing else 0
 	var tangent := Vector2(-dir.y, dir.x)
 	# Arc the way the player is GOING. Either perpendicular is a valid tangent
 	# and the wrong one swings out behind them — which is a chase with extra
@@ -3671,7 +3738,7 @@ func _step2b_zones(dt: float) -> void:
 		# corruption is the flip channel — so without this an arriving ICE could
 		# flip mid-entrance, invisible, and the flip guard, the boss spawn and
 		# the win condition all key off EnemyTable.ICE.
-		if _arriving[i] > 0.0:
+		if _arriving[i] > 0.0 or (not _sentinel_exposed and enemies.type_index[i] == _boss_row):
 			continue
 		# The baked zone grid, indexed INLINE: six hundred calls into
 		# terrain.zone_at a tick were most of this step's cost, and the lookup
@@ -3702,9 +3769,27 @@ func _steps78_drain() -> void:
 	for pass_i in CASCADE_PASSES:
 		if queue.count == 0 and queue.hit_count == 0:
 			break
+		# Shield admission also covers direct/index-based queued effects.
+		if not _sentinel_exposed:
+			var keep := 0
+			for q in queue.count:
+				if queue.target[q] >= 0 and queue.target[q] < enemies.count and _boss_shielded(queue.target[q]): continue
+				queue.kind[keep] = queue.kind[q]
+				queue.source_exploit[keep] = queue.source_exploit[q]
+				queue.target[keep] = queue.target[q]
+				queue.target_generation[keep] = queue.target_generation[q]
+				queue.amount[keep] = queue.amount[q]
+				keep += 1
+			queue.count = keep
+		var worm_before := {}
+		if subnet == 2 and _worm_regens_left > 0:
+			for i in enemies.count:
+				if _is_boss_type(enemies.type_index[i]): worm_before[i] = enemies.integrity[i]
 		var hits_before := queue.hit_count
 		var resolved_n := queue.drain_pass(enemies, thresholds, _spawn_hp,
 			_execute_by_exploit, _execute_immune_type)
+		for i in worm_before:
+			if enemies.integrity[i] < worm_before[i]: _worm_boss_hit_this_interval = true
 
 		# Flash every target hit in THIS pass: 0 ..< hit_count, not
 		# hits_before ..< hit_count. `drain_pass` zeroes hit_count on entry
@@ -3805,15 +3890,15 @@ func _on_death(i: int) -> void:
 		feel.emit("miniboss_kill")
 		_hitstop()
 		_settle_offers()
-	if enemies.type_index[i] == EnemyTable.ICE and not won:
+	if _is_boss_kill(i) and phase == Phase.FIGHTING and not won:
 		# kills is incremented FIRST: banking before it meant the kill that ends
 		# a winning run was never persisted, so entering the boss at 399 kills
 		# won, displayed 400, and saved 399 — silently missing the beam unlock.
 		# The `not won` guard keeps a second dispatch from re-banking the run.
 		feel.add_trauma(0.8)
-		feel.emit("ice_kill")
+		_boss_sound(2)
 		_hitstop()
-		salvage += 500 + (150 if route_active == 1 else 0)
+		salvage += 500 + (RouteTable.BOSS_SALVAGE[route_active] if route_active >= 0 else 0)
 		if subnet < SpawnDirector.CAMPAIGN_SUBNETS:
 			# CLEARED, not advanced. The advance is the player's move now: walk
 			# to the gate. Safe to set inside the drain because it is a flag and
@@ -3908,7 +3993,7 @@ func _step9c_reapproach() -> void:
 		# boss the player cannot fight deliberately. Worms are a chain sampled
 		# off a head trail, so moving one segment tears the body apart.
 		var ti3 := enemies.type_index[i]
-		if ti3 == EnemyTable.ICE or _is_miniboss(ti3):
+		if _is_boss_type(ti3) or _is_miniboss(ti3):
 			continue
 		if _worm_id[i] != 0 or _arriving[i] > 0.0:
 			continue
@@ -4212,37 +4297,52 @@ func _targeted_module(slot: int) -> Module:
 				return m
 	return null
 
-## Crossing into the NEXT arena is the advance. The gate itself is just a mouth
-## you walk through; touching it does nothing, which is the whole point of the
-## rework — the transition is a walk, not a trigger.
-##
-## A HALF-PLANE crossing, not a distance or a rect. The plane is the next
-## arena's edge, which is exactly where the corridor ends, so a long frame can
-## carry the player past it but never over it.
-##
-## Strictly past, by half a unit, because the advance shuts the gate behind and
-## a shut gate bars the whole corridor up to and including that plane — firing
-## ON it sealed the player inside the block, where every axis of every step is
-## refused and they stand in the doorway forever.
+## All LIVE footprints fit inside the powered pad. No unopened arena exists
+## to wander into: the destination is generated only after the vote commits.
+func teleporter_gathered() -> int:
+	var count := 0
+	var radius := Terrain.GATE_RADIUS - PLAYER_RADIUS
+	for slot in _live_slots():
+		if player_pos[slot].distance_squared_to(terrain.teleporter_pos()) <= radius * radius:
+			count += 1
+	return count
+
 func _step2c_gate() -> void:
-	if phase != Phase.CLEARED:
+	if phase != Phase.CLEARED or route_pending or transfer_ticks > 0:
 		return
 	var g := terrain.gate()
-	if g == null or not g.open:
+	if g == null or not g.open or not _any_live():
 		return
-	# EVERY LIVE slot must be past the line. A slot that idles behind dies to
-	# the corridor collapse, goes DEAD, and stops gating — so this cannot
-	# deadlock, and the leash keeps a laggard within reach anyway.
-	for s in SessionRules.MAX_PLAYERS:
-		if slot_state[s] == SlotState.LIVE \
-				and (player_pos[s] - g.end).dot(g.dir) <= 0.5:
-			return
-	_open_route_vote()
+	if teleporter_gathered() == _live_slots().size():
+		_open_route_vote()
+
+func _make_subnet_terrain(number: int, route: int) -> Terrain:
+	var seed_value: int = int(_session.descriptor["seed"]) + _SEED_TERRAIN + (number - 1) * 104729
+	var variant: int = RouteTable.LAYOUT[route] if route >= 0 else 0
+	var ground := Terrain.new(ARENA_SIZE, 1, seed_value, number, variant)
+	ground.generate(seed_value, Vector2.ZERO)
+	return ground
+
+func _step_transfer() -> void:
+	if transfer_ticks <= 0: return
+	if not _any_live() or won or _session.ended:
+		transfer_ticks = 0
+		return
+	if paused:
+		return
+	transfer_ticks -= 1
+	if transfer_ticks == 36:
+		route_active = route_selected
+		_advance_subnet()
+		feel.emit("teleport_arrive")
+		emit_signal("stats_changed")
 
 func spawned_total() -> int:
 	return _spawned_before + director.spawned
 
 func _advance_subnet() -> void:
+	if subnet >= SpawnDirector.CAMPAIGN_SUBNETS: return
+	room_claimed = false
 	ops_state = 0
 	ops_progress = 0.0
 	ops_pulse = 0.0
@@ -4250,6 +4350,7 @@ func _advance_subnet() -> void:
 	blocks.reset()
 	_spawned_before += director.spawned
 	subnet += 1
+	_reset_boss()
 	phase = Phase.FIGHTING
 	collapse_left = 0.0
 	_corridor_collapse_ticks = 0
@@ -4267,6 +4368,11 @@ func _advance_subnet() -> void:
 		projectiles.despawn(i)
 	for i in range(hostiles.count - 1, -1, -1):
 		hostiles.despawn(i)
+	for i in range(botnet.count - 1, -1, -1):
+		botnet.despawn(i)
+	_pending_splits.clear()
+	_worm_trail.clear()
+	_worm_cursor.clear()
 	# Every LIVE slot is healed by the clear — a teammate who limped through the
 	# gate is as cleared as the one who killed ICE.
 	for s in SessionRules.MAX_PLAYERS:
@@ -4277,10 +4383,21 @@ func _advance_subnet() -> void:
 	director.reset()
 	director.rate_mult = float(_players) * (RouteTable.RATE[route_active] if route_active >= 0 else 1.0)
 	_refresh_thresholds()
-	# No teleport and no regeneration: the next arena was plotted before the
-	# first frame and the player already walked into it. All that moves is which
-	# arena the terrain calls current — and the gate, which shuts behind them.
-	terrain.enter_next()
+	terrain = _make_subnet_terrain(subnet, route_active)
+	var error := terrain.validate_spawners(PLAYER_RADIUS)
+	if not terrain.generation_error.is_empty(): error = terrain.generation_error
+	if not error.is_empty():
+		_refuse_generation(error)
+		return
+	_allocate_zone_state()
+	for s in _live_slots():
+		player_pos[s] = terrain.spawner_pos(0, s)
+		player_prev_pos[s] = player_pos[s]
+		player_render_pos[s] = player_pos[s]
+		player_vel[s] = Vector2.ZERO
+		inputs[s] = Vector2.ZERO
+	for field in _flow: field._ready = false
+	_refresh_live_cache()
 	emit_signal("stats_changed")
 
 # ------------------------------------------------------------ progression ---
@@ -4296,7 +4413,12 @@ func _advance_subnet() -> void:
 const XP_SLOWDOWN := 1.8
 
 static func _xp_for(lvl: int) -> int:
-	return int(round(float(5 + 3 * (lvl - 1)) * XP_SLOWDOWN))
+	# Early builds keep their existing costs. The late surcharge spreads
+	# high-XP party builds across the campaign; see docs/progression-bosses-music.md.
+	# Bound arithmetic before multiplication, including malformed caller input.
+	var supported := clampi(lvl, 1, 1000000)
+	var late := maxi(0, supported - 20)
+	return int(round(float(5 + 3 * (supported - 1)) * XP_SLOWDOWN)) + (late * late + 1) / 2
 
 func _gain_xp(n: int) -> void:
 	xp += n
@@ -4423,7 +4545,7 @@ func _apply_choice(slot: int, card: int, target: int, offer: int) -> void:
 		return
 	var contents: PackedInt32Array = open["contents"]
 	if int(open["kind"]) == OfferKind.ROUTE:
-		if card < 0 or card >= 3 or not route_pending or target != -1:
+		if card < 0 or card >= 3 or not route_pending or target != -1 or route_voters[slot] == 0 or route_votes[slot] >= 0:
 			return
 		route_votes[slot] = card
 		_resolve_offer(slot)
@@ -4491,13 +4613,15 @@ func _resolve_deadlines() -> void:
 ## A slot that dies or parks with offers pending resolves every one of them to
 ## its first option at once, so it can never hold a round open.
 func _resolve_offer_on_slot_exit(slot: int) -> void:
-	# Departed voters abstain, including votes already cast. A timeout, unlike
-	# a departure, takes the first option just like other offers.
-	if route_pending:
-		route_votes[slot] = -1
+	# Freeze eligibility at open. An uncast departing ballot takes option 0;
+	# a committed ballot survives. Returns never acquire another ballot.
+	if route_pending and route_voters[slot] != 0 and route_votes[slot] < 0:
+		route_votes[slot] = 0
 		var open: Dictionary = _offer_open[slot]
 		if not open.is_empty() and int(open["kind"]) == OfferKind.ROUTE:
 			_resolve_offer(slot)
+		var queued: Array = _offer_queue[slot]
+		_offer_queue[slot] = queued.filter(func(row): return int(row["kind"]) != OfferKind.ROUTE)
 	var guard := 0
 	while not (_offer_open[slot] as Dictionary).is_empty() and guard < 64:
 		_apply_first(slot)
@@ -4747,6 +4871,13 @@ func _build_environment() -> void:
 	add_child(panels)
 	panels.set("target", self)
 
+	var teleporter := Node2D.new()
+	teleporter.name = "Teleporter"
+	teleporter.set_script(load("res://scripts/run/teleporter.gd"))
+	teleporter.z_index = -2
+	teleporter.set("target", self)
+	add_child(teleporter)
+
 	# Above every entity pool: walls, rails and gate posts are things you walk
 	# BEHIND, and sharing this node's canvas drew them under the swarm.
 	var props := Node2D.new()
@@ -4794,8 +4925,10 @@ func _update_renderers() -> void:
 	for n in enemies.count:
 		var i: int = _order[n]
 		var t = enemy_types[enemies.type_index[i]]
-		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
-		if _is_miniboss(enemies.type_index[i]):
+		var boss := enemies.type_index[i] == _boss_row
+		var mini_boss := _is_miniboss(enemies.type_index[i])
+		var s: float = (2.4 if subnet != 2 or _worm_seg[i] == 0 else 1.5) if boss else 1.0
+		if mini_boss:
 			s = 1.5
 			if enemies.type_index[i] == _fork_bomb_index:
 				s -= 0.18 * _split_gen[i]
@@ -4816,7 +4949,7 @@ func _update_renderers() -> void:
 				var k: float = 1.0 - _arriving[i] / ARRIVAL_POP
 				s *= 1.0 + 0.35 * sin(k * PI) - (1.0 - k) * 0.15
 				s *= k * (2.0 - k)
-		mm.set_instance_transform_2d(n, Transform2D(0.0, Vector2(s, s), 0.0,
+		mm.set_instance_transform_2d(n, Transform2D(Vector2(s, 0.0), Vector2(0.0, s),
 			to_iso(ep[i].lerp(ec[i], _alpha))))
 		var frac: float = clampf(enemies.corruption[i] / maxf(thresholds[enemies.type_index[i]], 0.001), 0.0, 1.0)
 		var shade := 1.15
@@ -4839,7 +4972,7 @@ func _update_renderers() -> void:
 		# Integrity powers the boss's armor segments in the material itself.
 		# Read spawn HP so subnet scaling and fork children share the same range.
 		var integrity := 1.0
-		if enemies.type_index[i] == EnemyTable.ICE or _is_miniboss(enemies.type_index[i]):
+		if boss or mini_boss:
 			integrity = clampf(enemies.integrity[i] / maxf(_spawn_hp[i], 0.001), 0.0, 1.0)
 		mm.set_instance_custom_data(n, Color(float(t.glyph), angle, float(i % 17) / 17.0, integrity))
 	mm = _mm_proj.multimesh
@@ -4848,6 +4981,8 @@ func _update_renderers() -> void:
 	# touch a renderer node, and slots recycle. Mines pulse to show they are
 	# armed; packet orientation follows flight. Bounded by MAX_PROJECTILES.
 	var beat := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.006)
+	var pp := projectiles.prev_pos
+	var pc := projectiles.pos
 	for i in projectiles.count:
 		var projectile_scale := 1.0
 		var angle := to_iso(projectiles.vel[i]).angle() + PI * 0.5
@@ -4862,20 +4997,26 @@ func _update_renderers() -> void:
 			glyph = 15.0
 			projectile_scale = 1.5
 			col = Color(0.7, 2.0, 1.5)
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE * projectile_scale, 0.0,
-			to_iso(_rp(projectiles, i))))
+		mm.set_instance_transform_2d(i, Transform2D(Vector2(projectile_scale, 0.0), Vector2(0.0, projectile_scale),
+			to_iso(pp[i].lerp(pc[i], _alpha))))
 		mm.set_instance_custom_data(i, Color(glyph, angle, float(i % 13) / 13.0, 0.0))
 		mm.set_instance_color(i, col)
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
+	# Identity axes avoid rebuilding a rotation and scale for every shard.
+	# Cache packed arrays just as the enemy pass does above.
+	var sp := shards.prev_pos
+	var sc := shards.pos
 	for i in shards.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
-			to_iso(_rp(shards, i))))
+		mm.set_instance_transform_2d(i, Transform2D(Vector2.RIGHT, Vector2.DOWN,
+			to_iso(sp[i].lerp(sc[i], _alpha))))
 	mm = _mm_botnet.multimesh
 	mm.visible_instance_count = botnet.count
+	var bp := botnet.prev_pos
+	var bc := botnet.pos
 	for i in botnet.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
-			to_iso(_rp(botnet, i))))
+		mm.set_instance_transform_2d(i, Transform2D(Vector2.RIGHT, Vector2.DOWN,
+			to_iso(bp[i].lerp(bc[i], _alpha))))
 
 ## Counting sort into screen-depth bands. O(n) with no comparisons, which is
 ## what makes per-entity depth ordering affordable at the enemy cap.
@@ -5102,6 +5243,7 @@ func _draw() -> void:
 	# arena BEHIND you the moment you cross.
 	for gi in terrain.gates.size():
 		var g: Terrain.Gate = terrain.gates[gi]
+		if not g.corridor.has_area(): continue
 		var along := Vector2(absf(g.dir.x), absf(g.dir.y))
 		# Lapped one cell into the room at EACH end. The arena's own bright edge
 		# runs right across the doorway otherwise, and a line across the mouth
@@ -5184,6 +5326,7 @@ func _draw() -> void:
 	for i in enemies.count:
 		if _arriving[i] > 0.0 or _submerged[i] != 0:
 			continue
+		if subnet == 3 and _is_boss_type(enemies.type_index[i]) and _root_cause_phase > 0: continue
 		var bh2: int = enemy_types[enemies.type_index[i]].behaviour
 		if enemy_types[enemies.type_index[i]].id == &"kernel_panic" \
 				and _ai_aim[i].x > 0.0 and _ai_aim[i].x < 0.85:
@@ -5294,6 +5437,8 @@ func _draw() -> void:
 					draw_line(to_iso(at + sp2 * rad * 0.3), to_iso(at + sp2 * rad * (0.5 + 0.5 * (1.0 - f))),
 						Color(c.r, c.g, c.b, f * 0.6), 1.0)
 
+	_draw_boss_objectives()
+
 	# Arrivals. Two phases: rings converging on the destination while glyph
 	# columns rain down the isometric vertical, then a shockwave expanding out
 	# of it as the body lands. Orange for a mini-boss, violet for ICE.
@@ -5301,7 +5446,7 @@ func _draw() -> void:
 		if _arriving[i] <= 0.0:
 			continue
 		var ai := to_iso(_rp(enemies, i))
-		var is_ice := enemies.type_index[i] == EnemyTable.ICE
+		var is_ice := _is_boss_type(enemies.type_index[i])
 		var tint := Color(1.7, 0.5, 2.2) if is_ice else Color(2.0, 0.9, 0.35)
 		if _arriving[i] > ARRIVAL_POP:
 			# CHARGE. k runs 0 -> 1 across the phase.
@@ -5385,6 +5530,10 @@ func _draw() -> void:
 		var ps: int = e[0]
 		var c: Color = e[1]
 		var opacity: float = e[2]
+		if transfer_ticks > 36:
+			opacity *= clampf(float(transfer_ticks - 36) / 28.0, 0.0, 1.0)
+		elif transfer_ticks > 0:
+			opacity *= 1.0 - float(transfer_ticks) / 36.0
 		var thrust := clampf(player_vel[ps].length() / 180.0, 0.0, 1.0)
 		_draw_player_craft(player_render_pos[ps], player_facing[ps], c, opacity,
 			thrust * (0.9 + 0.1 * sin(Time.get_ticks_msec() * 0.03)), feel.recoil[ps])
@@ -5492,8 +5641,12 @@ const MANIFEST_FILES := {
 
 func _build_manifest() -> void:
 	var f: Array = []
+	for prop in ["_sentinel_spires_left", "_sentinel_exposed", "_spire_progress", "_spire_captured",
+			"_worm_regens_left", "_worm_regen_timer", "_worm_boss_hit_this_interval", "_root_cause_phase"]:
+		f.append(["run", prop, SH, "", []])
 	for prop in ["ops_state", "ops_pos", "ops_start", "ops_end", "ops_progress",
-			"ops_pulse", "ops_alarm", "route_active", "route_pending", "route_votes"]:
+			"ops_pulse", "ops_alarm", "route_active", "route_pending", "route_votes",
+			"route_candidates", "route_voters", "route_selected", "transfer_ticks", "room_claimed"]:
 		f.append(["run", prop, SH, "", []])
 	f.append(["rng_route", "state", SH, "", ["_route_rng"]])
 	# --- populations: sliced to count -----------------------------------------
@@ -5535,7 +5688,7 @@ func _build_manifest() -> void:
 	f.append(["run", "@trigger_fires", SH | VARLEN, "", ["_trigger_fires"]])
 	for prop in ["_fire_acc", "_fire_cd", "_ward_left", "_shield_left",
 			"_zone_flips", "_zone_recharge"]:
-		f.append(["run", prop, SH, "", []])
+		f.append(["run", prop, SH | (VARLEN if prop.begins_with("_zone_") else 0), "", []])
 	# --- run scalars -----------------------------------------------------------
 	for prop in ["tick", "level", "xp", "xp_needed", "pending_levels", "paused",
 			"_round_open", "hitstop_ticks", "phase", "won", "subnet", "salvage",
@@ -5544,6 +5697,7 @@ func _build_manifest() -> void:
 		f.append(["run", prop, SH, "", []])
 	# --- terrain, blocks, director, flow fields, streams ----------------------
 	f.append(["terrain", "current", SH, "", []])
+	f.append(["terrain", "room_unlocked", SH, "", []])
 	f.append(["terrain", "_collapse_idx", SH, "", []])
 	f.append(["terrain", "@gate_open", SH, "", []])
 	for prop in ["_tz_pos", "_tz_r2", "_tz_kind", "_tz_left"]:
@@ -5570,6 +5724,10 @@ func _build_manifest() -> void:
 
 	NOT_IN_MANIFEST = {
 		"run": {
+			"_chase_jostling": "presentation: emission edges only, cleared on restore",
+			"_flank_arcing": "presentation: emission edges only, cleared on restore",
+			"_boss_row": "derived: EnemyTable.boss_index(subnet), refreshed on restore",
+			"_worm_boss_regen_flash": "presentation: frame-aged; cleared on restore",
 			"enemies": "container; its fields are listed by population key",
 			"projectiles": "container", "shards": "container", "botnet": "container",
 			"hostiles": "container", "grid": "container; rebuilt before first read",
@@ -5639,9 +5797,13 @@ func _build_manifest() -> void:
 		"population": {"capacity": "constant"},
 		"terrain": {
 			"origin": "immutable: Terrain.plan from the seed", "size": "immutable",
-			"w": "immutable", "h": "immutable", "solid": "immutable: generate from the seed",
-			"zone": "immutable", "zone_rect": "immutable", "rects": "immutable",
-			"arenas": "immutable",
+			"w": "immutable", "h": "immutable", "solid": "derived from descriptor seed, subnet, route and room_unlocked",
+			"zone": "derived from subnet generation", "zone_rect": "derived from subnet generation", "rects": "derived from subnet generation",
+			"arenas": "derived from subnet seed",
+			"subnet_number": "derived from run.subnet", "layout_id": "derived from route_active",
+			"room_rect": "derived from subnet generation", "room_link": "derived from subnet generation",
+			"generation_error": "generation diagnostic",
+			"spire_points": "derived: generation-time capture anchors",
 			"_spawners": "immutable: reserved entry positions derived during generate",
 			"gates": "immutable layout; open flags carried by @gate_open",
 			"_blocks": "derived from gate state: set_gate_open_flags rebuilds",
@@ -5897,7 +6059,7 @@ func _derived_set(key: String, prop: String, v) -> void:
 func _derived_valid(prop: String, v) -> bool:
 	var cur: Variant = _derived_get("", prop)
 	if prop == "@gate_open" or prop == "@milli":
-		return typeof(v) == typeof(cur) and (prop == "@milli" or v.size() == cur.size())
+		return typeof(v) == typeof(cur) and (prop == "@milli" or v.size() <= 2)
 	if prop == "@ring":
 		return typeof(v) == TYPE_DICTIONARY
 	if typeof(v) != TYPE_ARRAY or v.size() != cur.size():
@@ -6033,7 +6195,21 @@ func restore_state(bytes: PackedByteArray, after_tick: int) -> bool:
 			return false
 		if not _valid_value(e[0], prop, v):
 			return false
+	# Validate related fields together before constructing or writing anything.
+	var state := {}
+	for k in entries.size(): state[entries[k][0] + "." + entries[k][1]] = fields[k]
+	if not _valid_route_state(state) or not _valid_boss_state(state): return false
+	var incoming_subnet: int = state["run.subnet"]
+	var incoming_route: int = state["run.route_active"]
+	var ground := terrain
+	if incoming_subnet != subnet or incoming_route != route_active or state["terrain.room_unlocked"] != terrain.room_unlocked:
+		ground = _make_subnet_terrain(incoming_subnet, incoming_route)
+		if state["terrain.room_unlocked"]: ground.unlock_room()
+	if not ground.generation_error.is_empty(): return false
+	if state["run._zone_flips"].size() != ground.rects.size() or state["run._zone_recharge"].size() != ground.rects.size(): return false
+	if state["terrain.@gate_open"].size() != ground.gates.size(): return false
 	# Pass 3: write. Nothing above mutated the run.
+	terrain = ground
 	for k in entries.size():
 		var e: Array = entries[k]
 		var prop: String = e[1]
@@ -6087,8 +6263,15 @@ func _valid_value(key: String, prop: String, v) -> bool:
 		match prop:
 			"ops_state":
 				return v >= 0 and v <= 2
-			"route_active":
-				return v >= -1 and v < 3
+			"route_active", "route_selected":
+				return v >= -1 and v < RouteTable.NAMES.size()
+			"transfer_ticks":
+				return v >= 0 and v <= 90
+			"route_candidates":
+				return _valid_route_candidates(v)
+			"route_voters":
+				for eligible in v:
+					if eligible > 1: return false
 			"route_votes":
 				for vote in v:
 					if vote < -1 or vote > 2:
@@ -6098,7 +6281,7 @@ func _valid_value(key: String, prop: String, v) -> bool:
 			"ops_pulse", "ops_alarm":
 				return is_finite(v) and v >= 0.0 and v <= 5.0
 			"ops_pos", "ops_start", "ops_end":
-				return v.is_finite() and terrain.arenas.any(func(a): return a.has_point(v))
+				return v.is_finite() and Rect2(-ARENA_SIZE * 0.5, ARENA_SIZE).has_point(v)
 			"slot_state":
 				for b in v:
 					if b > SlotState.ABSENT:
@@ -6108,7 +6291,7 @@ func _valid_value(key: String, prop: String, v) -> bool:
 			"subnet":
 				return v >= 1 and v <= SpawnDirector.CAMPAIGN_SUBNETS
 			"level":
-				return v >= 1
+				return v >= 1 and v <= 1000000
 			"tick":
 				return v >= 0
 			"_worm_id":
@@ -6132,6 +6315,9 @@ func _valid_value(key: String, prop: String, v) -> bool:
 ## Rebuild everything the manifest deliberately does not carry, in dependency
 ## order, and re-arm the ring at the tick after the snapshot.
 func _after_restore(after_tick: int, raw: Dictionary) -> void:
+	_clear_voice_edges()
+	_boss_row = EnemyTable.boss_index(subnet)
+	_worm_boss_regen_flash = 0.0
 	tick = after_tick
 	lockstep.executed = after_tick + 1
 	_sync_ring_roster()
@@ -6160,6 +6346,7 @@ func _after_restore(after_tick: int, raw: Dictionary) -> void:
 	_pending_splits.clear()
 	_enemy_target.fill(-1)
 	_refresh_live_cache()
+	player_render_pos = player_pos.duplicate()
 	alive = _any_live()
 	# The restored world's verdict replaces this peer's own: a false ending is
 	# gone, and a peer repaired INTO the host's terminal state now holds the
@@ -6224,6 +6411,15 @@ func _place_network_op() -> void:
 		return
 
 func _step_network_ops(dt: float) -> void:
+	if phase == Phase.FIGHTING and terrain.room_unlocked and not room_claimed:
+		for s in _live_slots():
+			if player_pos[s].distance_squared_to(terrain.room_rect.get_center()) < 90.0 * 90.0:
+				room_claimed = true
+				salvage += 100
+				for live_slot in _live_slots(): _offer_cards(live_slot, CardMode.RANK_ONLY, null)
+				feel.emit("gate_open")
+				emit_signal("stats_changed")
+				break
 	if phase != Phase.FIGHTING or director.boss_spawned:
 		return
 	if ops_state == 0:
@@ -6251,7 +6447,8 @@ func _step_network_ops(dt: float) -> void:
 			else:
 				director.dropped += 1
 		if ops_progress >= 12.0:
-			ops_state = 2 # latch BEFORE rewards can open an offer
+			ops_state = 2
+			terrain.unlock_room() # latch BEFORE rewards can open an offer
 			salvage += 75
 			if subnet != 2:
 				for s in _live_slots():
@@ -6277,12 +6474,19 @@ func _step_network_ops(dt: float) -> void:
 				queue.append(HitQueue.Kind.DAMAGE, -1, i, enemies.generation[i], 6.0 * linked.size())
 
 func _open_route_vote() -> void:
-	if route_pending or phase != Phase.CLEARED or subnet >= SpawnDirector.CAMPAIGN_SUBNETS:
+	if route_pending or transfer_ticks > 0 or not _any_live() or won or _session.ended or phase != Phase.CLEARED or subnet >= SpawnDirector.CAMPAIGN_SUBNETS:
 		return
 	route_pending = true
 	route_votes.fill(-1)
+	route_voters.fill(0)
+	var pool := range(RouteTable.NAMES.size())
+	for i in 3:
+		var pick := _route_rng.randi_range(0, pool.size() - 1)
+		route_candidates[i] = pool[pick]
+		pool.remove_at(pick)
+	for s in _live_slots(): route_voters[s] = 1
 	for s in _live_slots():
-		_open_offer(s, OfferKind.ROUTE, PackedInt32Array([0, 1, 2]))
+		_open_offer(s, OfferKind.ROUTE, route_candidates.duplicate())
 
 func choose_route(index: int) -> void:
 	var open: Dictionary = _offer_open[local_slot]
@@ -6294,10 +6498,12 @@ func _finish_route_vote() -> void:
 	if not route_pending:
 		return
 	var live := _live_slots()
-	if live.is_empty():
+	if live.is_empty() or won or _session.ended:
+		route_pending = false
 		return
 	var counts := PackedInt32Array([0, 0, 0])
-	for s in live:
+	for s in SessionRules.MAX_PLAYERS:
+		if route_voters[s] == 0: continue
 		if route_votes[s] < 0:
 			return
 		counts[route_votes[s]] += 1
@@ -6306,9 +6512,11 @@ func _finish_route_vote() -> void:
 	for i in 3:
 		if counts[i] == best:
 			tied.append(i)
-	route_active = tied[0] if tied.size() == 1 else tied[_route_rng.randi_range(0, tied.size() - 1)]
+	var winner: int = tied[0] if tied.size() == 1 else tied[_route_rng.randi_range(0, tied.size() - 1)]
+	route_selected = route_candidates[winner]
 	route_pending = false
-	_advance_subnet()
+	transfer_ticks = 90
+	feel.emit("teleport_charge")
 
 func _draw_network_ops() -> void:
 	if ops_state == 0 or phase != Phase.FIGHTING or director.boss_spawned:
@@ -6335,3 +6543,302 @@ func _draw_network_ops() -> void:
 	if ops_state == 2 and subnet == 2:
 		for s in _ops_near(ops_pos, RELAY_RADIUS):
 			draw_line(p, to_iso(player_pos[s]), Color(c, 0.45), 2.0)
+
+static func _valid_route_candidates(v: PackedInt32Array) -> bool:
+	if v.size() != 3: return false
+	for i in 3:
+		if v[i] < 0 or v[i] >= RouteTable.NAMES.size(): return false
+		for j in i:
+			if v[i] == v[j]: return false
+	return true
+
+func _valid_route_state(state: Dictionary) -> bool:
+	var pending: bool = state["run.route_pending"]
+	var eligible: PackedByteArray = state["run.route_voters"]
+	var votes: PackedInt32Array = state["run.route_votes"]
+	var candidates: PackedInt32Array = state["run.route_candidates"]
+	var transfer: int = state["run.transfer_ticks"]
+	if transfer > 0 and (pending or state["run.route_selected"] < 0): return false
+	if transfer > 0:
+		if transfer > 36 and (state["run.phase"] != Phase.CLEARED or state["run.subnet"] >= SpawnDirector.CAMPAIGN_SUBNETS): return false
+		if transfer <= 36 and (state["run.phase"] != Phase.FIGHTING or state["run.subnet"] < 2 or state["run.route_active"] != state["run.route_selected"]): return false
+		var tally := PackedInt32Array([0, 0, 0])
+		for s in SessionRules.MAX_PLAYERS:
+			if eligible[s] != 0:
+				if votes[s] < 0: return false
+				tally[votes[s]] += 1
+		var best := maxi(tally[0], maxi(tally[1], tally[2]))
+		var winner: int = candidates.find(state["run.route_selected"])
+		if best == 0 or winner < 0 or tally[winner] != best: return false
+	if pending and (state["run.phase"] != Phase.CLEARED or state["run.subnet"] >= SpawnDirector.CAMPAIGN_SUBNETS or state["run.won"]): return false
+	if state["terrain.current"] != 0: return false
+	if state["run.room_claimed"] and not state["terrain.room_unlocked"]: return false
+	var offers: Array = state["run.@offers"]
+	var seen := PackedInt32Array([0, 0, 0, 0])
+	var at := 0
+	for s in SessionRules.MAX_PLAYERS:
+		var length: int = offers[3][s]
+		if offers[1][s] == OfferKind.ROUTE:
+			if not pending or eligible[s] == 0 or votes[s] >= 0 or offers[4].slice(at, at + length) != candidates: return false
+			seen[s] += 1
+		at += length
+	at = 0
+	for i in offers[5].size():
+		var s: int = offers[5][i]
+		var length: int = offers[8][i]
+		if offers[7][i] == OfferKind.ROUTE:
+			if not pending or eligible[s] == 0 or votes[s] >= 0 or offers[9].slice(at, at + length) != candidates: return false
+			seen[s] += 1
+		at += length
+	var unresolved := 0
+	for s in SessionRules.MAX_PLAYERS:
+		if votes[s] >= 0 and eligible[s] == 0: return false
+		if pending and eligible[s] != 0 and votes[s] < 0:
+			if seen[s] != 1: return false
+			unresolved += 1
+	return not pending or unresolved > 0
+
+# --------------------------------------------------------- subnet bosses ---
+func _is_boss_type(ti: int) -> bool:
+	return ti == _boss_row
+
+func _is_boss_kill(i: int) -> bool:
+	return _is_boss_type(enemies.type_index[i]) and (subnet != 2 or _worm_seg[i] == 0)
+
+func _boss_shielded(i: int) -> bool:
+	return not _sentinel_exposed and enemies.type_index[i] == _boss_row
+
+func _reset_boss() -> void:
+	_boss_row = EnemyTable.boss_index(subnet)
+	_sentinel_spires_left = 0
+	_sentinel_exposed = true
+	_spire_progress.fill(0)
+	_spire_captured.fill(0)
+	_worm_regens_left = 0
+	_worm_regen_timer = 0.0
+	_worm_boss_hit_this_interval = false
+	_worm_boss_regen_flash = 0.0
+	_root_cause_phase = 0
+
+func _spawn_boss(ring_slot: int = 0) -> void:
+	_reset_boss()
+	var t = enemy_types[_boss_row]
+	var a := _rng.randf() * TAU
+	var at := _spawn_at(player_pos[ring_slot] + DetMath.unit(a) * 420.0)
+	if subnet == 1:
+		at = terrain.arena().get_center()
+		_sentinel_spires_left = 4
+		_sentinel_exposed = false
+	if subnet == 2:
+		var id := _next_worm_id
+		_next_worm_id += 1
+		var trail := PackedVector2Array()
+		trail.resize(WORM_TRAIL_LEN)
+		trail.fill(at)
+		_worm_trail[id] = trail
+		_worm_cursor[id] = 0
+		for k in 8:
+			_spawn_boss_segment(id, k, at, true)
+		_worm_regens_left = WORM_REGEN_BUDGET
+		_worm_regen_timer = WORM_REGEN_INTERVAL
+	else:
+		var hp: float = t.integrity * _hp_mult()
+		var i := enemies.spawn(at, Vector2.ZERO, hp, 48.0, _boss_row)
+		_spawn_enemy_state(i, hp, t.behaviour)
+		_arriving[i] = ARRIVAL_TOTAL
+	_boss_sound(0)
+
+func _spawn_boss_segment(id: int, segment: int, at: Vector2, arrival: bool) -> int:
+	var hp := (WORM_HEAD_INTEGRITY_BASE if segment == 0 else WORM_SEGMENT_INTEGRITY_BASE) * _hp_mult()
+	var i := enemies.spawn(at, Vector2.ZERO, hp, 36.0 if segment == 0 else 22.0, _boss_row)
+	if i < 0: return -1
+	_spawn_enemy_state(i, hp)
+	_worm_id[i] = id
+	_worm_seg[i] = segment
+	if arrival: _arriving[i] = ARRIVAL_TOTAL
+	return i
+
+func _boss_sound(event: int) -> void:
+	match subnet:
+		1:
+			if event == 0: feel.emit("sentinel_charge")
+			elif event == 1: feel.emit("sentinel_arrive")
+			else: feel.emit("sentinel_kill")
+		2:
+			if event == 0: feel.emit("worm_charge")
+			elif event == 1: feel.emit("worm_arrive")
+			else: feel.emit("worm_kill")
+		3:
+			if event == 0: feel.emit("root_charge")
+			elif event == 1: feel.emit("root_arrive")
+			else: feel.emit("root_kill")
+
+func _step2f_boss(dt: float) -> void:
+	if not director.boss_spawned or phase != Phase.FIGHTING or won: return
+	if subnet == 1:
+		# The last capture leaves this false until the following world step.
+		if _sentinel_spires_left == 0:
+			if not _sentinel_exposed:
+				_sentinel_exposed = true
+				feel.emit("sentinel_exposed")
+			return
+		for k in terrain.spire_points.size():
+			if _spire_captured[k] != 0: continue
+			var occupied := false
+			for slot in SessionRules.MAX_PLAYERS:
+				if slot_state[slot] == SlotState.LIVE and player_pos[slot].distance_squared_to(terrain.spire_points[k]) <= SENTINEL_CAPTURE_RADIUS * SENTINEL_CAPTURE_RADIUS:
+					occupied = true
+			_spire_progress[k] = clampf(_spire_progress[k] + (dt if occupied else -dt * SENTINEL_DRAIN_RATE), 0.0, SENTINEL_CAPTURE_TIME)
+			if _spire_progress[k] >= SENTINEL_CAPTURE_TIME:
+				_spire_captured[k] = 1
+				_sentinel_spires_left -= 1
+				feel.emit("spire_capture")
+	elif subnet == 2 and _worm_regens_left > 0:
+		_worm_regen_timer = maxf(0, _worm_regen_timer - dt)
+		if _worm_regen_timer > 0: return
+		if not _worm_boss_hit_this_interval:
+			var head := -1
+			var count := 0
+			var highest := 0
+			for i in enemies.count:
+				if not _is_boss_type(enemies.type_index[i]) or enemies.state[i] != Population.ALIVE: continue
+				count += 1
+				highest = maxi(highest, _worm_seg[i])
+				if _worm_seg[i] == 0: head = i
+			if head >= 0:
+				if count < WORM_MAX_SEGMENTS_BOSS:
+					var id := _worm_id[head]
+					_spawn_boss_segment(id, highest + 1, _worm_sample(id, (highest + 1) * WORM_SEG_STEPS), false)
+				else:
+					enemies.integrity[head] = minf(_spawn_hp[head], enemies.integrity[head] + _spawn_hp[head] * WORM_HEAD_REGEN_FRAC)
+				_worm_regens_left -= 1
+				_worm_boss_regen_flash = 1.5
+				feel.emit("worm_regen")
+		_worm_boss_hit_this_interval = false
+		_worm_regen_timer = WORM_REGEN_INTERVAL if _worm_regens_left > 0 else 0.0
+
+func _root_cause_behave(i: int, sp: float, to_player: Vector2, dt: float) -> Vector2:
+	var fraction := enemies.integrity[i] / maxf(_spawn_hp[i], 0.001)
+	var next := 0 if fraction > 0.66 else (1 if fraction > 0.33 else 2)
+	if next != _root_cause_phase:
+		_root_cause_phase = next
+		_ai_phase[i] = 0
+		_ai_timer[i] = AMBUSH_UNDER if next == 0 else (2.0 if next == 1 else 0.0)
+		_submerged[i] = 0
+		enemies.vel[i] = Vector2.ZERO
+		enemies.force[i] = Vector2.ZERO
+		_knock[i] = Vector2.ZERO
+		feel.emit("root_phase")
+	if next == 0: return _ambush(i, sp, to_player, dt)
+	if next == 2: return _charge(i, sp, to_player, dt, true)
+	_ai_timer[i] -= dt
+	if _ai_phase[i] == 0 and _ai_timer[i] <= 0.35:
+		_ai_phase[i] = 1
+		_ai_aim[i] = (player_pos[_target_slot] + player_vel[_target_slot] * 0.35 - enemies.pos[i]).normalized()
+	if _ai_phase[i] == 1:
+		if _ai_timer[i] <= 0:
+			for offset in [-1, 0, 1]:
+				_fire_hostile(enemies.pos[i], DetMath.rotate(_ai_aim[i], float(offset) * PI * 0.1))
+			_ai_phase[i] = 0
+			_ai_timer[i] = 2.0
+		return Vector2.ZERO
+	var d := to_player.length()
+	if d > RANGED_STANDOFF + 60: return _approach_dir(i, to_player) * sp
+	if d < RANGED_STANDOFF - 60: return -to_player.normalized() * sp
+	return Vector2.ZERO
+
+func boss_objective() -> String:
+	if not director.boss_spawned or phase != Phase.FIGHTING or won: return ""
+	match subnet:
+		1: return "SENTINEL ARRAY // CAPTURE %d/4 SPIRES" % (4 - _sentinel_spires_left) if not _sentinel_exposed else "SENTINEL ARRAY // CORE EXPOSED"
+		2:
+			var count := 0
+			for i in enemies.count:
+				if _is_boss_type(enemies.type_index[i]): count += 1
+			return "WORM.EXE // %d SEGMENTS // %s" % [count, "REGENERATES" if _worm_boss_regen_flash > 0 else "%d REGROWS LEFT" % _worm_regens_left]
+		3: return "ROOT CAUSE // " + ["AMBUSH", "BARRAGE", "CHARGE"][_root_cause_phase]
+	return ""
+
+func _draw_boss_objectives() -> void:
+	if terrain == null or not director.boss_spawned or phase != Phase.FIGHTING: return
+	if subnet == 1:
+		for k in terrain.spire_points.size():
+			var at := to_iso(terrain.spire_points[k])
+			var captured := _spire_captured[k] != 0
+			var c := Color(0.3, 1.0, 0.65) if captured else Color(0.3, 0.8, 1.0)
+			_draw_ring(terrain.spire_points[k], SENTINEL_CAPTURE_RADIUS, Color(c, 0.45), 2.0)
+			draw_line(at, at - Vector2(0, 65), c, 7)
+			var crown := PackedVector2Array([at + Vector2(-18, -65), at + Vector2(0, -80), at + Vector2(18, -65), at + Vector2(0, -50), at + Vector2(-18, -65)])
+			draw_polyline(crown, c, 3, true)
+			draw_arc(at - Vector2(0, 65), 25, -PI * 0.5, -PI * 0.5 + TAU * _spire_progress[k] / SENTINEL_CAPTURE_TIME, 32, c, 3, true)
+			draw_string(ThemeDB.fallback_font, at + Vector2(-35, 22), "CAPTURED" if captured else "HOLD %d" % (k + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, c)
+			if not captured:
+				draw_line(at, to_iso(terrain.arena().get_center()), Color(c, 0.12), 1)
+				var player := to_iso(player_render_pos[view_slot])
+				var delta := at - player
+				if delta.length() > 310:
+					var marker := player + delta.normalized() * 280
+					draw_line(marker - delta.normalized() * 12, marker, c, 3)
+					draw_string(ThemeDB.fallback_font, marker + Vector2(-28, -10), "SPIRE %d" % (k + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, c)
+		if not _sentinel_exposed:
+			_draw_ring(terrain.arena().get_center(), 90, Color(0.4, 1, 1, 0.8), 4)
+	elif subnet == 3:
+		for i in enemies.count:
+			if not _is_boss_type(enemies.type_index[i]) or _arriving[i] > 0: continue
+			var warning := (_root_cause_phase == 1 and _ai_phase[i] == 1) or (_root_cause_phase == 2 and _ai_phase[i] == CH_WINDUP)
+			if not warning: continue
+			var at := enemies.pos[i]
+			var direction := _ai_aim[i]
+			for offset in ([-1, 0, 1] if _root_cause_phase == 1 else [0]):
+				var heading := DetMath.rotate(direction, offset * PI * 0.1)
+				draw_line(to_iso(at), to_iso(at + heading * 400), Color(1, 0.3, 0.6, 0.8), 3)
+
+func _valid_boss_state(state: Dictionary) -> bool:
+	var left: int = state["run._sentinel_spires_left"]
+	var progress: PackedFloat64Array = state["run._spire_progress"]
+	var captured: PackedByteArray = state["run._spire_captured"]
+	var number: int = state["run.subnet"]
+	var active: bool = state["director.boss_spawned"]
+	if left < 0 or left > 4: return false
+	var count := 0
+	for k in 4:
+		if not is_finite(progress[k]) or progress[k] < 0 or progress[k] > SENTINEL_CAPTURE_TIME or captured[k] > 1: return false
+		if captured[k] != 0:
+			count += 1
+			if progress[k] != SENTINEL_CAPTURE_TIME: return false
+		elif progress[k] >= SENTINEL_CAPTURE_TIME: return false
+	if number == 1 and active:
+		if left != 4 - count or (left > 0 and state["run._sentinel_exposed"]): return false
+	else:
+		if left != 0 or count != 0 or not state["run._sentinel_exposed"]: return false
+		for value in progress:
+			if value != 0: return false
+	var budget: int = state["run._worm_regens_left"]
+	var timer: float = state["run._worm_regen_timer"]
+	if budget < 0 or budget > WORM_REGEN_BUDGET or not is_finite(timer) or timer < 0 or timer > WORM_REGEN_INTERVAL: return false
+	if state["run._root_cause_phase"] < 0 or state["run._root_cause_phase"] > 2: return false
+	if number != 2 and (budget != 0 or timer != 0 or state["run._worm_boss_hit_this_interval"]): return false
+	if number != 3 and state["run._root_cause_phase"] != 0: return false
+	var types: PackedInt32Array = state["enemies.type_index"]
+	var ids: PackedInt32Array = state["run._worm_id"]
+	var segments: PackedInt32Array = state["run._worm_seg"]
+	var seen := {}
+	var head_count := 0
+	var worm_id := -1
+	for i in types.size():
+		if types[i] != EnemyTable.boss_index(2): continue
+		if number != 2 or ids[i] <= 0 or segments[i] < 0 or segments[i] > 11: return false
+		if worm_id >= 0 and worm_id != ids[i]: return false
+		worm_id = ids[i]
+		if seen.has(segments[i]): return false
+		seen[segments[i]] = true
+		if segments[i] == 0: head_count += 1
+	if not seen.is_empty() and head_count != 1: return false
+	if number == 2 and active and state["run.phase"] == Phase.FIGHTING and head_count != 1: return false
+	if seen.size() > WORM_MAX_SEGMENTS_BOSS: return false
+	return true
+
+func _clear_voice_edges() -> void:
+	if feel != null: feel.drain_voice()
+	_chase_jostling.fill(0)
+	_flank_arcing.fill(0)

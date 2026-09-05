@@ -1,0 +1,198 @@
+extends SceneTree
+
+# Balance instrument (diagnostics only). Only the observer records diagnostics; all
+# gameplay, card placement, damage and transitions use the real run methods.
+class MeasuredRun extends "res://scripts/run/run.gd":
+	var measured := {"xp_collected": 0, "xp_generated": 0, "miniboss_rounds": 0,
+		"block_payouts": 0, "damage_taken": 0.0, "picks": 0, "declines": 0, "world_seconds": 0.0, "first_fusion": -1.0}
+	func _step_world() -> void:
+		measured.world_seconds += SessionRules.TICK_DT
+		super()
+	func _gain_xp(n: int) -> void:
+		measured.xp_collected += n
+		super(n)
+	func _drop_shards(i: int) -> void:
+		var before := shards.count
+		super(i)
+		measured.xp_generated += shards.count - before
+	func _on_death(i: int) -> void:
+		if _is_miniboss(enemies.type_index[i]) and _rewarded[i] == 0:
+			measured.miniboss_rounds += 1
+		super(i)
+	func _block_payout(holder: int) -> void:
+		measured.block_payouts += 1
+		super(holder)
+	func _damage_player(slot: int, amount: float) -> void:
+		var before := player_health[slot]
+		super(slot, amount)
+		measured.damage_taken += maxf(0, before - player_health[slot])
+
+var seeds := [20260830, 1, 42, 12345, 987654]
+var navigators := [CampaignNavigation.new(), CampaignNavigation.new(), CampaignNavigation.new(), CampaignNavigation.new()]
+var label := "baseline"
+var limit := 90000
+var profiles := ["fresh", "moderate", "full"]
+var parties := [1, 4]
+var policies := ["breadth", "rank", "corruption"]
+
+func _initialize() -> void:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("label="): label = arg.trim_prefix("label=")
+		if arg.begins_with("seeds="):
+			seeds = []
+			for v in arg.trim_prefix("seeds=").split(","): seeds.append(int(v))
+		if arg.begins_with("limit="): limit = int(arg.trim_prefix("limit="))
+		if arg.begins_with("profiles="): profiles = Array(arg.trim_prefix("profiles=").split(","))
+		if arg.begins_with("policies="): policies = Array(arg.trim_prefix("policies=").split(","))
+		if arg.begins_with("parties="):
+			parties = []
+			for v in arg.trim_prefix("parties=").split(","): parties.append(int(v))
+	SaveGame.PATH = "user://survey_%s.json" % label
+	SaveGame.BAK = SaveGame.PATH + ".bak"
+	SaveGame.TMP = SaveGame.PATH + ".tmp"
+	await process_frame
+	for seed_value in seeds:
+		for profile in profiles:
+			for party in parties:
+				for policy in policies:
+					await measure(seed_value, profile, party, policy)
+	quit()
+
+func choice(g: Node2D, s: int, policy: String) -> Vector3i:
+	var o: Dictionary = g._offer_open[s]
+	if o.is_empty(): return Vector3i(-1, -1, -1)
+	if o.kind == g.OfferKind.ROUTE: return Vector3i(0, -1, o.seq)
+	if o.kind == g.OfferKind.FUSION: return Vector3i(0, 0, o.seq)
+	var result := Vector3i(-2, -1, o.seq)
+	var best := -INF
+	for c in o.contents.size():
+		var m: Module = g._decode_card(o.contents[c])
+		if m == null: continue
+		var lo: Loadout = g.loadouts[s]
+		var targets := lo.legal_targets(m)
+		for t in targets.size():
+			var target = targets[t]
+			var score := 0.0
+			if target.action == Loadout.Rule.RANK_UP: score = 30 if policy == "rank" else 15
+			elif target.action == Loadout.Rule.EMPTY_SLOT: score = 20
+			else: score = -10
+			if target.exploit >= lo.exploits.size() and m.slot != Module.Slot.VECTOR: score -= 40
+			if m.slot == Module.Slot.VECTOR: score += 5
+			if m.id == &"interval" and lo.holds(m.id) < 0: score += 9
+			if policy == "corruption" and m.id in [&"corrupt", &"on_flip", &"broadcast", &"worm"]: score += 16
+			if score > best:
+				best = score
+				result = Vector3i(c, t, o.seq)
+	return result
+
+func drive(g: Node2D, s: int, frame: int) -> Array:
+	var me: Vector2 = g.player_pos[s]
+	var target: Vector2 = me
+	var aim := Vector2.RIGHT
+	var nearest := INF
+	var flee := Vector2.ZERO
+	for i in g.enemies.count:
+		if g._arriving[i] > 0 or g._submerged[i] != 0: continue
+		var d: Vector2 = g.enemies.pos[i] - me
+		var length := d.length()
+		if (length < nearest and not (g.subnet == 2 and g.director.boss_spawned)) or (g.subnet == 2 and g._is_boss_type(g.enemies.type_index[i]) and g._worm_seg[i] == 0):
+			nearest = length
+			aim = d.normalized()
+		if length < 155 and length > 0.01: flee -= d / length * (155 - length)
+	if g.subnet == 1 and g.director.boss_spawned and g._sentinel_spires_left > 0:
+		for k in 4:
+			var spire := (k + s) % 4
+			if g._spire_captured[spire] == 0:
+				return [navigators[s].toward(g.terrain, me, g.terrain.spire_points[spire]), aim]
+	if g.phase == g.Phase.CLEARED:
+		return [navigators[s].toward(g.terrain, me, g.terrain.gate().pos), aim]
+	elif g.blocks.alive:
+		target = g.blocks.pos
+	elif g.shards.count > 0:
+		var distance := INF
+		for i in g.shards.count:
+			var d: float = me.distance_squared_to(g.shards.pos[i])
+			if d < distance:
+				distance = d
+				target = g.shards.pos[i]
+	elif nearest > 240 and nearest < INF:
+		target = me + aim * 100
+	var desired := (target - me).normalized() if me.distance_to(target) > 25 else Vector2.ZERO
+	if flee.length() > 5 and g.phase == g.Phase.FIGHTING: desired = flee.normalized()
+	# Resolve local obstacle avoidance by scoring safe headings toward the goal.
+	if desired != Vector2.ZERO:
+		var best := -INF
+		var selected := Vector2.ZERO
+		for k in 16:
+			var heading := DetMath.unit(TAU * float(k) / 16)
+			if g.terrain.is_solid(me + heading * 48) or g.terrain.is_solid(me + heading * 80): continue
+			var score := heading.dot(desired) + 0.05 * heading.dot(DetMath.unit(float(frame / 240 + s)))
+			if score > best:
+				best = score
+				selected = heading
+		desired = selected
+	return [desired, aim]
+
+func checkpoint(g: Node2D, context: Dictionary, event: String) -> void:
+	var row := context.duplicate()
+	row.merge(g.measured)
+	row.merge({"event": event, "subnet": g.subnet, "seconds": g.director.elapsed,
+		"level": g.level, "xp": g.xp, "xp_rounds": g.level - 1, "uncollected": g.shards.count,
+		"health": Array(g.player_health), "won": g.won, "alive": g.alive})
+	var builds := []
+	for s in context.party:
+		var slots := []
+		for ex in g.loadouts[s].exploits:
+			for sl in Exploit.SLOT_COUNT:
+				var em: EquippedModule = ex.at(sl)
+				if em != null: slots.append([String(em.module.id), em.rank])
+		builds.append(slots)
+	row.builds = builds
+	print("SURVEY " + JSON.stringify(row))
+
+func measure(seed_value: int, profile: String, party: int, policy: String) -> void:
+	SaveGame.use_fresh_state()
+	var counters := SaveGame.session_counters()
+	for key in counters.buffs: counters.buffs[key] = 0 if profile == "fresh" else (4 if profile == "moderate" else 10)
+	counters.kills = 0 if profile == "fresh" else (1000 if profile == "moderate" else 100000)
+	counters.flips = 0 if profile == "fresh" else (100 if profile == "moderate" else 100000)
+	var roster := []
+	for s in party: roster.append({"slot": s, "name": "survey%d" % s, "program": "operator", "counters": counters})
+	var desc := NetworkSession.validate_descriptor({"protocol": SessionRules.PROTOCOL,
+		"session_id": 1, "seed": seed_value, "delay": 0, "choice_timeout": 0, "roster": roster})
+	var g: Node2D = load("res://scenes/run.tscn").instantiate()
+	g.set_script(MeasuredRun)
+	g.external_drive = true
+	g.configure_session(NetworkSession.create(desc, 0, NetworkSession.Role.SOLO if party == 1 else NetworkSession.Role.HOST))
+	root.add_child(g)
+	await process_frame
+	var context := {"label": label, "seed": seed_value, "profile": profile, "party": party, "policy": policy, "counters": counters}
+	var last_subnet: int = g.subnet
+	var next_check := 60.0
+	for frame in limit:
+		for s in party:
+			var record := drive(g, s, frame)
+			var pick := choice(g, s, policy)
+			if pick.x >= 0: g.measured.picks += 1
+			elif pick.x == -2: g.measured.declines += 1
+			if s == 0:
+				g.input_override = record[0]
+				g.aim_override = record[1]
+				g._local_choice = pick
+			else: g.lockstep.submit(s, g.lockstep.executed, record[0], pick.x, pick.y, pick.z, record[1])
+		g._physics_process(SessionRules.TICK_DT)
+		if g.measured.first_fusion < 0 and frame % 60 == 0:
+			for s in party:
+				for ex in g.loadouts[s].exploits:
+					if ex.vector != null and ex.vector.module.is_fused: g.measured.first_fusion = g.measured.world_seconds
+		if g.subnet != last_subnet:
+			checkpoint(g, context, "arrival")
+			last_subnet = g.subnet
+			next_check = 60
+		if g.director.elapsed >= next_check:
+			checkpoint(g, context, "checkpoint")
+			next_check += 60
+		if not g.alive or g.won or g.director.boss_spawned: break
+	checkpoint(g, context, "death" if not g.alive else ("boss_arrival" if g.director.boss_spawned else "timeout"))
+	g.free()
+	await process_frame

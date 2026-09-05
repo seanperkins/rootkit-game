@@ -52,17 +52,25 @@ static func all() -> Array:
 			100.0, 22.0, 13, Behaviour.AMBUSHER),
 		EnemyType.new(&"kernel_panic",  13, Color(1.00, 0.35, 0.35), 240.0, 48.0,
 			110.0, 18.0, 16, Behaviour.RANGED),
-		# ICE stays LAST: EnemyTable.ICE is an index into this list, and the boss
-		# spawn, the win condition and the flip guard all read it.
-		#
 		# 550, not 700. The boss arrives at SUBNET_SECONDS, where the elapsed
 		# ramp is at its ceiling: at the softened board axis 550 is 917
 		# effective integrity in subnet 01 and still 1421 in subnet 02 — the
 		# number 700 used to put on the FIRST one. A boss that reads as a wall
 		# on the first subnet and as a formality on the third is scaled by the
 		# wrong axis; the campaign multiplier is the axis that should carry it.
-		EnemyType.new(&"ice",      3, Color(1.00, 0.25, 0.85), 550.0, 46.0, 1e18, 22.0, 0),
+		EnemyType.new(&"root_cause", 3, Color(1.00, 0.25, 0.85), 550.0, 46.0, 1e18, 22.0, 0, Behaviour.AMBUSHER),
+		EnemyType.new(&"sentinel_array", 18, Color(0.30, 0.85, 1.00), 550.0, 50.0, 1e18, 22.0, 0),
+		EnemyType.new(&"worm_exe_segment", 19, Color(0.65, 1.00, 0.35), 80.0, 105.0, 1e18, 18.0, 0),
 	]
 
-const ICE := 12  # the boss. corruption_threshold is effectively infinite:
-                 # flipping it would bypass the kill-to-win condition.
+const BOSS_IDS := [&"sentinel_array", &"worm_exe_segment", &"root_cause"]
+
+static func index_of(id: StringName) -> int:
+	var rows := all()
+	for i in rows.size():
+		if rows[i].id == id: return i
+	return -1
+
+static func boss_index(subnet: int) -> int:
+	if subnet < 1 or subnet > BOSS_IDS.size(): return -1
+	return index_of(BOSS_IDS[subnet - 1])

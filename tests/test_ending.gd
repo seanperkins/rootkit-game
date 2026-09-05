@@ -231,8 +231,9 @@ func a_campaign_win_confirms() -> void:
 	var ends := _endings(h)
 	for r in h.runs:
 		r.subnet = SpawnDirector.CAMPAIGN_SUBNETS
-		var b = r.enemy_types[EnemyTable.ICE]
-		var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
+		r._reset_boss()
+		var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
+		var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.boss_index(r.subnet))
 		r._on_death(i)
 		r.hitstop_ticks = 0
 	_check("both peers hold a WIN candidate", [h.runs[0]._session.end_outcome,

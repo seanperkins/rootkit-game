@@ -1,6 +1,6 @@
 # Instrument ensemble implementation plan
 
-Date: 2026-09-04. Status: planning only, no source touched. The mechanism
+Date: 2026-09-04. Status: implemented; automated checks pass, human listening remains unverified. See [implementation and measurements](../../progression-bosses-music.md). The mechanism
 question is resolved — the user kept the action/event-driven ensemble after
 reviewing the prior-art research, rejecting both the census/population-layer
 alternative and a population-plus-accents hybrid for this pass. Remaining

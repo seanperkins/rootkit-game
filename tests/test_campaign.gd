@@ -134,6 +134,7 @@ func _walk_the_gate(r: Node2D) -> void:
 	r._physics_process(1.0 / 60.0)
 	if r.route_pending:
 		r._apply_first(r.local_slot)
+	for i in 90: r._step_transfer()
 
 
 ## SaveGame.bank() ACCUMULATES. A run that banks at every subnet clear must hand
@@ -172,6 +173,7 @@ func last_subnet_wins() -> void:
 
 	var r2 := await _fresh_run()
 	r2.subnet = SpawnDirector.CAMPAIGN_SUBNETS
+	r2._reset_boss()
 	_check("ICE on the last subnet wins the run", _kill_ice(r2), true)
 	_check("the last subnet never enters transit", r2.phase, r2.Phase.FIGHTING)
 	r.free()
@@ -179,7 +181,7 @@ func last_subnet_wins() -> void:
 
 	finished["last_subnet_wins"] = true
 func _kill_ice(r: Node2D) -> bool:
-	var b = r.enemy_types[EnemyTable.ICE]
-	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
+	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.boss_index(r.subnet))
 	r._on_death(i)
 	return r.won

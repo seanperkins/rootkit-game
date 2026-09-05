@@ -1,23 +1,12 @@
 class_name Terrain extends RefCounted
 
-## The campaign's ground: EVERY subnet's arena, and the corridors between them,
-## on ONE grid, plotted before the first frame.
+## Runtime campaigns generate one standalone subnet at a time. Layout and
+## room footprint derive from the shared seed; room_unlocked is carried state.
+## The multi-arena constructor remains a geometry utility for corridor tests.
 ##
-## One grid, and all of it up front, because the transition between subnets is a
-## walk. A corridor is only continuous with the arena it leads to if that arena
-## already exists and is the same array the player is already standing on;
-## anything regenerated under their feet at the far end is a teleport wearing a
-## corridor. So the map is planned once, the arenas are laid out end to end with
-## a corridor spanning each gap, and `current` is the only thing that moves.
-##
-## Two representations of one fact, deliberately. `rects` is what the generator
-## writes and what the renderer draws — a few dozen entries. The two byte grids
-## are what the RUNTIME asks, and they exist so that nothing on the hot path
-## ever iterates a rect list: every question is one array index. The grids are
-## baked once and never mutated, which is what lets them stay a bare index with
-## no bookkeeping.
-##
-## Pure: no nodes, no tree, no signals. Driven directly by tests.
+## rects describes visible equipment and panels; solid/zone/zone_rect provide
+## constant-time collision/effect queries. Room reveal clears only its reserved
+## rock cells, preserving every existing rectangle index. Pure: no scene tree.
 
 enum Kind { WALL, HAZARD, SLOW, CORRUPTION }
 
@@ -53,7 +42,8 @@ const CORRIDOR_HALF_CELLS := 3
 const CORRIDOR_HALF_WIDTH := (float(CORRIDOR_HALF_CELLS) + 0.5) * CELL
 
 ## How close to the corridor's far end counts as arriving.
-const GATE_RADIUS := 48.0
+const GATE_RADIUS := 72.0
+enum VariantLayout { NORMAL, HOT, COMPACT }
 
 
 ## The way out of one arena and into the next: one per LINK, so a three-subnet
@@ -93,6 +83,15 @@ var gates: Array = []
 ## Which arena the run is in. Everything that used to be a single fact — the
 ## gate, the corridor, the collapse — reads through this.
 var current := 0
+## Runtime campaigns load one subnet. The multi-arena constructor remains a
+## geometry utility for corridor fixtures; shipping runs use standalone mode.
+var subnet_number := 0
+var layout_id := 0
+var room_unlocked := false
+var room_rect := Rect2()
+var room_link := Rect2()
+var generation_error := ""
+var spire_points := PackedVector2Array()
 
 ## Four reserved arrival points per arena, indexed [arena][slot]. Derived once
 ## in generate() from the seed/layout, never mutated afterward — see
@@ -156,15 +155,21 @@ static func plan(arena_size: Vector2, count: int, seed_value: int) -> Array:
 		last = dir
 	return out
 
-func _init(arena_size: Vector2, count: int = 1, layout_seed: int = 0) -> void:
+func _init(arena_size: Vector2, count: int = 1, layout_seed: int = 0, standalone_subnet: int = 0, variant: int = 0) -> void:
 	assert(is_equal_approx(fposmod(arena_size.x, TILE * 2.0), 0.0)
 		and is_equal_approx(fposmod(arena_size.y, TILE * 2.0), 0.0),
 		"an arena is a whole EVEN number of tiles, so its half — and therefore "
 		+ "the grid origin — lands on a tile boundary too")
+	subnet_number = standalone_subnet
+	layout_id = variant
 	arenas = plan(arena_size, count, layout_seed)
 	var bounds: Rect2 = arenas[0]
 	for i in range(1, arenas.size()):
 		bounds = bounds.merge(arenas[i])
+	if subnet_number > 0:
+		room_link = Rect2(Vector2(bounds.end.x, -96), Vector2(192, 192))
+		room_rect = Rect2(Vector2(bounds.end.x + 192, -384), Vector2(960, 768))
+		bounds = bounds.merge(room_rect)
 	origin = bounds.position - Vector2(MARGIN, MARGIN)
 	size = bounds.size + Vector2(MARGIN, MARGIN) * 2.0
 	# round, not ceil: everything is tile-aligned by construction, so a fraction
@@ -212,7 +217,7 @@ func enter_next() -> void:
 func _rebuild_blocks() -> void:
 	_blocks.clear()
 	for g in gates:
-		if not g.open:
+		if not g.open and g.block.has_area():
 			_blocks.append(g.block)
 
 # ------------------------------------------------------------------ lookup ---
@@ -379,13 +384,71 @@ func generate(seed_value: int, player_start: Vector2) -> void:
 	for i in arenas.size():
 		_place_walls(hash(str(seed_value, ":w:", i)), i, entry[i])
 	for i in gates.size():
+		if subnet_number > 0:
+			_reserve_pad(Rect2(gates[i].pos - Vector2(160, 160), Vector2(320, 320)), arena_cells(0))
+			continue
 		_cut_corridor(gates[i])
 		_carve_to(gates[i].pos, arenas[i].get_center(), arena_cells(i))
 	_derive_spawners(entry)
 	_fill_unreachable(player_start)
 	for i in arenas.size():
 		_place_zones(hash(str(seed_value, ":z:", i)), i, entry[i])
+	if subnet_number > 0:
+		_apply_route_layout()
+	spire_points.clear()
+	if subnet_number == 1:
+		_place_spires()
 	_rebuild_blocks()
+
+## Four seed-invariant objectives, with safe spokes to the entry region.
+## Rebuild visible panels from the final cells so carved zones cannot linger.
+func _place_spires() -> void:
+	var centre: Vector2 = arenas[0].get_center()
+	var radius: float = minf(arenas[0].size.x, arenas[0].size.y) * 0.325
+	for k in 4:
+		var point := centre + DetMath.unit(PI * 0.25 + PI * 0.5 * k) * radius
+		spire_points.append(point)
+		var steps := int(radius / (CELL * 0.5)) + 1
+		for step in range(steps + 1):
+			var c := cell_xy(centre.lerp(point, float(step) / steps))
+			for y in range(c.y - 1, c.y + 2):
+				for x in range(c.x - 1, c.x + 2):
+					var i := y * w + x
+					solid[i] = 0
+					zone[i] = 0
+	# Merge equal cell spans vertically, preserving exact zone semantics.
+	rects.clear()
+	zone_rect.fill(-1)
+	var bounds := arena_cells(0)
+	for kind in 4:
+		var spans := {}
+		for y in range(bounds.position.y, bounds.end.y):
+			var next_spans := {}
+			var x := bounds.position.x
+			while x < bounds.end.x:
+				var active := solid[y * w + x] != 0 if kind == Kind.WALL else zone[y * w + x] == kind + 1
+				if not active:
+					x += 1
+					continue
+				var start := x
+				while x < bounds.end.x:
+					active = solid[y * w + x] != 0 if kind == Kind.WALL else zone[y * w + x] == kind + 1
+					if not active: break
+					x += 1
+				var key := Vector2i(start, x)
+				var ri: int = spans.get(key, -1)
+				if ri >= 0: rects[ri][0].size.y += CELL
+				else:
+					ri = rects.size()
+					rects.append([Rect2(origin + Vector2(start, y) * CELL, Vector2(x - start, 1) * CELL), kind])
+				if kind != Kind.WALL:
+					for xx in range(start, x): zone_rect[y * w + xx] = ri
+				next_spans[key] = ri
+			spans = next_spans
+	var reached := _reach(cell_index(spawner_pos(0, 0)), bounds)
+	for point in spire_points:
+		if reached[cell_index(point)] == 0 or not spawn_is_safe(point, 12.0, 0):
+			generation_error = "Sentinel capture point is not safe and connected"
 
 func _clear_cells(c: Rect2i) -> void:
 	for y in range(c.position.y, c.end.y):
@@ -404,6 +467,15 @@ func _clear_cells(c: Rect2i) -> void:
 ## exit gate on the adjoining edge, and a SHUT gate bars its own mouth, so
 ## rolling blind put an invisible wall in the doorway on one seed in twenty.
 func _place_gates(rng_seed: int, player_start: Vector2) -> PackedVector2Array:
+	if subnet_number > 0:
+		gates.clear()
+		if subnet_number < SpawnDirector.CAMPAIGN_SUBNETS:
+			var pad := Gate.new()
+			pad.pos = Vector2(0, -384)
+			pad.end = pad.pos
+			pad.dir = Vector2.UP
+			gates.append(pad)
+		return PackedVector2Array([player_start])
 	var rng := RandomNumberGenerator.new()
 	rng.seed = rng_seed
 	gates.clear()
@@ -485,7 +557,7 @@ func _place_walls(rng_seed: int, index: int, entry: Vector2) -> void:
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
 		# grow() by the margin and ask whether the entry is inside: that is
 		# exactly "this rect comes within WALL_MARGIN of where the player lands".
-		if r.grow(WALL_MARGIN).has_point(entry):
+		if r.grow(WALL_MARGIN).has_point(entry) or (subnet_number > 0 and has_gate() and r.grow(160.0).has_point(gate().pos)):
 			continue
 		for y in range(cy, cy + rh):
 			for x in range(cx, cx + rw):
@@ -513,7 +585,7 @@ func _place_zones(rng_seed: int, index: int, entry: Vector2) -> void:
 		var cx := rng.randi_range(x0, x1 - rw)
 		var cy := rng.randi_range(y0, y1 - rh)
 		var r := Rect2(origin + Vector2(cx, cy) * CELL, Vector2(rw, rh) * CELL)
-		if r.grow(WALL_MARGIN).has_point(entry):
+		if r.grow(WALL_MARGIN).has_point(entry) or (subnet_number > 0 and has_gate() and r.grow(160.0).has_point(gate().pos)):
 			continue
 		var kind: int = ZONE_KINDS[rng.randi_range(0, ZONE_KINDS.size() - 1)]
 		if paint_zone(r, kind) >= 0:
@@ -788,7 +860,7 @@ func build_distance_field() -> void:
 	var start := cell_index(g.pos)
 	if start < 0 or solid[start] != 0:
 		return
-	var c := arena_cells(current)
+	var c := Rect2i(0, 0, w, h) if room_unlocked else arena_cells(current)
 	# A queue with a read head rather than pop_front on an Array: pop_front is
 	# O(n) and this walks thirty thousand cells.
 	var queue := PackedInt32Array([start])
@@ -821,7 +893,7 @@ func build_distance_field() -> void:
 ## therefore exempt, and voiding the way out would make the deadline unwinnable
 ## rather than tense.
 func _build_collapse_order() -> void:
-	var c := arena_cells(current)
+	var c := Rect2i(0, 0, w, h) if room_unlocked else arena_cells(current)
 	var counts := PackedInt32Array()
 	counts.resize(max_dist + 2)
 	var total := 0
@@ -1172,6 +1244,8 @@ func spawn_is_safe(p: Vector2, radius: float, arena_index: int = -1) -> bool:
 ## which also rules out any two coinciding); and the pad can reach the arena's
 ## playable region, not merely the other three points in a sealed pocket.
 func validate_spawners(radius: float) -> String:
+	if subnet_number > 0 and has_gate() and not spawn_is_safe(gate().pos, GATE_RADIUS, 0):
+		return "teleporter footprint is obstructed or hazardous"
 	if _spawners.size() != arenas.size():
 		return "terrain has %d arenas but %d spawner sets" \
 			% [arenas.size(), _spawners.size()]
@@ -1206,6 +1280,88 @@ func validate_spawners(radius: float) -> String:
 				reachable += int(seen[idx] != 0)
 				if solid[idx] == 0 and seen[idx] == 0:
 					return "arena %d: spawn pad is disconnected from the playable region" % i
-		if float(reachable) < float(bounds.get_area()) * REACHABLE_FLOOR:
+		# COMPACT deliberately closes the outer quarter on each axis. Its
+		# floor is half the allocation; full connectivity is still checked above.
+		var floor_fraction := 0.50 if layout_id == VariantLayout.COMPACT else REACHABLE_FLOOR
+		if float(reachable) < float(bounds.get_area()) * floor_fraction:
 			return "arena %d: spawn pad cannot reach enough playable ground" % i
 	return ""
+
+# --------------------------------------------------------- standalone subnets ---
+func teleporter_pos() -> Vector2:
+	return gate().pos if gate() != null else Vector2.ZERO
+
+func unlock_room() -> void:
+	if room_unlocked or subnet_number <= 0:
+		return
+	room_unlocked = true
+	_clear_cells(_cells_of(room_rect))
+	_clear_cells(_cells_of(room_link))
+
+
+func _apply_route_layout() -> void:
+	if layout_id == VariantLayout.HOT:
+		var c := arena_cells(0)
+		var made := 0
+		for y in range(c.position.y + 12, c.end.y - 12, 9):
+			for x in range(c.position.x + 12, c.end.x - 12, 9):
+				if made == 12: break
+				var r := Rect2(origin + Vector2(x, y) * CELL, Vector2(5, 5) * CELL)
+				var safe := true
+				for p in _spawners[0]:
+					if r.grow(WALL_MARGIN).has_point(p): safe = false
+				if has_gate() and r.grow(160).has_point(gate().pos): safe = false
+				for yy in range(y, y + 5):
+					for xx in range(x, x + 5):
+						if solid[yy * w + xx] != 0 or zone[yy * w + xx] != 0: safe = false
+				if safe:
+					paint_zone(r, [Kind.HAZARD, Kind.SLOW, Kind.CORRUPTION][made % 3])
+					made += 1
+		if made != 12: generation_error = "HOT could not reserve twelve additional panels"
+	elif layout_id == VariantLayout.COMPACT:
+		var c := arena_cells(0)
+		var inner := Rect2i(c.position + Vector2i(c.size.x / 8, c.size.y / 8),
+			c.size - Vector2i(c.size.x / 8, c.size.y / 8) * 2)
+		for y in range(c.position.y, c.end.y):
+			for x in range(c.position.x, c.end.x):
+				if not inner.has_point(Vector2i(x, y)): solid[y * w + x] = 1
+		# An east service lane reaches the hidden-room bulkhead. The centre,
+		# spawn formation and transfer pad remain inside the smaller core.
+		_reserve_pad(Rect2(Vector2(0, -128), Vector2(arena().end.x, 256)), c)
+		var seen := _reach(cell_index(Vector2.ZERO), c)
+		for y in range(c.position.y, c.end.y):
+			for x in range(c.position.x, c.end.x):
+				if seen[y * w + x] == 0: solid[y * w + x] = 1
+		# Build exact merged wall rectangles; drawing and collision share cells.
+		var zones := rects.filter(func(row): return row[1] != Kind.WALL)
+		rects = []
+		var spans := {}
+		for y in range(c.position.y, c.end.y):
+			var next_spans := {}
+			var x := c.position.x
+			while x < c.end.x:
+				if solid[y * w + x] == 0:
+					x += 1
+					continue
+				var start := x
+				while x < c.end.x and solid[y * w + x] != 0: x += 1
+				var key := Vector2i(start, x)
+				var ri: int = spans.get(key, -1)
+				if ri >= 0: rects[ri][0].size.y += CELL
+				else:
+					ri = rects.size()
+					rects.append([Rect2(origin + Vector2(start, y) * CELL, Vector2(x - start, 1) * CELL), Kind.WALL])
+				next_spans[key] = ri
+			spans = next_spans
+		zone.fill(0)
+		zone_rect.fill(-1)
+		for row in zones: paint_zone(row[0], row[1])
+	# Reserve an approach at the room's concealed bulkhead before play. No
+	# existing wall/zone indices need to change when the chamber is revealed.
+	_reserve_pad(Rect2(Vector2(arena().end.x - 256, -128), Vector2(256, 256)), arena_cells(0))
+	var zones := rects.filter(func(row): return row[1] != Kind.WALL)
+	rects = rects.filter(func(row): return row[1] == Kind.WALL)
+	_reclip_walls()
+	zone.fill(0)
+	zone_rect.fill(-1)
+	for row in zones: paint_zone(row[0], row[1])

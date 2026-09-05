@@ -160,7 +160,7 @@ func only_bosses_consult_it() -> void:
 		r._approach_dir(grunt, to_player), to_player.normalized())
 
 	var ice: int = r.enemies.spawn(at, Vector2.ZERO, 500.0, 48.0,
-		EnemyTable.ICE)
+		EnemyTable.boss_index(r.subnet))
 	r._spawn_enemy_state(ice, 500.0)
 	var bd: Vector2 = r._approach_dir(ice, to_player)
 	_check_true("a boss gets a real direction either way", bd.length() > 0.9)

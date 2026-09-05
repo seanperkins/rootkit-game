@@ -1,0 +1,6 @@
+test_run               PASS — all checks
+test_campaign          PASS — all cases
+test_collapse          PASS — all cases
+perf_milestone0        PASS — real-run p95 7.812 ms within the 10.348 ms scaled budget.
+
+  ALL GREEN — 4 suites, no script errors

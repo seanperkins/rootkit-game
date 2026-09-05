@@ -9,6 +9,7 @@ const DT := 1.0 / 60.0
 var failures := 0
 var run: Node2D
 var picks := 0
+var _objective_nav := CampaignNavigation.new()
 
 func _initialize() -> void:
 	print("ROOTKIT — full subnet smoke test\n")
@@ -24,6 +25,7 @@ func _initialize() -> void:
 	# would pause with nobody to unpause it); with one, an autopiloted run
 	# actually exercises a fused row.
 	run.fusion_offered.connect(func(_m): run.choose_fusion(0))
+	run.route_offered.connect(func(): run.choose_route(0))
 
 	# Every subnet is 300 s of wave table plus however long ICE takes; 90 s of
 	# boss margin each has been enough at every damage level tried so far.
@@ -118,6 +120,10 @@ func _build_signature() -> String:
 ## Kite away from the swarm, drift toward loose shards. Not good play — just
 ## enough that the loop is exercised by a moving player rather than a corpse.
 func _autopilot() -> Vector2:
+	if run.subnet == 1 and run.director.boss_spawned and run._sentinel_spires_left > 0:
+		for k in 4:
+			if run._spire_captured[k] == 0:
+				return _objective_nav.toward(run.terrain, run.player_pos[0], run.terrain.spire_points[k])
 	# In CLEARED there is nothing left to kite and nothing left to farm, so head
 	# for the gate. Without this the autopilot stands in a cleared subnet until
 	# the tick budget runs out and every campaign assertion times out rather

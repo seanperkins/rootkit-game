@@ -1,6 +1,17 @@
 # Teleporter, shared vote and next-subnet modifiers
 
-Date: 2026-09-04. Status: approved feature/categories; card bundles and magnitudes below are recommendations. Documentation only.
+Date: 2026-09-04. Original approved design, superseded in part on 2026-09-05.
+
+**Implemented direction, September 5:** the user selected both larger arenas and
+hidden side rooms, and removed the need to pre-generate a connected campaign.
+The current implementation loads one subnet at a time, uses an in-arena transfer
+pad with no bridge, generates the destination after its vote, and reconstructs
+it from seed/subnet/route during recovery. Main arenas are about 31% larger;
+network jobs reveal optional archive rooms. The frozen voter roster below is
+implemented. The fixed-footprint template/bridge requirements below are historical
+and superseded by this explicit user decision. See the maintained
+[implementation record](../../teleporter-subnets.md) for shipped behavior,
+route magnitudes, animation and verification.
 
 Companions: [Spawners](2026-09-04-spawner-points-design.md), [Bosses](2026-09-04-themed-bosses-design.md), [Leveling](2026-09-04-leveling-pace-design.md).
 

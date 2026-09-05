@@ -26,11 +26,16 @@ func make_run(players: int = 2) -> Node2D:
 
 func vote(r: Node2D, slot: int, pick: int) -> void:
 	r._apply_choice(slot, pick, -1, int(r._offer_open[slot]["seq"]))
+	for i in 90:
+		if r.transfer_ticks > 0: r._step_transfer()
 
 func start_vote(r: Node2D) -> void:
 	r.phase = r.Phase.CLEARED
 	r.terrain.open_gate()
 	r._open_route_vote()
+	# Fixed packages isolate vote mechanics from candidate sampling.
+	r.route_candidates = PackedInt32Array([0, 1, 2])
+	for slot in r._live_slots(): r._offer_open[slot]["contents"] = r.route_candidates.duplicate()
 
 func _initialize() -> void:
 	SaveGame.use_test_paths()
@@ -155,24 +160,25 @@ func _initialize() -> void:
 
 	r = make_run(2)
 	start_vote(r)
-	vote(r, 0, 1)
+	vote(r, 0, 0)
 	r._park(1)
-	check("departure cannot strand a route ballot", r.subnet == 2 and r.route_active == 1)
+	for i in 90: r._step_transfer()
+	check("departure resolves an uncast ballot to option zero", r.subnet == 2 and r.route_active == 0)
 	r.free()
 	r = make_run(2)
 	start_vote(r)
 	r._park(1)
 	r._return(1, r.tick)
-	check("returning LIVE voter receives a ballot", not r._offer_open[1].is_empty() and r._offer_open[1]["kind"] == r.OfferKind.ROUTE)
+	check("returning voter keeps the resolved ballot", r._offer_open[1].is_empty() and r.route_votes[1] == 0)
 	vote(r, 0, 0)
-	vote(r, 1, 0)
-	check("returned voter can complete the vote", r.subnet == 2)
+	check("returned voter cannot hold the vote", r.subnet == 2)
 	r.free()
 	r = make_run(2)
 	start_vote(r)
 	for slot in 2:
 		r._offer_open[slot]["deadline"] = r.tick
 	r._resolve_deadlines()
+	for i in 90: r._step_transfer()
 	check("deadline auto-votes keep campaign moving", r.subnet == 2 and r.route_active == 0)
 	r.free()
 	r = make_run(1)

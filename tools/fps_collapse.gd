@@ -35,9 +35,9 @@ func _process(_d: float) -> bool:
 		# Clear the subnet, then wind the collapse to its halfway point — the
 		# most void the arena ever has on screen at once with ground still left
 		# to stand on.
-		var b = run.enemy_types[EnemyTable.ICE]
+		var b = run.enemy_types[EnemyTable.boss_index(run.subnet)]
 		var i: int = run.enemies.spawn(Vector2(200, 0), Vector2.ZERO,
-			b.integrity, 48.0, EnemyTable.ICE)
+			b.integrity, 48.0, EnemyTable.boss_index(run.subnet))
 		run._on_death(i)
 		run.collapse_left = run.COLLAPSE_SECONDS * 0.5
 		run.terrain.collapse_to(int(float(run.terrain.max_dist) * 0.5))

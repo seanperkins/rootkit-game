@@ -110,8 +110,8 @@ func bank_covers_every_id() -> void:
 		_check_true("the bank has %s" % id, bank.has(id))
 	for id in Synth.EVENTS:
 		_check_true("the bank has %s" % id, bank.has(id))
-	_check("bank size covers events plus one fire per vector kind",
-		bank.size(), Synth.EVENTS.size() + Module.VectorKind.size())
+	_check("bank covers every synthesized spec",
+		bank.size(), Synth.all_specs().size())
 	for id in bank:
 		_check("%s is a pool, not a lone buffer" % id,
 			bank[id].size(), Synth.VARIANTS)

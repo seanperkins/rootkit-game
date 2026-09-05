@@ -42,6 +42,7 @@ func _process(_dt: float) -> bool:
 			if run.terrain.arenas[i].has_point(run.terrain.rects[selected][0].get_center()):
 				run.terrain.current = i
 				run.subnet = i + 1
+				run._reset_boss()
 		run.player_pos[0] = run.terrain.rects[selected][0].get_center() + Vector2(130, 130)
 		run._snapshot_render_state()
 	if frames == 185:

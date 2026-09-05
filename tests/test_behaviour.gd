@@ -305,8 +305,8 @@ func the_new_enemies_are_wired() -> void:
 	# These are INDICES into the table, read by the boss spawn, the win
 	# condition, the flip guard and the worm train. Inserting a type above them
 	# repoints them silently, which is the kind of bug that looks like physics.
-	_check("ICE is still where the code thinks it is",
-		all[EnemyTable.ICE].id, &"ice")
+	for number in range(1, 4):
+		_check("subnet boss resolves", all[EnemyTable.boss_index(number)].id, EnemyTable.BOSS_IDS[number - 1])
 	_check("and so is the worm type", all[r.WORM_TYPE].id, &"worm")
 
 	# Every new type is scheduled, or it will never be seen.

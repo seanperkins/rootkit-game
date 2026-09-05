@@ -1,0 +1,9 @@
+Godot Engine v4.7.stable.official.5b4e0cb0f - https://godotengine.org
+
+host_relayed: OK
+room code: 'X8GQ6C' after 51 ms (error '')
+join_relayed: OK
+host saw [2], joiner saw [1] after 42 ms
+after punch deadline, direct host/client: false/false
+joiner->host record: true in 137 ms
+host->joiner bundle: true in 21 ms

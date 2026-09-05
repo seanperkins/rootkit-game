@@ -1,0 +1,9 @@
+== linux/arm64 ==
+# arch    arm64
+# fma     none
+# glibc   ldd (Ubuntu GLIBC 2.39-0ubuntu8.8) 2.39
+== linux/amd64 ==
+# arch    x86_64
+# fma     fma
+# glibc   ldd (Ubuntu GLIBC 2.39-0ubuntu8.8) 2.39
+IDENTICAL — 1801 lines over 1800 ticks

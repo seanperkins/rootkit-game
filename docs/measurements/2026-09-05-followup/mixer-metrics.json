@@ -1,0 +1,26 @@
+{
+  "busy-master": {
+    "seconds": 60.693333333333335,
+    "peak": 0.856536865234375,
+    "rms": 0.08556280467167272,
+    "samples_at_or_above_0.99": 0
+  },
+  "busy-music": {
+    "seconds": 60.970666666666666,
+    "peak": 0.446044921875,
+    "rms": 0.09131248482386436,
+    "samples_at_or_above_0.99": 0
+  },
+  "busy-final-master": {
+    "seconds": 61.23733333333333,
+    "peak": 0.774688720703125,
+    "rms": 0.08674035427332352,
+    "samples_at_or_above_0.99": 0
+  },
+  "busy-final-music": {
+    "seconds": 61.49333333333333,
+    "peak": 0.4443359375,
+    "rms": 0.09023065926274633,
+    "samples_at_or_above_0.99": 0
+  }
+}

@@ -291,6 +291,7 @@ const LIBM_EXEMPT_FILES := [
 	"res://scripts/update/", "res://scripts/net/transport.gd",
 	"res://scripts/run/feel.gd", "res://scripts/run/props.gd",
 	"res://scripts/run/backdrop.gd",
+	"res://scripts/run/teleporter.gd", # presentation-only transfer apparatus
 	"res://scripts/run/zone_panels.gd", # draw-only surface patterns and indicators
 ]
 

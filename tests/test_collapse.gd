@@ -162,9 +162,9 @@ func the_route_follows_open_ground() -> void:
 
 func voided_ground_kills() -> void:
 	var r := await _fresh_run()
-	var b = r.enemy_types[EnemyTable.ICE]
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
-		48.0, EnemyTable.ICE)
+		48.0, EnemyTable.boss_index(r.subnet))
 	r._on_death(i)
 	r.hitstop_ticks = 0  # drop the boss-kill hitstop; this case drives CLEARED mechanics directly
 	_check("the clock starts on the boss kill", r.collapse_left > 0.0, true)
@@ -187,9 +187,9 @@ func voided_ground_kills() -> void:
 ## looks like from the player's side.
 func the_route_home_is_lit() -> void:
 	var r := await _fresh_run()
-	var b = r.enemy_types[EnemyTable.ICE]
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
-		48.0, EnemyTable.ICE)
+		48.0, EnemyTable.boss_index(r.subnet))
 	r._on_death(i)
 	r.hitstop_ticks = 0  # drop the boss-kill hitstop; this case drives CLEARED mechanics directly
 	r._physics_process(1.0 / 60.0)
@@ -211,6 +211,8 @@ func the_route_home_is_lit() -> void:
 	var g = r.terrain.gate()
 	r.player_pos[r.local_slot] = g.end + g.dir * 8.0
 	r._physics_process(1.0 / 60.0)
+	r._apply_first(r.local_slot)
+	for transfer_tick in 90: r._step_transfer()
 	_check("arriving on the next subnet clears the route", r._route.size(), 0)
 	r.free()
 	finished["the_route_home_is_lit"] = true
@@ -221,9 +223,9 @@ func the_route_home_is_lit() -> void:
 ## thousands of draw calls a frame.
 func the_void_is_drawn_as_merged_runs() -> void:
 	var r := await _fresh_run()
-	var b = r.enemy_types[EnemyTable.ICE]
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
-		48.0, EnemyTable.ICE)
+		48.0, EnemyTable.boss_index(r.subnet))
 	r._on_death(i)
 	r.hitstop_ticks = 0  # drop the boss-kill hitstop; this case drives CLEARED mechanics directly
 	var all := Rect2(r.terrain.origin, r.terrain.size)

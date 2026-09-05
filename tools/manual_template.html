@@ -153,7 +153,7 @@ footer a{color:var(--dim)}
 
 <section id="run">
   <h2>The run</h2>
-  <p class="lede">A run is a <strong>campaign of $subnets subnets</strong>. Each is $subnet_min of waves, then ICE. Killing ICE does not end the subnet &mdash; it starts its collapse, and you have to walk out. Clearing the last subnet wins.</p>
+  <p class="lede">A run is a <strong>campaign of $subnets subnets</strong>. Each is $subnet_min of waves, then a distinct subnet boss. Defeating the boss does not end the subnet &mdash; it starts its collapse, and you have to walk out. Clearing the last subnet wins.</p>
   <div class="grid2">
     <div class="card">
       <h4>Movement is the only input</h4>
@@ -187,11 +187,13 @@ $timeline
     <div class="tl-row" style="margin-top:16px"><div class="tl-label">set-pieces</div>
       <div class="tl-track" style="color:#ff7370;height:22px">$marks</div></div>
   </div></div>
-  <p class="lede">ICE arrives when the wave table is spent. The last minute is deliberately clear of set-pieces &mdash; the subnet's ending is not a stage to share.</p>
+  <p class="lede">The subnet boss arrives when the wave table is spent. The last minute is deliberately clear of set-pieces &mdash; the subnet's ending is not a stage to share.</p>
 </section>
 
 <section id="arena">
   <h2>The arena</h2>
+  <p>Sentinel Array requires four captured spires. Worm.exe has separately damageable segments and four regeneration events at most; its head is the kill target. Root Cause changes from ambush to a warned barrage and then locked-direction charges.</p>
+  <p>Main arenas are now about 31% larger. Complete the subnet's network job to reveal an archive off the east service port. Reach its terminal for 100 shared salvage and a rank offer for every LIVE player. The archive pays once and collapses with the rest of the subnet.</p>
   <p class="lede">Each subnet generates its own arena from the run seed, so a bug report reproduces exactly. Generation guarantees the field is fully connected: any region the flood fill cannot reach is filled in rather than carved open, because a sealed pocket is an unwinnable run.</p>
   <div class="grid2">
     <div class="card">
@@ -203,12 +205,12 @@ $timeline
       <p><span style="color:#ff7370">Hazard</span> costs $hazard integrity a second and burns enemies too, so kiting a swarm through one is a real play. <span style="color:#6699ff">Slow</span> cuts speed to $slowpct%. <span style="color:#d959ff">Corruption</span> adds $corrsec corruption a second to anything standing in it.</p>
     </div>
     <div class="card">
-      <h4>The gate</h4>
-      <p>Stands at one edge from the moment the map generates, shut and solid &mdash; you fight past it for the whole subnet. Killing ICE opens it. Beyond it a $corridor-unit walkway runs to the <em>edge of the next subnet's arena</em>, which was plotted before the first frame: stepping off the far end puts you on its floor. No teleport, and nothing regenerated under you.</p>
+      <h4>The teleporter</h4>
+      <p>Defeating the boss activates the transfer pad. Gather every LIVE teammate inside its ring to vote on three destinations. The world pauses during the ballot; the winning route configures the next subnet, then the pad uploads the party to separate safe arrival points. Only the current subnet is loaded. The final boss wins directly.</p>
     </div>
     <div class="card">
       <h4>The collapse &middot; $collapse seconds</h4>
-      <p>ICE dying stops all spawning and starts the arena coming apart, from the point farthest from the gate inward. Standing on ground that goes is fatal. The way out lights up as tiles across walkable ground, following the actual route rather than pointing through walls.</p>
+      <p>Defeating the boss stops all spawning and starts the arena coming apart, from the point farthest from the teleporter inward. Standing on ground that goes is fatal. The way out lights up as tiles across walkable ground, following the actual route rather than pointing through walls.</p>
     </div>
   </div>
   <div class="warn">
@@ -239,7 +241,7 @@ $ordinary
 </section>
 
 <section id="bosses">
-  <h2>Set-pieces &amp; ICE</h2>
+  <h2>Set-pieces &amp; subnet bosses</h2>
   <p class="lede">One set-piece a minute, each with a mechanic no ordinary enemy has. <strong>None has to be killed</strong> &mdash; but they stay on the field, so ignoring one means fighting it alongside everything that spawns after it. A kill pays <strong>$mb_salvage salvage and a guaranteed card</strong>.</p>
   <div class="scroll"><table>
     <thead><tr><th>Type</th><th class="num">At</th><th>Behaviour</th><th class="num">Integrity</th>

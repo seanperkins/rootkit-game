@@ -103,7 +103,7 @@ func the_four_exist_and_ice_is_still_last() -> void:
 			_check("%s is tougher than a firewall" % id,
 				by_id[id].integrity > by_id[&"firewall"].integrity, true)
 			_check("%s is weaker than ICE" % id,
-				by_id[id].integrity < by_id[&"ice"].integrity, true)
+				by_id[id].integrity < by_id[&"root_cause"].integrity, true)
 			# Flippable, unlike ICE — a corruption build should be able to turn
 			# a set-piece, which is most of why that build is exciting.
 			_check("%s is flippable" % id,
@@ -111,8 +111,8 @@ func the_four_exist_and_ice_is_still_last() -> void:
 
 	# These are INDICES the boss spawn, the win condition and the flip guard all
 	# read. Inserting a type above them repoints them silently.
-	_check("ICE is still last", all[EnemyTable.ICE].id, &"ice")
-	_check("and it is the final row", EnemyTable.ICE, all.size() - 1)
+	for number in range(1, 4):
+		_check("subnet boss resolves", all[EnemyTable.boss_index(number)].id, EnemyTable.BOSS_IDS[number - 1])
 
 	# The schedule resolves to the real types, not to daemon by fallback.
 	#

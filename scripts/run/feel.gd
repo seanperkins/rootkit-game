@@ -122,3 +122,27 @@ func step(dt: float) -> void:
 		else:
 			numbers[i][0].y -= NUMBER_RISE * dt
 			i += 1
+
+# Producer-side aggregation: bounded even when there is no audio consumer.
+const VOICE_COUNT := 10
+const VOICE_CHASE := 0
+const VOICE_CHARGER := 1
+const VOICE_FLANKER := 2
+const VOICE_SUPPORT := 3
+const VOICE_AMBUSHER := 4
+const VOICE_RANGED := 5
+const VOICE_PLAYER0 := 6
+const VOICE_PLAYER1 := 7
+const VOICE_PLAYER2 := 8
+const VOICE_PLAYER3 := 9
+const VOICE_IDS := ["voice_chase", "voice_charger", "voice_flanker", "voice_support",
+	"voice_ambusher", "voice_ranged", "voice_player", "voice_player", "voice_player", "voice_player"]
+var voice_pending := 0
+
+func emit_voice(index: int) -> void:
+	if index >= 0 and index < VOICE_COUNT: voice_pending |= 1 << index
+
+func drain_voice() -> int:
+	var pending := voice_pending
+	voice_pending = 0
+	return pending

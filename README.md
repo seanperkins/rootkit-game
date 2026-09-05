@@ -15,23 +15,26 @@ godot                      # from the project root
 ```
 
 **WASD or arrows.** All weapons auto-fire. A run is a **campaign of three
-subnets**: survive five minutes, then kill the ICE that follows.
+subnets**: survive five minutes, then defeat its subnet boss.
 
-Clearing ICE does not move you on by itself. A **gate** stands at the arena's
-edge from the moment it generates, shut — you fight past it for the whole
-subnet. Killing ICE halts the spawns, opens it, lights the route to it across
-walkable ground, and starts the arena coming apart from the far side inward.
-Ground that has gone is drawn as gone, because standing on it is fatal. Walk in,
-cross the corridor, and the far end puts you on the next subnet's
-own floor with your build, level and XP intact and 30% of your integrity back,
-the gate shutting behind you. Take as long as you like getting there: nothing is
-spawning. Clearing the last subnet wins outright — it has no gate.
+Defeating the boss powers up the **teleporter** and starts the arena's collapse.
+Follow the lit route and gather every LIVE teammate inside the pad. The party
+votes on three shared destination cards; the most votes wins, with a seeded
+draw among tied leaders. Voting pauses the world while inputs keep flowing.
+The pad charges, uploads the party, and rematerializes each player at a distinct
+safe spawn on the next subnet, preserving builds, level and XP and restoring
+30% integrity. The final boss wins immediately.
 
-All three subnets are **plotted before the first frame**, on one grid: three
-arenas laid out end to end and a corridor spanning each gap, running from one
-arena's edge to the next one's. Nothing is generated under your feet and nothing
-moves you — the transition is the walk, and the ground is the same array the
-whole way. Which arena is *current* is the only thing that changes.
+Only the **current subnet** is generated. Its main arena is now 8256 × 4992
+units, about 31% larger by area. The winning route determines the next layout
+before anyone arrives: encounter changes, extra terrain panels, an earlier
+miniboss, or a smaller compressed core. Every route states its reward and expires
+when that subnet ends. No bridges or inactive arenas occupy the live grid.
+
+Completing a subnet's **network job** reveals a hidden archive off the east
+service port. Its floor and passage appear only after the job succeeds. Reaching
+the archive terminal awards 100 shared salvage and a rank offer for each LIVE
+player, once per subnet. The chamber is optional and collapses with the arena.
 
 Enemy integrity scales on both axes — up through each subnet, and again with
 the subnet number — because a rank buys damage linearly and constant HP meant
@@ -245,14 +248,33 @@ the frame. It is load-relative, timing a fixed workload first and scaling the
 budget, because identical code measures 5.2 ms median on a quiet machine and
 8.5 ms under load.
 
+## Subnet bosses and music
+
+**Sentinel Array** stays shielded until the party captures four spires. Hold a
+spire for seven seconds; progress drains when abandoned, and completed captures
+stay captured. Teammates can capture separate spires simultaneously.
+
+**Worm.exe** has a tough head and separately damageable body segments. Land
+positive damage during each twelve-second interval to suppress regeneration.
+It can regenerate only four times; destroying the head ends the encounter.
+
+**Root Cause** changes from ambush to a telegraphed three-shot barrage and then
+to charges as its integrity falls. Its charge warning locks the actual direction.
+
+Combat actions also play a beat-quantized instrument ensemble: shaker, trombone,
+muted trumpet, tuba, bass clarinet, trumpet, and one saxophone voice per player.
+These are synthesized timbres. Notes follow attacks and healing; combat keeps
+its own timing. Shared offers and solo pause silence new ensemble notes, while
+a local co-op menu leaves the shared music running.
+
 ## Not in this build
 
-Audio, additional subnets (the node map is scaffolded but unreachable),
-controller support, healing beyond `keylog`'s lifesteal and a block's integrity
-payout, un-fusing, and second-tier recipes that fuse a fused row again.
+Un-fusing and second-tier recipes that fuse a fused row again.
 
 ## Design
 
 `docs/superpowers/specs/2026-08-29-rootkit-bullet-heaven-design.md` — the spec,
 plus a record of the three review rounds that reshaped it, including the
 architecture reversal from pooled `Area2D` to packed arrays.
+
+Progression now preserves early costs through level 20 and increases later XP costs. [Boss, music and progression implementation notes](docs/progression-bosses-music.md) include the tuning measurements and verification limits.

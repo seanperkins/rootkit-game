@@ -1,6 +1,6 @@
 # Themed boss implementation plan
 
-Date: 2026-09-04. Status: planning only.
+Date: 2026-09-04. Status: implemented; automated validation and a full campaign win verified. Human playtesting remains. See [implementation and measurements](../../progression-bosses-music.md).
 
 Spec: [Three themed bosses](../specs/2026-09-04-themed-bosses-design.md).
 

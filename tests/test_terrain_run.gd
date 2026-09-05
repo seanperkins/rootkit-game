@@ -124,40 +124,17 @@ func slow_zones_slow() -> void:
 	r.free()
 	finished["slow_zones_slow"] = true
 
-## The whole campaign is plotted before the first frame, so the advance moves
-## which arena is CURRENT and nothing else. This case used to assert the
-## opposite — that the arena was rebuilt — which is exactly the teleport the
-## corridor replaced.
+## A destination is generated on transfer; only its own grid is retained.
 func advancing_moves_the_player_on_not_the_ground() -> void:
 	var r := await _fresh_run()
-	var before: PackedByteArray = r.terrain.solid.duplicate()
-	var arena_before: Rect2 = r.terrain.arena()
-	var was: Vector2 = r.player_pos[r.local_slot]
+	var before: Terrain = r.terrain
+	r.player_pos[r.local_slot] = Vector2(0, -384)
 	r._advance_subnet()
-	_check("the ground is untouched", r.terrain.solid, before)
-	_check("the player is not moved", r.player_pos[r.local_slot], was)
-	_check("but the current arena is the next one", r.terrain.arena() == arena_before, false)
-	_check("and it is where the corridor pointed",
-		r.terrain.arena(), r.terrain.arenas[1])
-
-	# Every arena is generated, not just the one being fought in.
-	var walls := PackedInt32Array()
-	walls.resize(r.terrain.arenas.size())
-	for k in r.terrain.arenas.size():
-		var c: Rect2i = r.terrain.arena_cells(k)
-		var n := 0
-		for y in range(c.position.y, c.end.y):
-			for x in range(c.position.x, c.end.x):
-				if r.terrain.solid[y * r.terrain.w + x] != 0:
-					n += 1
-		walls[k] = n
-	var all_built := true
-	for n in walls:
-		if n == 0:
-			all_built = false
-	_check("all three arenas have terrain in them", all_built, true)
-	_check("and they are not the same arena three times",
-		walls[0] == walls[1] and walls[1] == walls[2], false)
+	_check("the old allocation is replaced", r.terrain != before, true)
+	_check("the new seed changes its obstacles", r.terrain.solid != before.solid, true)
+	_check("only the active arena is allocated", r.terrain.arenas.size(), 1)
+	_check("the player arrives at its reserved slot", r.player_pos[r.local_slot], r.terrain.spawner_pos(0, r.local_slot))
+	_check("the destination is fully connected", r.terrain.validate_spawners(r.PLAYER_RADIUS), "")
 	r.free()
 	finished["advancing_moves_the_player_on_not_the_ground"] = true
 

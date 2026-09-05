@@ -1,0 +1,5 @@
+test_draw_order        PASS — all cases
+test_ensemble          PASS — ensemble harmony, event and lifecycle behavior
+test_determinism_rules   PASS — all cases
+
+  ALL GREEN — 3 suites, no script errors

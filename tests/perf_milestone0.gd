@@ -22,6 +22,9 @@ extends SceneTree
 const DT := 1.0 / 60.0
 const TICKS := 600
 const WARMUP := 60
+## Four capture holds plus cross-arena travel extend the first boss beyond the
+## old 400-second cutoff. Keep a bounded run that also exercises its transfer.
+const GATE_TICKS := 30000
 ## DERIVED, not guessed. The frame budget at 60 Hz is 16.67 ms and the tick must
 ## share it with rendering and present. Measured with tools/fps_probe.gd against
 ## the real engine loop at absolute cap (600 enemies, 400 projectiles, 1500
@@ -280,11 +283,37 @@ var _cap_ticks := 0.0
 ## falls 30%, while the enemy baseline rises 13% and kill throughput rises
 ## 6%; this is a different workload, not a speedup or balance-improvement
 ## claim. Keep the existing tolerance bands and timing budget unchanged.
-const BASELINE_OUTCOME := "died"      # "won", "died" or "timeout"
-const BASELINE_END_TICK := 22194
-const BASELINE_MEAN_ENEMIES := 236.1
-const BASELINE_MEAN_HITS := 0.98
-const BASELINE_KILLS_PER_TICK := 0.281
+## Re-pinned 2026-09-05 for single-subnet generation and larger arenas.
+## Paired check against detached 357a277 reproduced DIED 22194, enemies
+## 236.1, hits 0.98, kills 0.281 (normalised p95 10.113 ms). This pass's
+## initial measurement sat on an unanswered route ballot; discard it. The
+## fixture now stages valid route choices for every slot and reports its
+## campaign state so a modal hold cannot masquerade as lighter simulation.
+## Corrected result: TIMEOUT 24000, subnet 2 at 78.6 world seconds, no pending
+## vote; enemies 211.5, hits 1.16, kills 0.286, normalised p95 9.918 ms.
+## The enemy mean falls 10.4% across a different path and averaging span that
+## now includes the next subnet's opening waves. Survival, hits and kills
+## rise. This is an intentional world/transition workload change, not an
+## isolated speedup claim. Keep the same 11 ms budget and tolerance bands;
+## additionally require a completed transfer and no stuck ballot.
+## Re-pinned 2026-09-05 for the themed bosses and final XP curve. The old
+## linear-curve/pre-boss tree reproduced 211.5 enemies, 1.16 hits/tick and
+## 0.286 kills/tick over 24000 ticks (normalised p95 10.031 ms). With capture
+## holds/travel, the final build was still CLEARED in subnet 1 at that cutoff;
+## its timing already passed (normalised p95 9.475 ms), but it had not covered
+## the transfer. The fixture now follows connected cells to the teleporter
+## and runs 30000 ticks, with the same builds, full-leash fighting and stress
+## pools. Corrected measurement: TIMEOUT 30000, subnet 2 at 95.0 world seconds,
+## no pending vote; enemies 156.4, hits 0.99, kills 0.248, normalised p95
+## 8.657 ms. The lower means average a longer span containing the capture
+## encounter and its travel, plus a differently paced XP trajectory. This is
+## a changed campaign workload, not an isolated optimisation speedup. Retain
+## the 11 ms timing budget, tolerance bands and completed-transfer requirement.
+const BASELINE_OUTCOME := "timeout"
+const BASELINE_END_TICK := 30000
+const BASELINE_MEAN_ENEMIES := 156.4
+const BASELINE_MEAN_HITS := 0.99
+const BASELINE_KILLS_PER_TICK := 0.248
 
 
 func _initialize() -> void:
@@ -431,7 +460,7 @@ func _real_run() -> PackedFloat64Array:
 	# The loop ends on SLOT 0: `alive` is true while any slot is LIVE, and the
 	# pinned slots are force-LIVE below, so a dead kite would otherwise be
 	# propped up by three immortal teammates for the rest of the run.
-	while t < 24000 and g.slot_state[0] == g.SlotState.LIVE and not g.won:
+	while t < GATE_TICKS and g.slot_state[0] == g.SlotState.LIVE and not g.won:
 		_fx.drive(g, t)
 		var t0 := Time.get_ticks_usec()
 		g._physics_process(DT)
@@ -456,6 +485,8 @@ func _real_run() -> PackedFloat64Array:
 	var kills_per_tick := float(total_kills) / ticks
 	print("    %s at tick %d (%.0fs), mean live enemies %.1f, mean hits/tick %.2f, kills/tick %.3f, at cap %.0f%% of ticks" % [
 		outcome, t, t * DT, mean_enemies, mean_hits, kills_per_tick, 100.0 * _cap_ticks / ticks])
+	print("    campaign: subnet %d, phase %d, world %.1fs, pending vote %s" % [g.subnet, g.phase, g.director.elapsed, g.route_pending])
+	print("    objective: %d spires left, collapse %.1fs, teleporter distance %.0f" % [g._sentinel_spires_left, g.collapse_left, g.player_pos[0].distance_to(g.terrain.teleporter_pos())])
 	var covered := true
 	if BASELINE_OUTCOME == "won":
 		covered = outcome == "won"
@@ -470,6 +501,8 @@ func _real_run() -> PackedFloat64Array:
 	# is the opposite of a pin. The field mean and the outcome are the load.
 	if mean_enemies < BASELINE_MEAN_ENEMIES * 0.97 or mean_hits < BASELINE_MEAN_HITS * 0.75 \
 			or kills_per_tick < BASELINE_KILLS_PER_TICK * 0.75:
+		covered = false
+	if g.subnet < 2 or g.route_pending:
 		covered = false
 	_gate_covered = covered
 	# Determinism, not speed: an event queue that overflowed at cap dropped work

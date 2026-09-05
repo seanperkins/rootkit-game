@@ -54,29 +54,21 @@ It also deals 6 damage per linked player to enemies in range through the normal
 combat event queue. Solo remains useful; grouping strengthens both effects.
 Leaving range stops recharge and pulse support. Green tethers identify links.
 
-## Route votes
+## Route votes and teleporters
 
-After all LIVE players cross the cleared subnet's corridor, combat pauses for
-three shared route options. Each player submits a normal tick-addressed choice;
-most votes wins. Only tied leaders enter a draw from a dedicated deterministic
-RNG stream. Non-ties consume no route RNG. The vote advances the campaign once.
+See [Teleporter and subnet generation](teleporter-subnets.md) for the completed
+transition, expanded seven-route pool, larger arenas and hidden archives.
+All LIVE players gather on the pad after boss death. Three distinct routes are
+sampled from the shared seeded stream. Each player stages a normal input choice;
+plurality wins and only tied leaders enter a draw. Eligibility freezes when the
+vote opens: departures keep a cast ballot or take option zero; returning players
+do not receive a second ballot. Multiplayer retains the configured deadline;
+solo remains deadline-free.
 
-| Route | Risk | Reward |
-| --- | --- | --- |
-| Swarm Exchange | 25% more wave spawns | 15% lower regular enemy integrity; one extra XP shard per enemy |
-| Armored Archive | 25% more regular enemy integrity | 15% fewer wave spawns; 150 extra salvage on boss defeat |
-| Corrupted Relay | 15% more wave spawns | 25% lower corruption thresholds; four extra shared botnet slots |
-
-Cards count relevant weapons in the LIVE party's compiled builds. These are
-transparent build hints, not promises that a route is optimal. Bonuses replace
-the previous route on entry to the next subnet and never stack. Regular enemy
-integrity modifiers do not change miniboss or ICE integrity. Routes modify the
-next prebuilt arena's encounters; they do not generate alternative map branches.
-
-Multiplayer uses its existing 30-second choice deadline; the UI explains the
-first-option auto-vote. Solo has no deadline. Departed voters abstain, and a
-returning LIVE player gets a ballot if the vote is still open. Completed voters
-wait while the input stream keeps running. The final boss still wins directly.
+The transfer charges for 54 consumed ticks, builds the selected destination,
+and materializes the party for 36 ticks. Only one subnet's terrain is loaded.
+The next route replaces the previous route's effects; the final boss wins directly.
+Completing each network job also reveals its subnet's hidden archive.
 
 ## Verification
 

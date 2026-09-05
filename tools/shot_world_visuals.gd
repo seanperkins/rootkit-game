@@ -14,6 +14,7 @@ func _initialize() -> void:
 	SaveGame.use_test_paths()
 	SaveGame.use_fresh_state()
 	run = load("res://scenes/run.tscn").instantiate()
+	run.external_drive = true
 	root.add_child(run)
 
 func _process(_d: float) -> bool:
@@ -25,9 +26,9 @@ func _process(_d: float) -> bool:
 		run.input_override = Vector2.ZERO
 	if frames == 5 or frames == 65 or frames == 125:
 		var index := (frames - 5) / 60
-		run.terrain.current = index
-		run.subnet = index + 1
-		run.player_pos[0] = run.terrain.arenas[index].get_center()
+		if index > 0:
+			run._advance_subnet()
+		run.player_pos[0] = run.terrain.arena().get_center()
 		run._snapshot_render_state()
 	if frames == 60 or frames == 120 or frames == 180:
 		var index := frames / 60

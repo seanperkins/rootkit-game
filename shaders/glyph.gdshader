@@ -101,6 +101,15 @@ void fragment() {
 		hull = length(p) - teeth;
 		detail = band(length(p), 0.20, 0.016);
 		core = min(box(p + vec2(0.0, 0.04), vec2(0.035, 0.10)), length(p - vec2(0.0, 0.14)) - 0.04);
+	} else if (g == 18) { // Sentinel Array: four radial armor wings and a shielded core
+		hull = min(box(p, vec2(0.13, 0.43)), box(p, vec2(0.43, 0.13)));
+		hull = min(hull, diamond(p, 0.38));
+		core = length(p) - 0.085;
+		detail = band(length(p), 0.23, 0.014);
+	} else if (g == 19) { // Worm.exe: articulated layered vertebra
+		hull = max(box(p, vec2(0.35, 0.32)), diamond(p, 0.51));
+		detail = min(abs(abs(p.x) - 0.21), abs(p.y) - 0.12);
+		core = box(p, vec2(0.045, 0.19));
 	} else if (g == 14) { // packet: pointed data capsule, bright leading edge
 		hull = max(box(p, vec2(0.12, 0.36)), diamond(p + vec2(0.0, 0.12), 0.34));
 		core = box(p + vec2(0.0, 0.08), vec2(0.035, 0.16));
@@ -130,7 +139,7 @@ void fragment() {
 	vec3 col = mix(armor, tint * 0.85, edge);
 	col = mix(col, tint * 0.48, engraving * (1.0 - edge));
 	col = mix(col, mix(tint, vec3(1.8), 0.55) * pulse, light);
-	if (g == 3 || (g >= 10 && g <= 13)) {
+	if (g == 3 || g == 18 || g == 19 || (g >= 10 && g <= 13)) {
 		// Health belongs to the hardware: six ICE facets, four fork chambers,
 		// six front shield plates, four aperture corners, eight reactor teeth.
 		// The original hull stays solid and faintly visible even when a plate

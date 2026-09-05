@@ -111,7 +111,7 @@ def read_enemies() -> list:
 def read_waves() -> list:
     out = []
     for m in re.finditer(
-            r'Wave\.new\(([\d.]+),\s*([\d.]+),\s*(?:(\d+)|_idx\(&"(\w+)"\)),\s*'
+            r'Wave\.new\(([\d.]+),\s*([\d.]+),\s*(?:(\d+)|EnemyTable\.index_of\(&"(\w+)"\)),\s*'
             r'([\d.]+),\s*Formation\.(\w+)\)', src("scripts/run/spawn_director.gd")):
         t0, t1, idx, wid, rate, form = m.groups()
         out.append({"t0": float(t0), "t1": float(t1),
@@ -190,7 +190,9 @@ ENEMY_NOTES = {
     "packet_filter": "Heals the swarm, and takes <strong>90% less damage from the front</strong>. Facing is its movement direction, so getting behind it is a manoeuvre rather than a stat check.",
     "null_ptr": "Blinks on a short ambush cycle, leaving a damaging afterimage at every point it vanishes. A long fight progressively denies you ground.",
     "kernel_panic": "Shoots, and periodically pulses everything <strong>with line of sight to it</strong>. Putting a wall between you and it is the only answer.",
-    "ice": "The subnet&rsquo;s ending. The field is purged to make room for it. It cannot be flipped &mdash; that would bypass the kill-to-win condition.",
+    "sentinel_array": "Subnet 1. Capture four spires to expose the shielded core. Hold each for seven seconds; teammates can capture separately.",
+    "worm_exe_segment": "Subnet 2. The head has 550 base integrity; bodies have 80 each. Land damage every twelve seconds to suppress regeneration. Four regeneration events maximum; head death clears the subnet.",
+    "root_cause": "Subnet 3. Ambush above 66% integrity, a telegraphed three-shot barrage below that, and charges at 33%. The dash follows its warning.",
 }
 
 SHOP_NOTES = {
@@ -307,9 +309,10 @@ def build() -> str:
     xp_seq = ", ".join(str(round((5 + 3 * (n - 1)) * xp)) for n in range(1, 6))
 
     by_id = {e["id"]: e for e in enemies}
-    ordinary = [e for e in enemies if e["id"] not in mb_ids and e["id"] != "ice"]
+    boss_ids = ["sentinel_array", "worm_exe_segment", "root_cause"]
+    ordinary = [e for e in enemies if e["id"] not in mb_ids + boss_ids]
     setpieces = [by_id[i] for i in mb_ids if i in by_id] + \
-        ([by_id["ice"]] if "ice" in by_id else [])
+        [by_id[i] for i in boss_ids]
 
     # ---- timeline ----
     tl_by_type = {}
@@ -331,7 +334,7 @@ def build() -> str:
     marks = "".join(
         '<div class="tl-mark" style="left:%.2f%%" data-l="%s"></div>'
         % (t / subnet_s * 100, esc(i)) for t, i in zip(mb_times, mb_ids))
-    marks += '<div class="tl-mark" style="left:99.6%" data-l="ICE"></div>'
+    marks += '<div class="tl-mark" style="left:99.6%" data-l="BOSS"></div>'
 
     # ---- enemy tables ----
     def enemy_rows(rows, extra_at=None):
@@ -352,7 +355,8 @@ def build() -> str:
         return "\n".join(out)
 
     mb_at = {i: "%d:%02d" % (t // 60, t % 60) for i, t in zip(mb_ids, mb_times)}
-    mb_at["ice"] = "%d:%02d" % (subnet_s // 60, subnet_s % 60)
+    for boss_id in boss_ids:
+        mb_at[boss_id] = "%d:%02d" % (subnet_s // 60, subnet_s % 60)
 
     shop_rows = "\n".join(
         '<tr><td class="name">%s</td><td>%s%s %s</td><td class="num">%s%s</td>'

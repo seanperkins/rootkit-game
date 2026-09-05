@@ -1,0 +1,69 @@
+test_progression       PASS — progression costs, remainder and shared recovery
+test_bosses            PASS — boss behavior and recovery
+test_ensemble          PASS — ensemble harmony, event and lifecycle behavior
+test_teleporter        PASS — all cases
+test_network_expansion   PASS — all cases
+test_terrain           PASS — all 95 assertions
+test_terrain_run       PASS — all cases
+test_gates             PASS — all cases
+test_campaign          PASS — all cases
+test_collapse          PASS — all cases
+test_build             PASS — all cases
+test_slots             PASS — all cases
+test_fusion            PASS — all cases
+test_fusion_run        PASS — all cases
+test_blocks            PASS — all cases
+test_cadence           PASS — all cases
+test_drain             PASS — all 11 cases
+test_corruption        PASS — corruption flips enemies into the botnet
+test_dispatch          PASS — all cases
+test_triggers          PASS — every trigger fires
+test_worms             PASS — all cases
+test_wards             PASS — all cases
+test_multipliers       PASS — all cases
+test_travel            PASS — all cases
+test_behaviour         PASS — all cases
+test_effects           PASS — all cases
+test_minibosses        PASS — all cases
+test_cards_keyboard    PASS — all cases
+test_draw_order        PASS — all cases
+test_player_stats      PASS — all cases
+test_player_sheet      PASS — all cases
+test_meta              PASS — all cases
+test_meta_layout       PASS — all cases
+test_settings_overlay   PASS — all cases
+test_run               PASS — all checks
+test_feel              PASS — all cases
+test_synth             PASS — all cases
+test_audio_events      PASS — all cases
+test_input             PASS — all cases
+test_prefs             PASS — all cases
+test_hud               PASS — all cases
+test_arrivals          PASS — all cases
+test_flow              PASS — all cases
+test_interpolation     PASS — all cases
+test_determinism_rules   PASS — all cases
+test_meta_derivation   PASS — all cases
+test_lockstep          PASS — all cases
+test_plurality         PASS — all cases
+test_offers            PASS — all cases
+test_manifest          PASS — all cases
+test_snapshot_hostile   PASS — all cases
+test_multiplayer_sim   PASS — all cases
+test_transport_loopback   PASS — all cases
+test_lobby             PASS — all cases
+test_recovery          PASS — all cases
+test_ending            PASS — all cases
+test_parking           PASS — all cases
+test_reconnect         PASS — all cases
+test_facing            PASS — all cases
+test_relay_frame       PASS — all cases
+test_relay_rooms       PASS — all cases
+test_relay             PASS — all cases
+test_transport_punch   PASS — direct link and relay fallback
+test_update            PASS — all cases
+test_deterministic_math   PASS — all cases
+test_start_delay       PASS — all cases
+perf_milestone0      FAIL    exit 1    FAIL — the fixture measured less than its baseline (timeout at 24000, mean enemies 211.5, mean hits 1.16, kills/tick 0.286): a coverage regression, not a speedup.
+
+  1 of 67 suites failed

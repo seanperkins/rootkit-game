@@ -116,9 +116,9 @@ func _done(r: Node2D, name: String) -> void:
 ## open and the collapse field is built. The boss-kill hitstop is dropped: these
 ## cases step the tick directly.
 func _clear_subnet(r: Node2D) -> void:
-	var b = r.enemy_types[EnemyTable.ICE]
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
-		48.0, EnemyTable.ICE)
+		48.0, EnemyTable.boss_index(r.subnet))
 	r._on_death(i)
 	r.hitstop_ticks = 0
 
@@ -374,6 +374,7 @@ func the_gate_waits_for_every_live_slot() -> void:
 	_check("the vote holds the old subnet", r.subnet, 1)
 	r._apply_first(0)
 	r._apply_first(1)
+	for i in 90: r._step_transfer()
 	_check("both votes advance", r.subnet, 2)
 	await _done(r, "the_gate_waits_for_every_live_slot")
 

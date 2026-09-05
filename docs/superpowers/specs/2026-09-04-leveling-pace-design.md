@@ -1,6 +1,6 @@
 # Leveling pace across the campaign
 
-Date: 2026-09-04. Status: approved goal and measurement order; exact curve remains experimental. No gameplay change implemented or simulated for this document.
+Date: 2026-09-04. Status: implemented with a later onset justified by the first paired measurements. See [implementation record](../../progression-bosses-music.md); the original candidate below remains design history.
 
 ## Goal
 

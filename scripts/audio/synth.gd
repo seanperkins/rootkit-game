@@ -42,6 +42,8 @@ const AMPLITUDE := 32767.0
 ## Default spec. `build` merges over this, so a table row states only what it
 ## changes.
 const DEFAULTS := {
+	"vibrato_rate": 0.0,
+	"vibrato_depth": 0.0,
 	"wave": Wave.SINE,
 	"f0": 440.0,       # start frequency
 	"f1": 440.0,       # end frequency, swept linearly
@@ -109,12 +111,32 @@ const EVENTS := {
 		"noise": 0.85, "sustain": 0.5, "gain": 0.75},
 	"miniboss_kill":  {"wave": Wave.SAW, "f0": 380.0, "f1": 90.0, "dur": 0.4,
 		"noise": 0.5, "sustain": 0.6, "release": 0.15, "gain": 0.75},
-	"ice_charge":     {"wave": Wave.SAW, "f0": 90.0, "f1": 620.0, "dur": 0.9,
+	"sentinel_charge":     {"wave": Wave.SAW, "f0": 90.0, "f1": 620.0, "dur": 0.9,
 		"attack": 0.35, "sustain": 0.9, "release": 0.2, "noise": 0.3, "gain": 0.6},
-	"ice_arrive":     {"wave": Wave.NOISE, "f0": 520.0, "f1": 50.0, "dur": 0.45,
+	"sentinel_arrive":     {"wave": Wave.NOISE, "f0": 520.0, "f1": 50.0, "dur": 0.45,
 		"noise": 0.9, "sustain": 0.6, "gain": 0.9},
-	"ice_kill":       {"wave": Wave.SAW, "f0": 440.0, "f1": 60.0, "dur": 0.7,
+	"sentinel_kill":       {"wave": Wave.SAW, "f0": 440.0, "f1": 60.0, "dur": 0.7,
 		"noise": 0.55, "sustain": 0.7, "release": 0.3, "gain": 0.9},
+	"worm_charge":     {"wave": Wave.SAW, "f0": 90.0, "f1": 620.0, "dur": 0.9,
+		"attack": 0.35, "sustain": 0.9, "release": 0.2, "noise": 0.3, "gain": 0.6},
+	"worm_arrive":     {"wave": Wave.NOISE, "f0": 520.0, "f1": 50.0, "dur": 0.45,
+		"noise": 0.9, "sustain": 0.6, "gain": 0.9},
+	"worm_kill":       {"wave": Wave.SAW, "f0": 440.0, "f1": 60.0, "dur": 0.7,
+		"noise": 0.55, "sustain": 0.7, "release": 0.3, "gain": 0.9},
+	"root_charge":     {"wave": Wave.SAW, "f0": 90.0, "f1": 620.0, "dur": 0.9,
+		"attack": 0.35, "sustain": 0.9, "release": 0.2, "noise": 0.3, "gain": 0.6},
+	"root_arrive":     {"wave": Wave.NOISE, "f0": 520.0, "f1": 50.0, "dur": 0.45,
+		"noise": 0.9, "sustain": 0.6, "gain": 0.9},
+	"root_kill":       {"wave": Wave.SAW, "f0": 440.0, "f1": 60.0, "dur": 0.7,
+		"noise": 0.55, "sustain": 0.7, "release": 0.3, "gain": 0.9},
+	"spire_capture": {"wave": Wave.SINE, "f0": 440.0, "f1": 880.0, "dur": 0.35, "gain": 0.5},
+	"sentinel_exposed": {"wave": Wave.SAW, "f0": 880.0, "f1": 110.0, "dur": 0.65, "gain": 0.5},
+	"worm_regen": {"wave": Wave.SQUARE, "f0": 110.0, "f1": 330.0, "dur": 0.4, "gain": 0.45},
+	"root_phase": {"wave": Wave.SAW, "f0": 220.0, "f1": 660.0, "dur": 0.4, "gain": 0.5},
+	"teleport_charge": {"wave": Wave.SAW, "f0": 90.0, "f1": 1100.0, "dur": 0.9,
+		"attack": 0.15, "sustain": 0.6, "release": 0.15, "gain": 0.35},
+	"teleport_arrive": {"wave": Wave.SINE, "f0": 1400.0, "f1": 260.0, "dur": 0.6,
+		"attack": 0.01, "sustain": 0.4, "release": 0.4, "gain": 0.55},
 	"gate_open":      {"wave": Wave.SINE, "f0": 260.0, "f1": 780.0, "dur": 0.5,
 		"attack": 0.08, "sustain": 0.8, "release": 0.2, "gain": 0.55},
 	"collapse":       {"wave": Wave.NOISE, "f0": 180.0, "f1": 60.0, "dur": 0.8,
@@ -161,8 +183,22 @@ const FIRE_SPECS := [
 
 ## Every id the game can play, spec included. `build_bank` is the only caller
 ## that matters, but the key set is what `test_audio_events` asserts against.
+# All pitched buffers are centered on a harmony reference. Runtime transposition
+# supplies scale degrees; variants change envelope only. Even the longest tuba
+# tail ends before the fastest eighth note (0.242 s), including variant spread.
+const VOICE_SPECS := {
+	"voice_chase": {"wave": Wave.NOISE, "f0": 880.0, "f1": 880.0, "dur": 0.075, "attack": 0.003, "decay": 0.025, "sustain": 0.15, "release": 0.04, "gain": 0.10, "steps": [0]},
+	"voice_charger": {"wave": Wave.SAW, "f0": 110.0, "f1": 110.0, "dur": 0.15, "attack": 0.014, "decay": 0.035, "sustain": 0.65, "release": 0.07, "gain": 0.16, "steps": [0]},
+	"voice_flanker": {"wave": Wave.SQUARE, "f0": 220.0, "f1": 220.0, "dur": 0.095, "attack": 0.004, "decay": 0.025, "sustain": 0.25, "release": 0.045, "gain": 0.10, "steps": [0]},
+	"voice_support": {"wave": Wave.SINE, "f0": 55.0, "f1": 55.0, "dur": 0.19, "attack": 0.035, "decay": 0.04, "sustain": 0.85, "release": 0.07, "gain": 0.23, "steps": [0]},
+	"voice_ambusher": {"wave": Wave.SQUARE, "f0": 110.0, "f1": 110.0, "dur": 0.17, "attack": 0.02, "decay": 0.045, "sustain": 0.45, "release": 0.065, "gain": 0.12, "steps": [0]},
+	"voice_ranged": {"wave": Wave.SAW, "f0": 220.0, "f1": 220.0, "dur": 0.11, "attack": 0.004, "decay": 0.025, "sustain": 0.6, "release": 0.045, "gain": 0.13, "steps": [0]},
+	"voice_player": {"wave": Wave.SAW, "f0": 110.0, "f1": 110.0, "dur": 0.17, "attack": 0.012, "decay": 0.035, "sustain": 0.65, "release": 0.07, "gain": 0.12, "vibrato_rate": 5.0, "vibrato_depth": 0.004, "steps": [0]},
+}
+
 static func all_specs() -> Dictionary:
 	var out := EVENTS.duplicate(true)
+	out.merge(VOICE_SPECS, true)
 	for k in Module.VectorKind.size():
 		var spec: Dictionary = (FIRE_SPECS[k] if k < FIRE_SPECS.size()
 			else FIRE_SPECS[0]).duplicate()
@@ -321,14 +357,24 @@ static func build(partial: Dictionary, variant: int = 0) -> AudioStreamWAV:
 	var rng := RandomNumberGenerator.new()
 	# Seeded from the spec, so the same spec twice yields identical bytes and a
 	# noise sound is still deterministic.
-	rng.seed = hash(str(spec)) + variant * 7919
+	# The old seed includes the serialized defaults. New optional controls
+	# must not reseed existing noise buffers when their feature is disabled.
+	var seed_spec := spec.duplicate()
+	if float(spec["vibrato_depth"]) == 0.0:
+		seed_spec.erase("vibrato_rate")
+		seed_spec.erase("vibrato_depth")
+	rng.seed = hash(str(seed_spec)) + variant * 7919
 
 	var data := PackedByteArray()
 	data.resize(n * 2)
 	var phase := 0.0
+	var vibrato_depth: float = spec["vibrato_depth"]
+	var vibrato_rate: float = spec["vibrato_rate"]
 	for i in n:
 		var t := float(i) / float(n)
 		var freq: float = lerpf(spec["f0"], spec["f1"], t)
+		if vibrato_depth != 0.0:
+			freq *= 1.0 + vibrato_depth * sin(TAU * vibrato_rate * float(i) / SAMPLE_RATE)
 		phase += TAU * freq / SAMPLE_RATE
 		var tone := 0.0
 		match int(spec["wave"]):

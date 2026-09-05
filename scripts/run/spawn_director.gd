@@ -108,13 +108,6 @@ var miniboss_fired: PackedByteArray
 
 ## Wave rows address enemy TYPES BY INDEX, so a bare number breaks silently the
 ## moment a type is inserted above it. Resolved from the table by id instead.
-static func _idx(id: StringName) -> int:
-	var all := EnemyTable.all()
-	for i in all.size():
-		if all[i].id == id:
-			return i
-	return 0
-
 func _init(seed_value: int = 20260829) -> void:
 	rng.seed = seed_value
 	# Rates are the DENSITY axis, and the overlaps are what set it: four rows
@@ -142,13 +135,13 @@ func _init(seed_value: int = 20260829) -> void:
 		Wave.new(240.0, 300.0, 1, 0.9, Formation.FLANK),
 		# The new types, introduced one at a time so each is legible when it
 		# first appears rather than arriving in a crowd.
-		Wave.new(70.0,  160.0, _idx(&"tracer"),   1.1,  Formation.FLANK),
-		Wave.new(110.0, 210.0, _idx(&"sentinel"), 0.5,  Formation.RING),
-		Wave.new(150.0, 250.0, _idx(&"probe"),    0.7,  Formation.STREAM),
-		Wave.new(190.0, 300.0, _idx(&"rootkit"),  0.6,  Formation.BURST),
+		Wave.new(70.0,  160.0, EnemyTable.index_of(&"tracer"),   1.1,  Formation.FLANK),
+		Wave.new(110.0, 210.0, EnemyTable.index_of(&"sentinel"), 0.5,  Formation.RING),
+		Wave.new(150.0, 250.0, EnemyTable.index_of(&"probe"),    0.7,  Formation.STREAM),
+		Wave.new(190.0, 300.0, EnemyTable.index_of(&"rootkit"),  0.6,  Formation.BURST),
 		# Kept rare deliberately: each watchdog runs a radius query every tick,
 		# and it is meant to be a target you dig for, not a crowd.
-		Wave.new(210.0, 300.0, _idx(&"watchdog"), 0.25, Formation.FLANK),
+		Wave.new(210.0, 300.0, EnemyTable.index_of(&"watchdog"), 0.25, Formation.FLANK),
 	]
 	miniboss_fired = PackedByteArray()
 	miniboss_fired.resize(MINIBOSS_TIMES.size())
@@ -167,14 +160,15 @@ func _init(seed_value: int = 20260829) -> void:
 ## The trade: a frame long enough to step over a boundary entirely skips that
 ## mini-boss. At a 60 Hz tick that is a frame of over a minute, and losing one
 ## arrival is much cheaper than gaining four at once.
-func due_minibosses(dt: float) -> Array:
+func due_minibosses(dt: float, first_advance: float = 0.0) -> Array:
 	var out := []
 	for k in MINIBOSS_TIMES.size():
 		if miniboss_fired[k] != 0:
 			continue
-		if elapsed < MINIBOSS_TIMES[k] and elapsed + dt >= MINIBOSS_TIMES[k]:
+		var at: float = MINIBOSS_TIMES[k] - (first_advance if k == 0 else 0.0)
+		if elapsed < at and elapsed + dt >= at:
 			miniboss_fired[k] = 1
-			out.append(_idx(MINIBOSS_IDS[k]))
+			out.append(EnemyTable.index_of(MINIBOSS_IDS[k]))
 	return out
 
 func reset() -> void:

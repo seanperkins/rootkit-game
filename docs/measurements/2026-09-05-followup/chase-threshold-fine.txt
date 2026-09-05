@@ -1,0 +1,19 @@
+Godot Engine v4.7.stable.official.5b4e0cb0f - https://godotengine.org
+Metal 4.0 - Forward+ - Using Device #0: Apple - Apple M2 (Apple8)
+
+CONTROLLERS []
+ENSEMBLE_AUDIT {"candidate_longest":[225,134,121,102,16,1],"candidate_notes":[225,156,143,120,95,3],"longest_streak":[225,1,0,175,6,204,13,10,56,11],"notes":[225,15,0,175,131,217,161,145,182,150],"swarm_beats":225,"thresholds":[15.0,120.0,150.0,180.0,210.0,240.0]}
+
+ROOTKIT — frame probe (four-slot party, the perf gate's fixture)
+  config (none), ran 3600 frames, mean live enemies 394.6
+  window (1280, 720), 1428 draw calls in the last frame
+
+  by live enemy count. Render times are measured inside the renderer
+  and do NOT vsync-quantise; frame time does.
+    enemies    frames   render cpu   render gpu     frame   missed 16.7
+     200-299     546       0.67 ms      0.00 ms     16.79 ms    49%
+     300-399    1297       0.68 ms      0.00 ms     16.82 ms    51%
+     400-499    1115       0.65 ms      0.00 ms     16.74 ms    49%
+     500+        462       0.62 ms      0.00 ms     16.84 ms    55%
+
+  frame time overall: median 16.68 ms, p95 19.59 ms, over 16.7 ms 51%

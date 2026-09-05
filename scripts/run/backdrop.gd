@@ -53,7 +53,7 @@ func _process(_d: float) -> void:
 			var mat := ShaderMaterial.new()
 			mat.shader = CIRCUIT_SHADER
 			mat.set_shader_parameter("phase", float(i) * 0.31)
-			mat.set_shader_parameter("subnet", i)
+			mat.set_shader_parameter("subnet", maxi(_terrain.subnet_number - 1, i))
 			layer.material = mat
 			add_child(layer)
 			_circuits.append(layer)
@@ -66,7 +66,7 @@ func _process(_d: float) -> void:
 					patch.use_parent_material = true
 					var bounds := Rect2(arena.position + Vector2(x, y) * SECTOR,
 						Vector2(mini(PATCH_SECTORS, nx - x), mini(PATCH_SECTORS, ny - y)) * SECTOR)
-					patch.draw.connect(_draw_circuits.bind(patch, bounds, i, Vector2i(x, y)))
+					patch.draw.connect(_draw_circuits.bind(patch, bounds, maxi(_terrain.subnet_number - 1, i), Vector2i(x, y)))
 					layer.add_child(patch)
 	# Density lowers decorative contrast smoothly; simulation never reads it.
 	var quiet := 1.0 - 0.28 * clampf(float(target.enemies.count) / 400.0, 0.0, 1.0)
@@ -92,7 +92,7 @@ func _draw() -> void:
 	# rect test each keeps the cost where it was when there was only one.
 	for i in target.terrain.arenas.size():
 		if _visible_mask & (1 << i):
-			_arena(target.terrain.arenas[i], i)
+			_arena(target.terrain.arenas[i], maxi(target.terrain.subnet_number - 1, i))
 
 func _arena(r: Rect2, index: int) -> void:
 	var o: Vector2 = r.position
@@ -143,49 +143,92 @@ func _draw_circuits(layer: Node2D, arena: Rect2, index: int,
 		return
 	var traces := PackedVector2Array()
 	var etching := PackedVector2Array()
-	var nx := int(arena.size.x / SECTOR)
-	var ny := int(arena.size.y / SECTOR)
-	for y in ny:
-		for x in nx:
-			# Stable variation, including blank sectors for visual breathing room.
-			var key := absi(hash(Vector3i(x + sector_offset.x, y + sector_offset.y, index)))
-			if key % 5 == 0:
-				continue
-			var o := arena.position + Vector2(x, y) * SECTOR
-			var c := o + Vector2.ONE * SECTOR * 0.5
-			match index % 3:
-				0:
-					var turn := 40.0 + float(key % 3) * 24.0
-					_path(traces, [o + Vector2(24, 48), o + Vector2(turn, 48),
-						o + Vector2(turn + 48, 96), o + Vector2(turn + 48, 216),
-						o + Vector2(252, 216)])
-					_path(etching, [o + Vector2(24, 60), o + Vector2(turn - 6, 60),
-						o + Vector2(turn + 36, 102), o + Vector2(turn + 36, 228),
-						o + Vector2(252, 228)])
-					_socket(etching, o + Vector2(24, 54), Vector2(12, 18))
-					_socket(etching, o + Vector2(252, 222), Vector2(12, 18))
-				1:
-					for row in 3:
-						var p := o + Vector2(64, 56 + row * 60)
-						_socket(etching, p + Vector2(68, 16), Vector2(136, 32))
-						_path(traces, [p + Vector2(12, 16), p + Vector2(112, 16)])
-						_path(etching, [p + Vector2(-20, 16), p,
-							p + Vector2(0, -8)])
-					_path(traces, [o + Vector2(228, 40), o + Vector2(228, 236),
-						o + Vector2(152, 236)])
-				2:
-					_socket(etching, c, Vector2(116, 116))
-					_socket(etching, c, Vector2(92, 92))
-					_path(traces, [c + Vector2(-100, -104), c + Vector2(-24, -104),
-						c + Vector2(-24, -58)])
-					_path(traces, [c + Vector2(24, 58), c + Vector2(24, 104),
-						c + Vector2(100, 104)])
-					for pin in 3:
-						var offset := -24.0 + float(pin) * 24.0
-						_path(etching, [c + Vector2(-82, offset), c + Vector2(-58, offset)])
-						_path(etching, [c + Vector2(58, offset), c + Vector2(82, offset)])
+	# Patches are only a rendering budget, not visible placement cells. Scatter
+	# small clusters across their edges so the board has uneven open areas.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(str("circuits:", index, ":", sector_offset, ":", _terrain.spawner_pos(0, 0)))
+	var clusters := PackedVector2Array()
+	for k in rng.randi_range(2, 4):
+		clusters.append(arena.position + arena.size * Vector2(rng.randf(), rng.randf()))
+	var count := maxi(1, int(arena.get_area() / (SECTOR * SECTOR) * 0.55) + rng.randi_range(-2, 2))
+	var placed := PackedVector2Array()
+	var radii := PackedFloat32Array()
+	var outer: Rect2 = _terrain.arenas[0 if _terrain.subnet_number > 0 else index]
+	for attempt in count * 12:
+		if placed.size() >= count: break
+		var centre := arena.position + arena.size * Vector2(rng.randf(), rng.randf())
+		if rng.randf() < 0.7:
+			centre = clusters[rng.randi_range(0, clusters.size() - 1)] + arena.size * Vector2(rng.randf_range(-0.28, 0.28), rng.randf_range(-0.28, 0.28))
+		var scale := Vector2(rng.randf_range(0.65, 1.20), rng.randf_range(0.60, 1.10))
+		var radius := 175.0 * maxf(scale.x, scale.y)
+		if not outer.grow(-radius).has_point(centre): continue
+		var crowded := false
+		for k in placed.size():
+			if centre.distance_to(placed[k]) < (radius + radii[k]) * 0.75:
+				crowded = true
+				break
+		if crowded: continue
+		placed.append(centre)
+		radii.append(radius)
+		var local_traces := PackedVector2Array()
+		var local_etching := PackedVector2Array()
+		_circuit_motif(local_traces, local_etching, index, rng)
+		var axis: Vector2 = [Vector2.RIGHT, Vector2.DOWN, Vector2.LEFT, Vector2.UP][rng.randi_range(0, 3)]
+		if rng.randf() < 0.5: scale.x = -scale.x
+		var transform := Transform2D(axis * scale.x, Vector2(-axis.y, axis.x) * scale.y, centre)
+		for point in local_traces: traces.append(target.to_iso(transform * point))
+		for point in local_etching: etching.append(target.to_iso(transform * point))
 	layer.set_meta(&"circuit_geometry", [index, traces, etching])
 	_draw_circuit_lines(layer, traces, etching, index)
+
+## Order within a device is deliberate; device size, routing and placement vary.
+## Build in local board coordinates, then orient/project the whole component.
+func _circuit_motif(traces: PackedVector2Array, etching: PackedVector2Array,
+		index: int, rng: RandomNumberGenerator) -> void:
+	match index % 3:
+		0:
+			var half := Vector2(rng.randf_range(80, 135), rng.randf_range(50, 105))
+			var bend := rng.randf_range(-half.x * 0.45, half.x * 0.15)
+			var route := [Vector2(-half.x, -half.y), Vector2(bend, -half.y),
+				Vector2(bend + 32, -half.y + 32), Vector2(bend + 32, half.y), half]
+			_path(traces, route)
+			if rng.randf() < 0.65:
+				var parallel := []
+				for point in route: parallel.append(point + Vector2(-9, 10))
+				_path(etching, parallel)
+			if rng.randf() < 0.55:
+				var tap := Vector2(bend + 32, half.y * 0.25)
+				var end := Vector2(half.x, tap.y - 28)
+				_path(etching, [tap, tap + Vector2(28, -28), end])
+				_socket(etching, end, Vector2(10, 10))
+			_socket(etching, route[0], Vector2(12, 16))
+			_socket(etching, route[-1], Vector2(14, 12))
+		1:
+			var rows := rng.randi_range(2, 4)
+			var pitch := rng.randf_range(38, 56)
+			var width := rng.randf_range(90, 156)
+			var top := -float(rows - 1) * pitch * 0.5
+			for row in rows:
+				var p := Vector2(0, top + row * pitch)
+				_socket(etching, p, Vector2(width, 24))
+				_path(traces, [p + Vector2(-width * 0.5 + 12, 0), p + Vector2(width * 0.5 - 12, 0)])
+				_path(etching, [p + Vector2(-width * 0.5 - 20, -14), p + Vector2(-width * 0.5, 0)])
+			_path(traces, [Vector2(width * 0.5 + 24, top - 20),
+				Vector2(width * 0.5 + 24, -top + 26), Vector2(rng.randf_range(-40, 20), -top + 26)])
+		2:
+			var half := Vector2(rng.randf_range(40, 65), rng.randf_range(40, 65))
+			_socket(etching, Vector2.ZERO, half * 2)
+			if rng.randf() < 0.75: _socket(etching, Vector2.ZERO, half * 2 - Vector2(20, 20))
+			var reach := rng.randf_range(30, 58)
+			_path(traces, [Vector2(-half.x - reach, -half.y - 36),
+				Vector2(-20, -half.y - 36), Vector2(-20, -half.y)])
+			_path(traces, [Vector2(20, half.y), Vector2(20, half.y + reach),
+				Vector2(half.x + 34, half.y + reach)])
+			var pins := rng.randi_range(2, 4)
+			for pin in pins:
+				var offset := (float(pin) - float(pins - 1) * 0.5) * 18
+				_path(etching, [Vector2(-half.x - 22, offset), Vector2(-half.x, offset)])
+				_path(etching, [Vector2(half.x, offset), Vector2(half.x + 22, offset)])
 
 func _draw_circuit_lines(layer: Node2D, traces: PackedVector2Array,
 		etching: PackedVector2Array, index: int) -> void:
@@ -197,8 +240,8 @@ func _draw_circuit_lines(layer: Node2D, traces: PackedVector2Array,
 
 func _path(out: PackedVector2Array, points: Array) -> void:
 	for i in points.size() - 1:
-		out.append(target.to_iso(points[i]))
-		out.append(target.to_iso(points[i + 1]))
+		out.append(points[i])
+		out.append(points[i + 1])
 
 func _socket(out: PackedVector2Array, centre: Vector2, size: Vector2) -> void:
 	var a := centre - size * 0.5

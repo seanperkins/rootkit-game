@@ -9,7 +9,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 
 ```bash
 godot                          # play, from the project root
-tools/run_tests.sh             # 61 suites + the perf gate
+tools/run_tests.sh             # 66 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
 tools/run_tests.sh test_build test_slots perf_milestone0  # selected suites + perf
 godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)
@@ -84,9 +84,19 @@ that architecture depends on, each of which has been broken at least once:
 - **Entities are packed arrays over a spatial grid**, not nodes, and
   `Population.despawn` swap-removes the tail into the freed slot. See the
   parallel-array invariant below; it is the one that keeps costing money.
-- **The whole 3-subnet campaign is one terrain grid**, plotted before the first
-  frame. `terrain.current` is the only thing that changes; nothing is generated
-  under the player and nothing teleports.
+- **Only the current subnet is loaded.** `run._make_subnet_terrain` derives its
+  layout from descriptor seed + subnet + active route. `terrain.current` is 0
+  inside that one-arena allocation; `terrain.subnet_number` identifies its theme.
+  A shared route vote arms a 90-tick transfer above the world guard; at 36 ticks
+  remaining, `_advance_subnet` replaces terrain and primes all LIVE arrival
+  transforms. Snapshot recovery validates the vote and zone lengths, builds
+  candidate terrain without mutating the run, then installs it before applying
+  overlays/collapse. The old multi-arena Terrain constructor remains available
+  for isolated geometry fixtures, not runtime campaign generation.
+- **Room geometry is derived; its unlocked flag is state.** Completing the
+  network job clears the pre-reserved side chamber and passage. Opening it
+  never changes rect indices. `room_claimed` guards the party reward. Open rooms
+  participate in the same collapse field as the main arena.
 - **Solo is a one-slot session.** Every per-player field is a `MAX_PLAYERS`
   array indexed by slot; `slot_state` says LIVE/DEAD/ABSENT; a reader that
   wants "the player" must say which slot by a census rule (nearest LIVE,
@@ -121,8 +131,12 @@ the site; this is the index.
 
 - **`Module.VectorKind` / `TriggerKind` are append-only.** Values are stored on
   modules; inserting in the middle repoints every module defined above it.
-- **`EnemyTable.ICE` is an index into `all()`, so `ice` must stay the last row.**
-  The boss spawn, the win condition and the flip guard all read it.
+- **Boss identity resolves through `EnemyTable.BOSS_IDS`, never row position.**
+  `_boss_row` is refreshed on generation/advance/restore. Only `_is_boss_kill`
+  clears a subnet; Worm.exe body deaths do not. Sentinel shielding covers both
+  grid membership and direct queued/zone damage. Capture fields and worm
+  regeneration are hashed; music masks, emission latches and regen flashes are
+  presentation and are cleared on restore.
 - **`Module.STAT_KEYS` is the only legal stat-key set.** Validate against it, not
   against "fields of `ResolvedExploit`".
 - **`ResolvedExploit.cadence_mult` defaults to `1.0`**, alone among its fields.
@@ -252,7 +266,7 @@ Two that drive the rest:
   The first-subnet retune halved that tax and re-pinned the gate.
 - **Difficulty is retuned on five axes at once, and they are coupled.** The
   wave rates are the density axis (peak concurrent solo spawn 6.6/s, 1288
-  spawns a subnet), `HP_ROWS` and `EnemyTable`'s ICE row are the per-enemy
+  spawns a subnet), `HP_ROWS` and the boss rows are the per-enemy
   axis, `PlayerStats.BASE` integrity/defense is the attrition budget, and
   `BASE.pickup_radius` decides whether the XP a subnet drops is ever
   collected — a fighting subnet holds no regeneration, so the pool the player

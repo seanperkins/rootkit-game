@@ -1,0 +1,442 @@
+extends SceneTree
+
+## Real frame time in the actual engine loop — tick AND rendering — over the
+## SAME four-slot party the perf gate plays (tests/support/perf_fixture.gd).
+##
+## The gate times the tick in its own loop and never renders; this times the
+## frame the player actually waits for. Two halves of one 16.67 ms budget, and
+## they only mean anything together if they measure the same game — which is
+## why the fixture is shared rather than copied.
+##
+## What this used to do, and why none of it survived: a SOLO slot, standing
+## still (`input_override = Vector2.ZERO`), inside 600 enemies with 999999 hp
+## respawned at radius 60-620 EVERY FRAME. Three separate ways of not being the
+## game. The player could not walk — he was walled in by the swarm, so the
+## camera never moved and the backdrop's visible-rect cull never changed, which
+## is the most view-dependent cost in the renderer. He died anyway, and every
+## sample after that timed a death screen over a frozen world. And with no
+## level_up_offered handler the run parked on a card overlay and timed that
+## instead. The gate's own words for the same fill: "a load real play never
+## reaches" — its real run averages 264 live enemies and touches the 600 cap in
+## 1% of ticks.
+##
+## MUST run windowed. `--headless` selects the dummy renderer and there is no
+## frame to time.
+##
+##   godot -s res://tools/fps_probe.gd                 # the sweep
+##   godot -s res://tools/fps_probe.gd -- stress       # the old cap ceiling
+##   godot -s res://tools/fps_probe.gd -- hideback     # attribute a layer
+##
+## What it measured first time out, on an M2 with the four-slot party and the
+## field around 500 live enemies:
+##
+##   window 1280x720      median  8.51 ms   13% of frames over 16.7
+##   fullscreen 2940x1846 median 16.65 ms   48% of frames over 16.7
+##
+## The frame is FILL-RATE bound, not draw-call bound: the draw call count
+## barely moves between those two (539 vs 603) while the pixel count grows
+## almost sixfold. Hiding Backdrop and Props takes fullscreen to 8.30 ms and
+## 0% over; killing the WorldEnvironment glow alone takes it to 13.07 ms.
+## Both of those are full-screen-area work, which is why neither shows up at
+## all in the 720p window and why the tick gate — which never rasterises a
+## pixel — cannot see this class of problem however hard it is pushed.
+##
+## The per-viewport GPU timer reads 0.00 on the Metal backend, so GPU cost is
+## only visible as the frame-time delta between configs. The render CPU column
+## is command submission alone and stays near 0.2 ms throughout.
+
+class ObservedRun extends "res://scripts/run/run.gd":
+	var candidate_forces :=  [15.0, 120.0, 150.0, 180.0, 210.0, 240.0]
+	var observer_edges: Array = []
+	var observer_pending := 0
+	func _ready() -> void:
+		for value in candidate_forces:
+			var edge := PackedByteArray()
+			edge.resize(MAX_ENEMIES)
+			observer_edges.append(edge)
+		super()
+	func _clear_voice_edges() -> void:
+		super()
+		observer_pending = 0
+		if observer_edges != null:
+			for row in observer_edges: row.fill(0)
+	func _spawn_enemy_state(i: int, hp: float, split_gen: int = 0) -> void:
+		super(i, hp, split_gen)
+		for row in observer_edges: row[i] = 0
+	func _relocate_enemy(i: int, last: int) -> void:
+		super(i, last)
+		for row in observer_edges: row[i] = row[last]
+	func _step4_steer() -> void:
+		_steer_phase = (_steer_phase + 1) % STEER_SLICES
+		var i := _steer_phase
+		while i < enemies.count:
+			# Garnish rather than the meal — the integrate gate already stops an
+			# arriving boss moving — but it keeps neighbours from shoving a ghost.
+			if _arriving[i] > 0.0:
+				i += STEER_SLICES
+				continue
+			if _worm_id[i] != 0 and _worm_seg[i] != 0:
+				i += STEER_SLICES
+				continue
+			var here := enemies.pos[i]
+			# The target _behave chose this tick, so the range gate and the avoidance
+			# direction below agree with the steer target.
+			var ts := _enemy_target[i]
+			if ts < 0 or here.distance_squared_to(player_pos[ts]) > STEER_RANGE_SQ:
+				enemies.force[i] = Vector2.ZERO
+				i += STEER_SLICES
+				continue
+			var n := grid.query_radius_into(here, SEPARATION_RADIUS, _buf, Grid.M_ENEMY)
+			var push := Vector2.ZERO
+			for k in mini(n, _buf.size()):
+				var j := Grid.index_of(_buf[k])
+				if j == i:
+					continue
+				var d := here - enemies.pos[j]
+				var dl := d.length()
+				if dl > 0.001:
+					push += d / dl * (SEPARATION_RADIUS - dl)
+			if enemy_types[enemies.type_index[i]].behaviour == EnemyTable.Behaviour.CHASE:
+				var force_sq := (push * 2.2).length_squared()
+				for ci in candidate_forces.size():
+					var crossing: bool = force_sq > candidate_forces[ci] * candidate_forces[ci]
+					if crossing and observer_edges[ci][i] == 0: observer_pending |= 1 << ci
+					observer_edges[ci][i] = 1 if crossing else 0
+				var over := (push * 2.2).length_squared() > CHASE_JOSTLE_FORCE * CHASE_JOSTLE_FORCE
+				if over and _chase_jostling[i] == 0: feel.emit_voice(Feel.VOICE_CHASE)
+				_chase_jostling[i] = 1 if over else 0
+			enemies.force[i] = push * 2.2 + terrain.avoid(here, player_pos[ts] - here)
+			i += STEER_SLICES
+
+class ObservedMusic extends "res://scripts/audio/music.gd":
+	var observed_beats := 0
+	var candidates := PackedInt32Array([0,0,0,0,0,0])
+	var candidate_streak := PackedInt32Array([0,0,0,0,0,0])
+	var candidate_longest := PackedInt32Array([0,0,0,0,0,0])
+	var notes := PackedInt32Array([0,0,0,0,0,0,0,0,0,0])
+	var streak := PackedInt32Array([0,0,0,0,0,0,0,0,0,0])
+	var longest := PackedInt32Array([0,0,0,0,0,0,0,0,0,0])
+	func _on_step() -> void:
+		_sync_ensemble()
+		if ensemble_allowed() and run.enemies.count >= 100:
+			observed_beats += 1
+			for ci in candidates.size():
+				if run.observer_pending & (1 << ci) != 0:
+					candidates[ci] += 1
+					candidate_streak[ci] += 1
+					candidate_longest[ci] = maxi(candidate_longest[ci], candidate_streak[ci])
+				else: candidate_streak[ci] = 0
+			for i in Feel.VOICE_COUNT:
+				if run.feel.voice_pending & (1 << i) != 0:
+					notes[i] += 1
+					streak[i] += 1
+					longest[i] = maxi(longest[i], streak[i])
+				else: streak[i] = 0
+		run.observer_pending = 0
+		super()
+var captures: Array[AudioEffectRecord] = []
+var observed: Node
+
+func _observed_run() -> Node2D:
+	var roster := []
+	for slot in 4: roster.append({"slot":slot,"name":"audit%d"%slot,"counters":SaveGame.session_counters()})
+	var descriptor := NetworkSession.validate_descriptor({"protocol":SessionRules.PROTOCOL,"session_id":1,"seed":20260830,"delay":0,"choice_timeout":0,"roster":roster})
+	var g: Node2D = load("res://scenes/run.tscn").instantiate()
+	g.set_script(ObservedRun)
+	g.configure_session(NetworkSession.create(descriptor,0,NetworkSession.Role.HOST))
+	root.add_child(g)
+	await process_frame
+	for child in g.get_children():
+		if child.get_script() == load("res://scripts/audio/music.gd"): child.free()
+	observed = ObservedMusic.new()
+	observed.run = g
+	g.add_child(observed)
+	g.route_offered.connect(func(): g.choose_route(0))
+	for bus in [0, AudioServer.get_bus_index("Music")]:
+		var recorder := AudioEffectRecord.new()
+		AudioServer.add_bus_effect(bus,recorder)
+		recorder.set_recording_active(true)
+		captures.append(recorder)
+	return g
+
+const FRAMES := 3600
+const WARMUP := 180
+## Records submitted ahead of the ring for the pinned slots. The engine ticks
+## physics, not this loop: at 30 fps _physics_process runs twice between two
+## _process calls, and a slot with no record for that second tick stalls the
+## ring — the world steps at half rate and the probe reports a fast frame for
+## a world that barely moved.
+const LEAD := 8
+## The director is fast-forwarded rather than pinned at cap: the wave table is
+## the real one, we simply start where the field is already dense and let it
+## build, so the bins sweep the range instead of reporting one point. 200 s is
+## late subnet 1.
+const START_ELAPSED := 200.0
+const BINS := [0, 100, 200, 300, 400, 500]
+## A/B interleave. Comparing two SEPARATE runs does not work here: the world
+## advances per physics tick but the probe samples per frame, so the faster
+## config plays a further-advanced game and the load difference swamps the
+## layer difference — measured, with `noglow` reading 4 ms SLOWER than the
+## baseline it removes work from. Flipping the layer on and off inside ONE run
+## puts both samples in the same world, the same tick, the same field.
+const AB_CHUNK := 40
+## Frames discarded after each flip, for the pipeline to drain.
+const AB_SETTLE := 6
+
+var _fx := PerfFixture.new()
+var run: Node2D
+var frames := 0
+var cfg := ""
+var last := 0
+## bin index -> [frames, frame_ms sum, render cpu sum, render gpu sum, over budget]
+var _bins: Array = []
+var _enemy_sum := 0.0
+var _samples := 0
+var _frame_all := PackedFloat64Array()
+var _ab := ""
+var _ab_on := false
+var _ab_shown := PackedFloat64Array()
+var _ab_hidden := PackedFloat64Array()
+
+func _initialize() -> void:
+	if DisplayServer.get_name() == "headless":
+		printerr("fps_probe needs a WINDOW: --headless selects the dummy renderer, ",
+			"so there is no frame to time. Run it without --headless.")
+		quit(1)
+		return
+	for a in OS.get_cmdline_user_args():
+		cfg = a
+	if cfg.begins_with("ab_"):
+		_ab = cfg.substr(3)
+	SaveGame.use_test_paths()
+	SaveGame.use_fresh_state()
+	run = await _observed_run()
+	_fx.equip_party(run)
+	_fx.reset()
+	# Without these the run parks on a level-up overlay a few seconds in and
+	# every remaining sample times a paused world under a card screen.
+	run.level_up_offered.connect(func(c): run.choose_card(c[0][0], Loadout.best_target(c[0][1])))
+	run.fusion_offered.connect(func(_m): run.choose_fusion(0))
+	for _i in BINS.size():
+		_bins.append([0, 0.0, 0.0, 0.0, 0])
+
+func _process(_d: float) -> bool:
+	if run == null or run.enemies == null:
+		return false
+	if frames == 0:
+		# `keepvsync` leaves the SHIPPED present mode alone, so the probe reports
+		# what a player actually sees rather than the uncapped cost. Every other
+		# config unpins it, because a paced frame time is not a measurement.
+		if cfg.contains("vsyncblock"):
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
+		elif not cfg.contains("keepvsync"):
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+			Engine.max_fps = 0
+		RenderingServer.viewport_set_measure_render_time(root.get_viewport_rid(), true)
+		run.director.elapsed = START_ELAPSED
+		_apply(cfg)
+	if _ab != "":
+		var want := (frames / AB_CHUNK) % 2 == 1
+		if want != _ab_on:
+			_ab_on = want
+			if want:
+				_apply(_ab)
+			else:
+				_unapply(_ab)
+	if cfg.contains("stress"):
+		_fill()
+	_fx.drive(run, run.lockstep.executed, LEAD)
+	if frames == 60:
+		var pads := []
+		for id in Input.get_connected_joypads(): pads.append(Input.get_joy_name(id))
+		print("CONTROLLERS ", JSON.stringify(pads))
+	frames += 1
+	var now := Time.get_ticks_usec()
+	if frames > WARMUP and last > 0:
+		var ms := float(now - last) / 1000.0
+		var vp := root.get_viewport_rid()
+		var b := _bin(run.enemies.count)
+		_bins[b][0] += 1
+		_bins[b][1] += ms
+		_bins[b][2] += RenderingServer.viewport_get_measured_render_time_cpu(vp)
+		_bins[b][3] += RenderingServer.viewport_get_measured_render_time_gpu(vp)
+		if ms > 16.67:
+			_bins[b][4] += 1
+		_enemy_sum += float(run.enemies.count)
+		_samples += 1
+		_frame_all.append(ms)
+		if _ab != "" and frames % AB_CHUNK >= AB_SETTLE:
+			if _ab_on:
+				_ab_hidden.append(ms)
+			else:
+				_ab_shown.append(ms)
+	last = now
+	if frames >= FRAMES or run.slot_state[0] != run.SlotState.LIVE:
+		_report()
+		return true
+	return false
+
+## Layer attribution. Hiding a canvas does not change the tick, so a config
+## that moves the frame time moves it in the renderer and nowhere else.
+func _apply(c: String) -> void:
+	# The one config that is not a layer: a Retina panel at native resolution
+	# is roughly four times the pixels of the 1280x720 window, and nothing
+	# else in this list changes the pixel count.
+	if c.contains("fullscreen"):
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	# Render 2D at the base viewport size and scale the RESULT to the panel,
+	# instead of rendering at the panel's native pixel count. The runtime form
+	# of display/window/stretch/mode = "viewport".
+	if c.contains("scale"):
+		root.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
+		root.content_scale_size = Vector2i(1280, 720)
+	# The shipped build carries FIVE exploit rows; the shared fixture equips
+	# THREE, because the perf gate's coverage pin was set when MAX_EXPLOITS was
+	# 3 and its comment keeps them at 3 so the pin holds. That means both
+	# instruments measure two rows short of the game. This config fills every
+	# slot to Loadout.MAX_EXPLOITS so the gap is at least visible.
+	if c.contains("rows5"):
+		var tbl := ModuleTable.by_id()
+		for sl in SessionRules.MAX_PLAYERS:
+			var lo: Loadout = run.loadouts[sl]
+			while lo.exploits.size() < Loadout.MAX_EXPLOITS:
+				var ex := Exploit.new()
+				ex.place(tbl[&"chain"])
+				ex.place(tbl[&"interval"])
+				ex.vector.rank = 5
+				lo.exploits.append(ex)
+		run._recompile()
+	if c.contains("hideback") or c.contains("hideboth"):
+		run.get_node("Backdrop").visible = false
+	if c.contains("hideprops") or c.contains("hideboth"):
+		run.get_node("Props").visible = false
+	if c.contains("hideui"):
+		run.ui.visible = false
+	if c.contains("noglow"):
+		for ch in run.get_children():
+			if ch is WorldEnvironment:
+				ch.environment.glow_enabled = false
+	if c.contains("nohdr"):
+		root.use_hdr_2d = false
+	if c.contains("nocrt"):
+		var o := root.get_node_or_null("CRTOverlay")
+		if o != null:
+			o.visible = false
+
+## Undo _apply, so the A/B interleave can put the layer back.
+func _unapply(c: String) -> void:
+	# The shipped build carries FIVE exploit rows; the shared fixture equips
+	# THREE, because the perf gate's coverage pin was set when MAX_EXPLOITS was
+	# 3 and its comment keeps them at 3 so the pin holds. That means both
+	# instruments measure two rows short of the game. This config fills every
+	# slot to Loadout.MAX_EXPLOITS so the gap is at least visible.
+	if c.contains("rows5"):
+		var tbl := ModuleTable.by_id()
+		for sl in SessionRules.MAX_PLAYERS:
+			var lo: Loadout = run.loadouts[sl]
+			while lo.exploits.size() < Loadout.MAX_EXPLOITS:
+				var ex := Exploit.new()
+				ex.place(tbl[&"chain"])
+				ex.place(tbl[&"interval"])
+				ex.vector.rank = 5
+				lo.exploits.append(ex)
+		run._recompile()
+	if c.contains("hideback") or c.contains("hideboth"):
+		run.get_node("Backdrop").visible = true
+	if c.contains("hideprops") or c.contains("hideboth"):
+		run.get_node("Props").visible = true
+	if c.contains("hideui"):
+		run.ui.visible = true
+	if c.contains("noglow"):
+		for ch in run.get_children():
+			if ch is WorldEnvironment:
+				ch.environment.glow_enabled = true
+	if c.contains("nohdr"):
+		root.use_hdr_2d = true
+	if c.contains("nocrt"):
+		var o := root.get_node_or_null("CRTOverlay")
+		if o != null:
+			o.visible = true
+	if c.contains("scale"):
+		root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+
+func _bin(n: int) -> int:
+	var b := 0
+	for i in BINS.size():
+		if n >= int(BINS[i]):
+			b = i
+	return b
+
+func _pct(a: PackedFloat64Array, q: float) -> float:
+	if a.is_empty():
+		return 0.0
+	var s := a.duplicate()
+	s.sort()
+	return s[mini(int(float(s.size()) * q), s.size() - 1)]
+
+func _report() -> void:
+	for i in captures.size():
+		captures[i].set_recording_active(false)
+		captures[i].get_recording().save_to_wav("res://.tmp/thresholds-%s.wav" % ("master" if i == 0 else "music"))
+	print("ENSEMBLE_AUDIT ",JSON.stringify({"swarm_beats":observed.observed_beats,"notes":Array(observed.notes),"longest_streak":Array(observed.longest),"thresholds":run.candidate_forces,"candidate_notes":Array(observed.candidates),"candidate_longest":Array(observed.candidate_longest)}))
+	var outcome := "ran %d frames" % frames
+	if run.slot_state[0] != run.SlotState.LIVE:
+		outcome = "slot 0 died at frame %d" % frames
+	print("")
+	print("ROOTKIT — frame probe (four-slot party, the perf gate's fixture)")
+	print("  config %s, %s, mean live enemies %.1f" % [
+		"(none)" if cfg == "" else cfg, outcome,
+		_enemy_sum / maxf(float(_samples), 1.0)])
+	print("  window %s, %d draw calls in the last frame" % [
+		DisplayServer.window_get_size(),
+		int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))])
+	print("")
+	print("  by live enemy count. Render times are measured inside the renderer")
+	print("  and do NOT vsync-quantise; frame time does.")
+	print("    enemies    frames   render cpu   render gpu     frame   missed 16.7")
+	for i in BINS.size():
+		var b: Array = _bins[i]
+		if int(b[0]) == 0:
+			continue
+		var n := float(b[0])
+		var hi: String = "+" if i == BINS.size() - 1 else "-%d" % (int(BINS[i + 1]) - 1)
+		print("    %4d%-5s %6d   %8.2f ms  %8.2f ms  %8.2f ms   %3.0f%%" % [
+			int(BINS[i]), hi, int(b[0]), b[2] / n, b[3] / n, b[1] / n,
+			100.0 * float(b[4]) / n])
+	if _ab != "":
+		var a := _pct(_ab_shown, 0.5)
+		var b := _pct(_ab_hidden, 0.5)
+		print("")
+		print("  A/B interleaved inside one run — same world, same tick, same field")
+		print("    with    %-18s %6d frames   median %6.2f ms  p95 %6.2f ms" % [
+			_ab, _ab_shown.size(), a, _pct(_ab_shown, 0.95)])
+		print("    without %-18s %6d frames   median %6.2f ms  p95 %6.2f ms" % [
+			_ab, _ab_hidden.size(), b, _pct(_ab_hidden, 0.95)])
+		print("    cost of that layer: %.2f ms per frame (%.0f%% of a 16.67 ms budget)" % [
+			a - b, 100.0 * (a - b) / 16.67])
+	print("")
+	print("  frame time overall: median %.2f ms, p95 %.2f ms, over 16.7 ms %.0f%%" % [
+		_pct(_frame_all, 0.5), _pct(_frame_all, 0.95),
+		100.0 * float(_over()) / maxf(float(_samples), 1.0)])
+
+func _over() -> int:
+	var c := 0
+	for x in _frame_all:
+		if x > 16.67:
+			c += 1
+	return c
+
+## The old ceiling, kept behind `-- stress`: the pools at simultaneous cap. Not
+## a load real play reaches — the gate says so in as many words — but it is the
+## ceiling the architecture was bet on, so it stays available.
+func _fill() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4242 + run.enemies.count
+	while run.enemies.count < run.MAX_ENEMIES:
+		var a := rng.randf() * TAU
+		run.enemies.spawn(run.player_pos[0] + Vector2(cos(a), sin(a)) * rng.randf_range(60.0, 620.0),
+			Vector2.ZERO, 999999.0, run.ENEMY_RADIUS, rng.randi_range(0, 2))
+	while run.shards.count < run.MAX_SHARDS:
+		var a3 := rng.randf() * TAU
+		run.shards.spawn(run.player_pos[0] + Vector2(cos(a3), sin(a3)) * rng.randf_range(300.0, 900.0),
+			Vector2.ZERO, 1.0, 4.0, 0)

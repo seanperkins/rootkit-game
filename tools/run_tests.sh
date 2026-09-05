@@ -18,7 +18,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 SUITES=(
-  test_network_expansion
+  test_progression test_bosses test_ensemble test_teleporter test_network_expansion
   test_terrain test_terrain_run test_gates test_campaign test_collapse
   test_build test_slots test_fusion test_fusion_run test_blocks test_cadence test_drain test_corruption test_dispatch
   test_triggers test_worms test_wards test_multipliers test_travel
@@ -47,11 +47,13 @@ else
   SUITES=("$@")
 fi
 
+mkdir -p .tmp/test-logs
 failed=0
 inconclusive=0
 for t in "${SUITES[@]}"; do
   out=$(godot --headless -s "res://tests/$t.gd" 2>&1)
   code=$?
+  printf '%s\n' "$out" > ".tmp/test-logs/$t.log"
   # INCONCLUSIVE is the perf gate declining to judge a contended machine. It
   # exits 0 with no PASS line, which used to read here as "FAIL exit 0" with
   # a blank verdict — a real-looking failure with nothing to fix.

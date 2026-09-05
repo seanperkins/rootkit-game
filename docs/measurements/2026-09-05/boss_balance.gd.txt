@@ -1,0 +1,54 @@
+extends "res://tools/progression_survey.gd"
+
+func _initialize() -> void:
+	SaveGame.PATH = "user://boss_balance.json"
+	SaveGame.BAK = SaveGame.PATH + ".bak"
+	SaveGame.TMP = SaveGame.PATH + ".tmp"
+	await process_frame
+	for party in [1, 4]:
+		for number in range(1, 4): await encounter(number, party)
+	quit()
+
+func encounter(number: int, party: int) -> void:
+	SaveGame.use_fresh_state()
+	var roster := []
+	for s in party: roster.append({"slot": s, "name": "weak%d" % s, "counters": {}})
+	var desc := NetworkSession.validate_descriptor({"protocol": SessionRules.PROTOCOL,
+		"session_id": 1, "seed": 42, "delay": 0, "choice_timeout": 0, "roster": roster})
+	var g: Node2D = load("res://scenes/run.tscn").instantiate()
+	g.set_script(MeasuredRun)
+	g.external_drive = true
+	g.configure_session(NetworkSession.create(desc, 0, NetworkSession.Role.SOLO if party == 1 else NetworkSession.Role.HOST))
+	root.add_child(g)
+	await process_frame
+	while g.subnet < number: g._advance_subnet()
+	g.director.elapsed = SpawnDirector.SUBNET_SECONDS
+	g._step1_spawn(0)
+	var elapsed := 0.0
+	var notes := PackedInt32Array()
+	notes.resize(Feel.VOICE_COUNT)
+	for frame in 36000:
+		for s in party:
+			var record := drive(g, s, frame)
+			var open: Dictionary = g._offer_open[s]
+			var pick := Vector3i(-1, -1, -1) if open.is_empty() else Vector3i(-2, -1, open.seq)
+			if s == 0:
+				g.input_override = record[0]
+				g.aim_override = record[1]
+				g._local_choice = pick
+			else: g.lockstep.submit(s, g.lockstep.executed, record[0], pick.x, pick.y, pick.z, record[1])
+		var before: float = g.measured.world_seconds
+		g._physics_process(SessionRules.TICK_DT)
+		elapsed += g.measured.world_seconds - before
+		if frame % 15 == 0:
+			var mask: int = g.feel.drain_voice()
+			for i in Feel.VOICE_COUNT:
+				if mask & (1 << i) != 0: notes[i] += 1
+		if not g.alive or g.won or g.phase == g.Phase.CLEARED: break
+	var row := {"subnet": number, "party": party, "profile": "fresh", "build": "one rank-1 bare packet per player; all upgrades declined", "fight_seconds": elapsed,
+		"result": "clear" if g.won or g.phase == g.Phase.CLEARED else ("death" if not g.alive else "timeout"),
+		"damage_taken": g.measured.damage_taken, "health": Array(g.player_health), "spires_left": g._sentinel_spires_left,
+		"regens_left": g._worm_regens_left, "boss_phase": g._root_cause_phase, "voices_per_quarter_second": Array(notes)}
+	print("BOSS_BALANCE " + JSON.stringify(row))
+	g.free()
+	await process_frame

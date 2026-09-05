@@ -1,0 +1,8 @@
+Godot Engine v4.7.stable.official.5b4e0cb0f - https://godotengine.org
+
+host_relayed: OK
+room code: PQB3UF
+client1 join_relayed: OK
+client2 join_relayed: OK
+host saw [2, 3], client1 saw [1], client2 saw [1]
+FAIL: direct link missing: host->m2=false host->m3=false target->host=false other->host=false

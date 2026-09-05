@@ -1,0 +1,10 @@
+test_progression       PASS — progression costs, remainder and shared recovery
+test_bosses            PASS — boss behavior and recovery
+test_ensemble          PASS — ensemble harmony, event and lifecycle behavior
+test_interpolation     PASS — all cases
+test_draw_order        PASS — all cases
+test_arrivals          PASS — all cases
+test_manifest          PASS — all cases
+test_determinism_rules   PASS — all cases
+
+  ALL GREEN — 8 suites, no script errors

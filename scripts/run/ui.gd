@@ -443,8 +443,13 @@ func _refresh() -> void:
 			banner = "%s ACTIVE" % String(
 				run.enemy_types[run.enemies.type_index[i]].id).to_upper()
 			break
+	if not run.boss_objective().is_empty(): banner = run.boss_objective()
 	if run.phase == run.Phase.CLEARED:
-		banner = "COLLAPSE // REACH THE GATE"
+		banner = "COLLAPSE // TELEPORTER %d/%d" % [run.teleporter_gathered(), run._live_slots().size()]
+	if run.transfer_ticks > 0:
+		banner = "TRANSFERRING // " + RouteTable.NAMES[run.route_selected]
+	elif run.terrain.room_unlocked and not run.room_claimed and run.phase == run.Phase.FIGHTING and not run.director.boss_spawned:
+		banner = "HIDDEN ARCHIVE REVEALED // EAST SERVICE PORT"
 	centre.text = "subnet %02d / %02d   //   %s" % [run.subnet,
 		SpawnDirector.CAMPAIGN_SUBNETS, ["EDGE", "MEMORY", "CORE"][clampi(run.subnet - 1, 0, 2)]]
 	var display_time: int = int(ceil(maxf(run.collapse_left, 0.0))) if run.phase == run.Phase.CLEARED else int(t)
@@ -748,7 +753,7 @@ func _show_cards() -> void:
 		_cards.append(card)
 		_nav.append(buttons)
 		_previews.append(previews)
-		_preview_labels.append(card.get_meta("preview", null))
+		_preview_labels.append(card.get_meta("preview") if card.has_meta("preview") else null)
 	# Hovering moves the highlight, so the mouse and the keyboard never disagree
 	# about what Enter would press.
 	for ci in _nav.size():
@@ -781,7 +786,7 @@ func _decline_current() -> void:
 ## The local slot has answered its offer; teammates have not. The overlay stays
 ## up — the world is still held — but shows only the wait, never another
 ## player's cards: the HUD renders local_slot and nothing else.
-func _on_waiting(unresolved: int) -> void:
+func _clear_offer_cards() -> void:
 	_route_screen = false
 	_decline.visible = true
 	_cards_data = []
@@ -794,6 +799,12 @@ func _on_waiting(unresolved: int) -> void:
 	_nav.clear()
 	_previews.clear()
 	_preview_labels.clear()
+
+func _on_waiting(unresolved: int) -> void:
+	_clear_offer_cards()
+	if run.route_pending:
+		_on_route()
+		return
 	if unresolved <= 0:
 		return
 	_overlay.get_node("Title").text = "  waiting for %d…" % unresolved
@@ -1485,16 +1496,16 @@ func _process(d: float) -> void:
 		_route_status.visible = run.route_pending
 		if run.route_pending:
 			var counts := [0, 0, 0]
-			for slot in run._live_slots():
+			for slot in SessionRules.MAX_PLAYERS:
 				var v: int = run.route_votes[slot]
 				if v >= 0:
 					counts[v] += 1
-			_route_status.text = "VOTES / swarm %d   archive %d   corruption %d" % counts
+			_route_status.text = "BALLOTS / route 1: %d   route 2: %d   route 3: %d" % counts
 			var offer: Dictionary = run._offer_open[run.local_slot]
 			if not offer.is_empty() and int(offer["kind"]) == run.OfferKind.ROUTE:
 				var deadline: int = offer["deadline"]
 				if deadline >= 0:
-					_route_status.text += "   /   auto-vote swarm in %ds" % maxi(0, ceili(float(deadline - run.tick) / 60.0))
+					_route_status.text += "   /   auto-vote route 1 in %ds" % maxi(0, ceili(float(deadline - run.tick) / 60.0))
 	if run != null and _vignette != null:
 		_vignette.color.a = clampf(run._vignette, 0.0, 1.0) * 0.30
 	if _overlay.visible:
@@ -1514,11 +1525,11 @@ func _on_route() -> void:
 		_route_status = _mono(15)
 		_route_status.position = Vector2(60, 445)
 		_overlay.add_child(_route_status)
-	_on_waiting(0)
+	_clear_offer_cards()
 	_route_screen = true
 	_decline.visible = false
 	_recipes.visible = false
-	_overlay.get_node("Title").text = "  ROUTE VOTE / SUBNET %02d  ::  arrows + enter / most votes win; ties are random" % (run.subnet + 1)
+	_overlay.get_node("Title").text = "  SELECT DESTINATION / SUBNET %02d  ::  most votes win; tied leaders draw" % (run.subnet + 1)
 	var row := card_row()
 	var builds := []
 	for s in run._live_slots():
@@ -1531,20 +1542,23 @@ func _on_route() -> void:
 		body.add_theme_constant_override("separation", 18)
 		card.add_child(body)
 		var head := _mono(20)
-		head.text = RouteTable.NAMES[i]
+		head.text = RouteTable.NAMES[run.route_candidates[i]]
 		body.add_child(head)
 		var detail := _mono(16)
-		detail.text = RouteTable.DETAILS[i]
+		detail.text = RouteTable.DETAILS[run.route_candidates[i]]
 		body.add_child(detail)
 		var fit := _mono(14)
 		fit.custom_minimum_size = Vector2(275, 64)
 		fit.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		fit.text = "PARTY BUILD\n" + RouteTable.affinity(i, builds)
+		fit.text = ("PARTY BUILD\n" if run.route_candidates[i] < 3 else "ROUTE INTEL\n") + RouteTable.affinity(run.route_candidates[i], builds)
 		fit.add_theme_color_override("font_color", Color(0.4, 0.9, 1.0))
 		body.add_child(fit)
 		var button := Button.new()
-		button.text = " vote for this route"
+		var ballot: Dictionary = run._offer_open[run.local_slot]
+		button.disabled = ballot.is_empty() or int(ballot.get("kind", -1)) != run.OfferKind.ROUTE
+		button.text = " ballot submitted" if button.disabled and run.route_votes[run.local_slot] == i else (" waiting for party" if button.disabled else " vote for this route")
 		button.set_meta("base", button.text)
+		button.add_theme_color_override("font_disabled_color", FG if run.route_votes[run.local_slot] == i else DIM)
 		button.focus_mode = Control.FOCUS_NONE
 		button.custom_minimum_size.y = 40
 		button.pressed.connect(run.choose_route.bind(i))
@@ -1555,3 +1569,6 @@ func _on_route() -> void:
 		_nav.append([button])
 	_overlay.visible = true
 	_reset_selection()
+	if run.route_votes[run.local_slot] >= 0:
+		_col = run.route_votes[run.local_slot]
+		_apply_highlight()

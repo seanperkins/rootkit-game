@@ -165,17 +165,17 @@ func _make_busy(r: Node2D) -> void:
 	r._offer_cards(0, r.CardMode.RANK_ONLY)
 	# A corridor collapse in progress: clear the subnet, run the arena out,
 	# then some of the corridor.
-	var b = r.enemy_types[EnemyTable.ICE]
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
 	var i: int = r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity,
-		48.0, EnemyTable.ICE)
+		48.0, EnemyTable.boss_index(r.subnet))
 	r._on_death(i)
 	r.hitstop_ticks = 0
 	# Stand on the NEXT arena's floor, which never voids, so the collapse below
 	# does not kill the slot and resolve the offers this fixture exists to carry.
 	var g = r.terrain.gate()
 	r.player_pos[0] = g.end + g.dir * 8.0
-	r.collapse_left = 0.0
-	r._corridor_collapse_ticks = Terrain.CORRIDOR_COLLAPSE_TICKS / 2
+	r.collapse_left = r.COLLAPSE_SECONDS * 0.5
+	r._corridor_collapse_ticks = 0
 	r._step2d_collapse(DT)
 	r.terrain.add_temp_zone(Vector2(500, 500), 60.0, Terrain.Kind.HAZARD, 4.0)
 
@@ -300,8 +300,8 @@ func the_worst_case_fits() -> void:
 ## regression for that bug.
 func presentation_flash_is_not_hashed() -> void:
 	var r := await _run()
-	var b = r.enemy_types[EnemyTable.ICE]
-	r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.ICE)
+	var b = r.enemy_types[EnemyTable.boss_index(r.subnet)]
+	r.enemies.spawn(Vector2(200, 0), Vector2.ZERO, b.integrity, 48.0, EnemyTable.boss_index(r.subnet))
 	var h0: int = r._state_hash()
 	# A hit lights the enemy...
 	r._hit_flash[0] = 1.0

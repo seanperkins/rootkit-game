@@ -93,7 +93,7 @@ func an_arrival_is_out_of_the_grid() -> void:
 ## ungated arrival would walk off its own telegraph.
 func an_arrival_does_not_move() -> void:
 	var r := await _bare_run()
-	var i := _arriving_at(r, &"ice", r.player_pos[r.local_slot] + Vector2(400, 0))
+	var i := _arriving_at(r, &"sentinel_array", r.player_pos[r.local_slot] + Vector2(400, 0))
 	var before: Vector2 = r.enemies.pos[i]
 	for k in 20:
 		r._physics_process(DT)
@@ -126,7 +126,7 @@ func hazard_and_corruption_are_held_off() -> void:
 	var r := await _bare_run()
 	var at: Vector2 = r.player_pos[r.local_slot] + Vector2(200, 0)
 	r.terrain.add_temp_zone(at, 90.0, Terrain.Kind.HAZARD, 99.0)
-	var i := _arriving_at(r, &"ice", at)
+	var i := _arriving_at(r, &"sentinel_array", at)
 	var hp: float = r.enemies.integrity[i]
 	var corr: float = r.enemies.corruption[i]
 	for k in 30:
