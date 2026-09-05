@@ -4714,8 +4714,8 @@ func _build_renderers() -> void:
 	_mm_botnet = _make_mm(26.0, 2)
 	_mm_botnet.multimesh.instance_count = MAX_BOTNET
 
-	_prime_constant_instances(_mm_shard, 5.0, Color(0.5, 1.3, 1.7))
-	_prime_constant_instances(_mm_botnet, 3.0, Color(1.6, 0.5, 1.6))
+	_prime_constant_instances(_mm_shard, 16.0, Color(0.5, 1.3, 1.7))
+	_prime_constant_instances(_mm_botnet, 17.0, Color(1.6, 0.5, 1.6))
 
 func _update_renderers() -> void:
 	var mm := _mm_enemy.multimesh
@@ -4732,6 +4732,10 @@ func _update_renderers() -> void:
 		var i: int = _order[n]
 		var t = enemy_types[enemies.type_index[i]]
 		var s: float = 2.4 if enemies.type_index[i] == EnemyTable.ICE else 1.0
+		if _is_miniboss(enemies.type_index[i]):
+			s = 1.5
+			if enemies.type_index[i] == _fork_bomb_index:
+				s -= 0.18 * _split_gen[i]
 		# A submerged ambusher is out of the grid, so it cannot be hit and cannot
 		# hurt you. Drawing it anyway would be the game lying about that.
 		if _submerged[i] != 0:
@@ -4762,27 +4766,37 @@ func _update_renderers() -> void:
 		if _hit_flash[i] > 0.0:
 			col = col.lerp(Color(2.4, 2.4, 2.4), _hit_flash[i] * 0.75)
 		mm.set_instance_color(n, col)
-		mm.set_instance_custom_data(n, Color(float(t.glyph), 0.0, 0.0, 0.0))
+		# The armor follows actual movement; a committed charge follows its
+		# locked aim. In particular, the filter's visible shield agrees with
+		# _facing_scale, which adjudicates protection from enemies.vel.
+		var heading: Vector2 = enemies.vel[i]
+		if t.behaviour == EnemyTable.Behaviour.CHARGER and _ai_phase[i] == CH_DASH:
+			heading = _ai_aim[i]
+		var angle := to_iso(heading).angle() + PI * 0.5 if heading.length_squared() > 0.01 else 0.0
+		mm.set_instance_custom_data(n, Color(float(t.glyph), angle, float(i % 17) / 17.0, 0.0))
 	mm = _mm_proj.multimesh
 	mm.visible_instance_count = projectiles.count
 	# Glyph and colour per frame: spawn happens inside the tick, which may not
-	# touch a renderer node, and slots recycle, so a once-only stamp would need
-	# per-instance memory. Bounded by MAX_PROJECTILES. A mine pulses, because
-	# a mine you forgot you placed is a mine that kills you when the collapse
-	# pushes you back over it.
+	# touch a renderer node, and slots recycle. Mines pulse to show they are
+	# armed; packet orientation follows flight. Bounded by MAX_PROJECTILES.
 	var beat := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.006)
 	for i in projectiles.count:
-		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE, 0.0,
-			to_iso(_rp(projectiles, i))))
+		var projectile_scale := 1.0
+		var angle := to_iso(projectiles.vel[i]).angle() + PI * 0.5
 		var glyph := 14.0
 		var col := Color(1.1, 1.7, 1.4)
 		if _mine_left[i] > 0.0:
 			glyph = 4.0
+			projectile_scale = 1.55
+			angle = 0.0
 			col = Color(2.0, 1.1, 0.4).lerp(Color(2.2, 1.3, 0.5), beat)
 		elif _orbit_left[i] > 0.0:
 			glyph = 15.0
+			projectile_scale = 1.5
 			col = Color(0.7, 2.0, 1.5)
-		mm.set_instance_custom_data(i, Color(glyph, 0.0, 0.0, 0.0))
+		mm.set_instance_transform_2d(i, Transform2D(0.0, Vector2.ONE * projectile_scale, 0.0,
+			to_iso(_rp(projectiles, i))))
+		mm.set_instance_custom_data(i, Color(glyph, angle, float(i % 13) / 13.0, 0.0))
 		mm.set_instance_color(i, col)
 	mm = _mm_shard.multimesh
 	mm.visible_instance_count = shards.count
@@ -5047,12 +5061,17 @@ func _draw() -> void:
 			pts.append(to_iso(centre + arm.rotated(-0.09 * float(k))))
 		draw_polyline(pts, Color(0.5, 1.6, 1.2, 0.35), 1.5)
 
-	# Enemy fire. Distinct from the player's: red, and with a soft halo so a
-	# shot crossing a busy field is still findable.
+	# Hostile fire: a red diamond and short directional tail. The bright
+	# center remains legible when its halo crosses a dense group of enemies.
 	for i in hostiles.count:
 		var hpos := to_iso(_rp(hostiles, i))
 		draw_circle(hpos, 7.0, Color(1.8, 0.45, 0.45, 0.22))
-		draw_circle(hpos, 3.5, Color(1.9, 0.55, 0.5))
+		var tail := to_iso(hostiles.vel[i]).normalized() * 12.0
+		draw_line(hpos - tail, hpos, Color(1.9, 0.35, 0.3, 0.65), 2.0, true)
+		draw_colored_polygon(PackedVector2Array([hpos + Vector2(0, -4.5),
+			hpos + Vector2(4.5, 0), hpos + Vector2(0, 4.5), hpos + Vector2(-4.5, 0)]),
+			Color(2.0, 0.45, 0.4))
+		draw_circle(hpos, 1.5, Color(2.2, 1.5, 1.3))
 
 	# Telegraphs. A charger winding up and an ambusher surfacing are both about
 	# to do something sudden, and both are only fair if you can see them coming.
@@ -5158,6 +5177,7 @@ func _draw() -> void:
 				_draw_ring(at, rad * (1.0 - f * 0.25), Color(c.r, c.g, c.b, f * 0.85), 1.0 + 2.0 * f)
 				_draw_ring(at, rad * (0.7 - f * 0.25), Color(c.r, c.g, c.b, f * 0.45), 1.0)
 			FxKind.DASH:
+				draw_line(to_iso(at + dir * 8.0), to_iso(at + dir * rad), Color(c.r, c.g, c.b, f * 0.18), 8.0 * f)
 				draw_line(to_iso(at + dir * 8.0), to_iso(at + dir * rad), Color(c.r, c.g, c.b, f), 1.0 + 3.0 * f)
 			FxKind.BOLT:
 				var pts := PackedVector2Array()
@@ -5167,20 +5187,31 @@ func _draw() -> void:
 					var t := float(k) / float(seg)
 					var jitter := sin(t * 11.0 + float(k) * 2.3) * 7.0 * (1.0 if k > 0 and k < seg else 0.0)
 					pts.append(to_iso(at + dir * t + n * jitter))
-				draw_polyline(pts, Color(c.r, c.g, c.b, f), 1.0 + 2.0 * f)
+				draw_polyline(pts, Color(c.r, c.g, c.b, f * 0.18), 7.0 * f, true)
+				draw_polyline(pts, Color(c.r, c.g, c.b, f), 1.0 + 2.0 * f, true)
+				draw_polyline(pts, Color(1.8, 2.0, 2.0, f * 0.9), 1.0, true)
 			FxKind.BEAM:
 				var n2 := Vector2(-dir.y, dir.x)
 				var w := BEAM_HALF_WIDTH * f
 				var quad := PackedVector2Array([to_iso(at + n2 * w), to_iso(at + dir * rad + n2 * w),
 					to_iso(at + dir * rad - n2 * w), to_iso(at - n2 * w)])
 				draw_colored_polygon(quad, Color(c.r, c.g, c.b, 0.18 * f))
-				draw_line(to_iso(at), to_iso(at + dir * rad), Color(c.r, c.g, c.b, f), 1.0 + 1.5 * f)
+				for edge in [-1.0, 1.0]:
+					draw_line(to_iso(at + n2 * w * edge), to_iso(at + dir * rad + n2 * w * edge),
+						Color(c.r, c.g, c.b, f * 0.65), 1.0, true)
+				draw_line(to_iso(at), to_iso(at + dir * rad), Color(1.7, 2.1, 2.0, f), 1.0 + 1.5 * f, true)
 			FxKind.WEDGE:
 				var pts2 := PackedVector2Array([to_iso(at)])
 				for k in 13:
 					var a := dir.angle() - CONE_HALF_ANGLE + 2.0 * CONE_HALF_ANGLE * float(k) / 12.0
 					pts2.append(to_iso(at + Vector2(cos(a), sin(a)) * rad))
-				draw_colored_polygon(pts2, Color(c.r, c.g, c.b, 0.22 * f))
+				draw_colored_polygon(pts2, Color(c.r, c.g, c.b, 0.10 * f))
+				var rim := pts2.slice(1)
+				draw_polyline(rim, Color(c.r, c.g, c.b, f * 0.85), 2.0, true)
+				for ray in 5:
+					var heading := dir.rotated(-CONE_HALF_ANGLE + 2.0 * CONE_HALF_ANGLE * ray / 4.0)
+					draw_line(to_iso(at + heading * rad * 0.22), to_iso(at + heading * rad * 0.9),
+						Color(c.r, c.g, c.b, f * 0.30), 1.0, true)
 			FxKind.PULSE:
 				_draw_ring(at, rad * (1.0 - f * 0.25), Color(c.r, c.g, c.b, f * 0.85), 1.0 + 2.0 * f)
 				for k in 8:
@@ -5258,34 +5289,58 @@ func _draw() -> void:
 				HORIZONTAL_ALIGNMENT_CENTER, -1, 13,
 				Color(nc.r, nc.g, nc.b, nf_a))
 
-	# The players, drawn as ARROWS along their facing, projected point by point
-	# so the arrow leans with the ground it stands on; the facing is where the
-	# forward weapons fire, so the glyph says so. Every LIVE slot is drawn, a
-	# teammate in its own hue under a name tag; an ABSENT slot sits dimmed
-	# where it parked at the facing it parked with; a DEAD one is gone.
+	# A compact interceptor: twin engine pods, a raised central hull, and a
+	# white command core. Projection follows the weapon-facing vector.
 	var pf := ThemeDB.fallback_font
 	for e in player_draw_list():
 		var ps: int = e[0]
-		var o := to_iso(player_render_pos[ps])
 		var c: Color = e[1]
-		var a: float = e[2]
-		var f: Vector2 = player_facing[ps]
-		var n := Vector2(-f.y, f.x)
-		var base: Vector2 = player_render_pos[ps] - f * PLAYER_RADIUS * 0.9
-		# A notched arrow: tip, wing, notch behind the centre, wing.
-		var pts := PackedVector2Array([
-			to_iso(player_render_pos[ps] + f * PLAYER_RADIUS * 1.3),
-			to_iso(base + n * PLAYER_RADIUS * 0.9),
-			to_iso(player_render_pos[ps] - f * PLAYER_RADIUS * 0.4),
-			to_iso(base - n * PLAYER_RADIUS * 0.9)])
-		draw_colored_polygon(pts, Color(c.r * 0.22, c.g * 0.22, c.b * 0.22, a))
-		var outline := pts.duplicate()
-		outline.append(pts[0])
-		draw_polyline(outline, Color(c.r, c.g, c.b, a), 2.0)
+		var opacity: float = e[2]
+		var thrust := clampf(player_vel[ps].length() / 180.0, 0.0, 1.0)
+		_draw_player_craft(player_render_pos[ps], player_facing[ps], c, opacity,
+			thrust * (0.9 + 0.1 * sin(Time.get_ticks_msec() * 0.03)))
 		var tag: String = e[3]
 		if tag != "":
-			draw_string(pf, o + Vector2(0.0, -PLAYER_RADIUS - 6.0), tag,
-				HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color(c.r, c.g, c.b, a))
+			var width := pf.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+			draw_string(pf, to_iso(player_render_pos[ps]) + Vector2(-width * 0.5, -27.0),
+				tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(c.r, c.g, c.b, opacity))
+
+## Drawing only; local hull coordinates are forward/side in world space.
+func _craft_polygon(at: Vector2, facing: Vector2, shape: PackedVector2Array,
+		lift: float = 0.0) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	var side := Vector2(-facing.y, facing.x)
+	for p in shape:
+		pts.append(to_iso(at + facing * p.x + side * p.y) + Vector2(0.0, -lift))
+	return pts
+
+func _draw_player_craft(at: Vector2, facing: Vector2, c: Color, opacity: float,
+		thrust: float) -> void:
+	var hull := PackedVector2Array([Vector2(17, 0), Vector2(2, 7),
+		Vector2(-12, 5), Vector2(-9, 0), Vector2(-12, -5), Vector2(2, -7)])
+	var shadow := _craft_polygon(at, facing, hull, -3.0)
+	draw_colored_polygon(shadow, Color(0.005, 0.012, 0.02, 0.75 * opacity))
+	for side in [-1.0, 1.0]:
+		var pod := PackedVector2Array([Vector2(5, side * 8), Vector2(-8, side * 13),
+			Vector2(-15, side * 11), Vector2(-12, side * 6)])
+		var pts := _craft_polygon(at, facing, pod, 2.0)
+		draw_colored_polygon(pts, Color(c.r * 0.16, c.g * 0.16, c.b * 0.16, opacity))
+		pts.append(pts[0])
+		draw_polyline(pts, Color(c.r * 0.75, c.g * 0.75, c.b * 0.75, opacity), 1.1, true)
+		var exhaust := _craft_polygon(at, facing, PackedVector2Array([
+			Vector2(-13, side * 7), Vector2(-19 - 12 * thrust, side * 9),
+			Vector2(-14, side * 11)]), 2.0)
+		draw_colored_polygon(exhaust, Color(c.r, c.g, c.b, (0.25 + thrust * 0.5) * opacity))
+	var body := _craft_polygon(at, facing, hull, 4.0)
+	draw_colored_polygon(body, Color(0.035, 0.09, 0.10, opacity))
+	body.append(body[0])
+	draw_polyline(body, Color(c.r, c.g, c.b, opacity), 1.6, true)
+	var spine := _craft_polygon(at, facing, PackedVector2Array([
+		Vector2(15, 0), Vector2(-7, 0), Vector2(-11, 4)]), 4.0)
+	draw_polyline(spine, Color(c.r * 0.5, c.g * 0.5, c.b * 0.5, opacity), 1.0, true)
+	var core := _craft_polygon(at, facing, PackedVector2Array([
+		Vector2(7, 0), Vector2(0, 3), Vector2(-4, 0), Vector2(0, -3)]), 4.0)
+	draw_colored_polygon(core, Color(1.7, 2.0, 1.9, opacity))
 
 func _draw_ring(centre: Vector2, radius: float, colour: Color, width: float) -> void:
 	var pts := PackedVector2Array()

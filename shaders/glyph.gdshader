@@ -1,100 +1,126 @@
 shader_type canvas_item;
 
-// Procedural glyph silhouettes for the MultiMesh swarm. Drawn in code, so the
-// repository still ships no image assets and no font. Distinct outlines per
-// enemy type are also readability: 600 identical squares tell you nothing about
-// what is closing on you.
-//
-// INSTANCE_CUSTOM.r carries the glyph index.
+// Procedural hardware: dark armor, a bright bevel, and a small emissive core.
+// r = identity, g = screen-facing angle (zero faces up), b = stable phase.
+// All animation is presentation-only; the four packed MultiMeshes stay intact.
+varying flat vec3 design;
+void vertex() { design = INSTANCE_CUSTOM.rgb; }
 
-varying flat float glyph;
-
-void vertex() {
-	glyph = INSTANCE_CUSTOM.r;
+float box(vec2 p, vec2 b) {
+	vec2 q = abs(p) - b;
+	return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0);
 }
-
-float ring(float d, float radius, float width) {
-	return 1.0 - smoothstep(width * 0.5, width, abs(d - radius));
-}
+float band(float d, float r, float w) { return abs(d - r) - w; }
+float diamond(vec2 p, float r) { return (abs(p.x) + abs(p.y) - r) * 0.7071; }
 
 void fragment() {
-	vec2 p = UV - vec2(0.5);
-	int g = int(glyph + 0.5);
-	float a;
+	vec2 uv = UV - vec2(0.5);
+	float cs = cos(design.g), sn = sin(design.g);
+	vec2 p = mat2(vec2(cs, -sn), vec2(sn, cs)) * uv;
+	int g = int(design.r + 0.5);
+	float hull = 1.0;
+	float detail = 1.0;
+	float core = 1.0;
+	float pulse = 0.88 + 0.12 * sin(TIME * 3.0 + design.b * 6.2832);
 
-	if (g == 0) {
-		// daemon — diamond outline
-		a = ring(abs(p.x) + abs(p.y), 0.34, 0.10);
-	} else if (g == 1) {
-		// firewall — heavy square with a centre bar
-		float sq = ring(max(abs(p.x), abs(p.y)), 0.34, 0.13);
-		float bar = (1.0 - smoothstep(0.03, 0.06, abs(p.y))) * step(abs(p.x), 0.20);
-		a = max(sq, bar);
-	} else if (g == 2) {
-		// worm — chevron
-		a = (1.0 - smoothstep(0.05, 0.11, abs(abs(p.x) * 1.15 - (p.y + 0.22))))
-			* step(abs(p.x), 0.36);
-	} else if (g == 3) {
-		// ICE — hexagon, doubled
+	if (g == 0) { // daemon: split mandibles around an exposed processor
+		hull = min(diamond(p, 0.36), box(vec2(abs(p.x) - 0.25, p.y - 0.12), vec2(0.07, 0.18)));
+		hull = max(hull, -box(p - vec2(0.0, 0.30), vec2(0.10, 0.15)));
+		core = box(p + vec2(0.0, 0.055), vec2(0.105, 0.035));
+		detail = diamond(p, 0.19);
+	} else if (g == 1) { // firewall: slab armor and three hot vent slots
+		hull = max(box(p, vec2(0.34, 0.31)), diamond(p, 0.55));
+		detail = box(p, vec2(0.245, 0.22));
+		core = box(vec2(mod(p.x + 0.065, 0.13) - 0.065, p.y), vec2(0.025, 0.13));
+		core = max(core, abs(p.x) - 0.22);
+	} else if (g == 2 || g == 6) { // worm / tracer: articulated scutes / twin swept wings
+		float chevron = max(abs(p.x) * 0.72 - p.y - 0.23, p.y - abs(p.x) * 0.42 - 0.04);
+		hull = max(chevron, abs(p.x) - 0.33);
+		if (g == 6) {
+			hull = min(hull, box(vec2(abs(p.x) - 0.24, p.y - 0.18), vec2(0.045, 0.14)));
+		} else {
+			hull = min(hull, diamond(p - vec2(0.0, 0.23), 0.16));
+		}
+		core = box(p + vec2(0.0, 0.12), vec2(0.035, 0.065));
+		detail = abs(p.x) * 0.6 - p.y - 0.08;
+	} else if (g == 3 || g == 17) { // ICE fortress / captured botnet processor
 		float h = max(abs(p.x) * 0.866 + abs(p.y) * 0.5, abs(p.y));
-		a = max(ring(h, 0.40, 0.09), ring(h, 0.22, 0.07));
-	} else if (g == 4) {
-		// mine — a plus (the projectile pool's mines; packets are g == 14)
-		float v = (1.0 - smoothstep(0.10, 0.19, abs(p.x))) * step(abs(p.y), 0.42);
-		float hh = (1.0 - smoothstep(0.10, 0.19, abs(p.y))) * step(abs(p.x), 0.42);
-		a = max(v, hh);
-	} else if (g == 5) {
-		// sentinel — heavy arrowhead, so a charge reads as a direction
-		a = ring(max(abs(p.x) * 0.866 + p.y * 0.5, -p.y - 0.02), 0.30, 0.12);
-	} else if (g == 6) {
-		// tracer — a doubled chevron, reading as speed
-		float c1 = (1.0 - smoothstep(0.04, 0.09, abs(abs(p.x) * 1.1 - (p.y + 0.30))))
-			* step(abs(p.x), 0.32);
-		float c2 = (1.0 - smoothstep(0.04, 0.09, abs(abs(p.x) * 1.1 - (p.y + 0.06))))
-			* step(abs(p.x), 0.32);
-		a = max(c1, c2);
-	} else if (g == 7) {
-		// watchdog — an eye: ring around a solid pupil
-		a = max(ring(length(p), 0.36, 0.09),
-			1.0 - smoothstep(0.09, 0.15, length(p)));
-	} else if (g == 8) {
-		// rootkit — a broken ring, so it reads as something not fully here
-		float br = ring(length(p), 0.33, 0.11);
-		float ang = atan(p.y, p.x) / 6.2832 + 0.5;
-		a = br * step(0.34, abs(fract(ang * 4.0) - 0.5) * 2.0);
-	} else if (g == 9) {
-		// probe — a boxed sight, distinct from the mine plus and the packet dot
-		a = max(ring(max(abs(p.x), abs(p.y)), 0.31, 0.09),
-			1.0 - smoothstep(0.05, 0.11, length(p)));
-	} else if (g == 10) {
-		// fork_bomb — a diamond inside a diamond, reading as "there is more here"
-		float dd = abs(p.x) + abs(p.y);
-		a = max(ring(dd, 0.40, 0.10), ring(dd, 0.20, 0.08));
-	} else if (g == 11) {
-		// packet_filter — a shield arc, open at the back it does not protect
-		float sh = ring(length(p), 0.36, 0.13);
-		a = sh * step(-0.12, -p.y);
-	} else if (g == 12) {
-		// null_ptr — a hollow square outline with nothing at all inside
-		a = ring(max(abs(p.x), abs(p.y)), 0.36, 0.08);
-	} else if (g == 13) {
-		// kernel_panic — a jagged burst
-		float ang2 = atan(p.y, p.x);
-		float spikes = 0.30 + 0.10 * cos(ang2 * 8.0);
-		a = ring(length(p), spikes, 0.11);
-	} else if (g == 14) {
-		// packet — a period
-		a = 1.0 - smoothstep(0.14, 0.22, length(p));
-	} else if (g == 15) {
-		// orbiter — a small ring
-		a = ring(length(p), 0.26, 0.09);
-	} else {
-		// data shard — solid pip
-		a = 1.0 - smoothstep(0.22, 0.34, length(p));
+		hull = h - 0.35;
+		detail = band(h, 0.24, 0.012);
+		core = diamond(p, 0.12);
+		if (g == 3) {
+			hull = min(hull, box(vec2(abs(p.x) - 0.34, p.y), vec2(0.045, 0.10)));
+			core = min(core, box(vec2(p.x, abs(p.y) - 0.28), vec2(0.08, 0.016)));
+		} else {
+			core = min(box(p, vec2(0.14, 0.025)), box(p, vec2(0.025, 0.14)));
+		}
+	} else if (g == 4) { // mine: four contact feet and armed center
+		hull = min(length(p) - 0.24, min(box(p, vec2(0.39, 0.065)), box(p, vec2(0.065, 0.39))));
+		detail = band(length(p), 0.19, 0.012);
+		core = length(p) - 0.09 * pulse;
+	} else if (g == 5) { // sentinel: lance nose, flared armored shoulders
+		hull = max(abs(p.x) * 1.05 - p.y - 0.39, p.y - 0.23);
+		hull = max(hull, abs(p.x) - 0.33);
+		hull = max(hull, -box(p - vec2(0.0, 0.25), vec2(0.10, 0.11)));
+		core = box(p + vec2(0.0, 0.04), vec2(0.027, 0.15));
+		detail = abs(p.x) * 1.05 - p.y - 0.22;
+	} else if (g == 7) { // watchdog: optical relay with two antenna pods
+		hull = min(length(p * vec2(0.9, 1.3)) - 0.28,
+			box(vec2(abs(p.x) - 0.32, p.y), vec2(0.05, 0.20)));
+		detail = band(length(p), 0.15, 0.015);
+		core = length(p) - 0.066;
+	} else if (g == 8) { // rootkit: four disconnected cloaking petals
+		hull = max(band(length(p), 0.25, 0.095), 0.055 - min(abs(p.x), abs(p.y)));
+		core = diamond(p, 0.085);
+		hull = min(hull, core);
+		detail = band(length(p), 0.26, 0.014);
+	} else if (g == 9) { // probe: paired rail barrels framing an optic
+		hull = min(diamond(p - vec2(0.0, 0.08), 0.29),
+			box(vec2(abs(p.x) - 0.21, p.y + 0.09), vec2(0.055, 0.25)));
+		core = length(p - vec2(0.0, 0.035)) - 0.075;
+		detail = box(vec2(abs(p.x) - 0.21, p.y + 0.13), vec2(0.02, 0.12));
+	} else if (g == 10) { // fork bomb: two daughter cores inside a split shell
+		hull = diamond(p, 0.46);
+		hull = max(hull, 0.024 - abs(p.x));
+		core = diamond(vec2(abs(p.x) - 0.15, p.y), 0.09);
+		detail = diamond(p, 0.32);
+	} else if (g == 11) { // packet filter: armored FRONT, exposed rear core
+		hull = max(band(length(p), 0.30, 0.085), p.y - 0.08);
+		hull = min(hull, box(p - vec2(0.0, 0.10), vec2(0.10, 0.16)));
+		core = box(p - vec2(0.0, 0.16), vec2(0.052, 0.065));
+		detail = band(length(p), 0.31, 0.012);
+	} else if (g == 12) { // null pointer: empty aperture with offset corner brackets
+		hull = band(max(abs(p.x), abs(p.y)), 0.27, 0.065);
+		hull = max(hull, 0.075 - abs(p.x + p.y));
+		core = box(vec2(abs(p.x) - 0.27, abs(p.y) - 0.27), vec2(0.045));
+		detail = box(p, vec2(0.23));
+	} else if (g == 13) { // kernel panic: reactor with eight radial cooling teeth
+		float teeth = 0.30 + 0.065 * cos(atan(p.y, p.x) * 8.0);
+		hull = length(p) - teeth;
+		detail = band(length(p), 0.20, 0.016);
+		core = min(box(p + vec2(0.0, 0.04), vec2(0.035, 0.10)), length(p - vec2(0.0, 0.14)) - 0.04);
+	} else if (g == 14) { // packet: pointed data capsule, bright leading edge
+		hull = max(box(p, vec2(0.12, 0.36)), diamond(p + vec2(0.0, 0.12), 0.34));
+		core = box(p + vec2(0.0, 0.08), vec2(0.035, 0.16));
+	} else if (g == 15) { // orbiter: three-edged cutter around a bearing
+		float blade = 0.26 + 0.09 * cos(atan(p.y, p.x) * 3.0 + TIME * 7.0);
+		hull = max(length(p) - blade, 0.10 - length(p));
+		core = band(length(p), 0.15, 0.02);
+	} else { // salvage crystal: separate identity from the sentinel
+		hull = diamond(p * vec2(1.0, 0.75), 0.25);
+		core = box(p, vec2(0.023, 0.11));
 	}
 
-	if (a < 0.02) {
-		discard;
-	}
-	COLOR.a *= a;
+	float aa = max(fwidth(hull), 0.006);
+	float alpha = 1.0 - smoothstep(-aa, aa, hull);
+	if (alpha < 0.01) { discard; }
+	float edge = 1.0 - smoothstep(0.012, 0.04 + aa, abs(hull));
+	float engraving = 1.0 - smoothstep(0.008, 0.019 + aa, abs(detail));
+	float light = 1.0 - smoothstep(-aa, aa, core);
+	vec3 tint = COLOR.rgb;
+	vec3 armor = tint * (0.13 + 0.10 * clamp(0.5 - p.y - p.x * 0.5, 0.0, 1.0));
+	vec3 col = mix(armor, tint * 0.85, edge);
+	col = mix(col, tint * 0.48, engraving * (1.0 - edge));
+	col = mix(col, mix(tint, vec3(1.8), 0.55) * pulse, light);
+	COLOR = vec4(col, COLOR.a * alpha);
 }
