@@ -12,7 +12,7 @@ var finished := {}
 
 const CASES := ["trauma_saturates", "offset_is_bounded", "squaring_is_gentle",
 	"trauma_decays_to_zero", "numbers_cap_and_prune",
-	"sfx_drains_once"]
+	"sfx_drains_once", "impact_pool_and_recoil_are_bounded"]
 
 func _initialize() -> void:
 	print("ROOTKIT — feel\n")
@@ -22,6 +22,7 @@ func _initialize() -> void:
 	trauma_decays_to_zero()
 	numbers_cap_and_prune()
 	sfx_drains_once()
+	impact_pool_and_recoil_are_bounded()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -108,3 +109,16 @@ func sfx_drains_once() -> void:
 	_check("in order", first[0], "kill")
 	_check("and the list is empty after", f.drain_sfx().size(), 0)
 	finished["sfx_drains_once"] = true
+
+func impact_pool_and_recoil_are_bounded() -> void:
+	var f := Feel.new()
+	for i in 100:
+		f.add_impact(Vector2(i, 0), Vector2.ZERO, Color.WHITE, i % 2 == 0)
+		f.kick(0)
+	_check("dense cascades cannot grow the impact pool", f.impacts.size(), Feel.IMPACT_CAP)
+	_check("repeated firing cannot stack displacement", f.recoil[0], 1.0)
+	_check("a stationary impact has a valid direction", f.impacts[0][1], Vector2.RIGHT)
+	f.step(Feel.IMPACT_LIFE + 0.01)
+	_check("presentation aging clears old armor fragments", f.impacts.size(), 0)
+	_check("and restores the weapon mount", f.recoil[0], 0.0)
+	finished["impact_pool_and_recoil_are_bounded"] = true

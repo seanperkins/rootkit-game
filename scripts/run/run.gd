@@ -2853,6 +2853,7 @@ func _emit_vector(ei: int, r: ResolvedExploit) -> void:
 		return
 	var at := player_pos[owner]
 	feel.emit(Synth.fire_id(r.vector_kind))
+	feel.kick(owner)
 	_trigger_fires[ei] = _trigger_fires.get(ei, 0) + 1
 	# Before the match, deliberately. CHAIN returns early when it has no
 	# target, and a defensive build on it must still ward — it has already spent
@@ -3683,6 +3684,11 @@ func _steps78_drain() -> void:
 		for k in queue.hit_count:
 			var ht := queue.hit_target[k]
 			if ht >= 0 and ht < enemies.count:
+				# One small burst per visible hit, not one per cascade entry.
+				if _hit_flash[ht] < 0.5:
+					var source := _owner_slot(queue.hit_exploit[k])
+					var incoming := enemies.pos[ht] - player_pos[source] if source >= 0 else -enemies.vel[ht]
+					feel.add_impact(enemies.pos[ht], incoming, enemy_types[enemies.type_index[ht]].color)
 				_hit_flash[ht] = 1.0
 				# How solid the thing felt. The player lands hundreds of these
 				# a run, so it is the cheapest channel the game has for
@@ -3746,6 +3752,8 @@ func _on_death(i: int) -> void:
 	if ks >= 0:
 		kills[ks] += 1
 	feel.emit("kill")
+	feel.add_impact(enemies.pos[i], enemies.pos[i] - player_pos[ks] if ks >= 0 else -enemies.vel[i],
+		enemy_types[enemies.type_index[i]].color, true)
 	if enemies.type_index[i] == _fork_bomb_index \
 			and _split_gen[i] < SPLIT_GENERATIONS:
 		# Flagged, not spawned: this runs inside the drain, and spawning here
@@ -5089,12 +5097,29 @@ func _draw() -> void:
 			tell = 1.0 - _ai_timer[i] / AMBUSH_SURFACING
 		if tell <= 0.0:
 			continue
-		var ring := PackedVector2Array()
-		for k in 17:
-			var ta := TAU * k / 16.0
-			ring.append(to_iso(_rp(enemies, i)
-				+ Vector2(cos(ta), sin(ta)) * (14.0 + 26.0 * tell)))
-		draw_polyline(ring, Color(1.9, 0.9, 0.4, 0.85 * (1.0 - tell)), 2.0)
+		var origin := _rp(enemies, i)
+		var tint := Color(2.0, 0.95, 0.35, 0.30 + 0.65 * tell)
+		if bh == EnemyTable.Behaviour.CHARGER:
+			var target_slot: int = _enemy_target[i]
+			var toward := player_render_pos[target_slot] - origin if target_slot >= 0 else enemies.vel[i]
+			var forward := toward.normalized() if toward.length_squared() > 0.01 else Vector2.RIGHT
+			var side := Vector2(-forward.y, forward.x)
+			# Sequential chevrons make both heading and imminent commitment clear.
+			for mark in 4:
+				var point := origin + forward * (23.0 + mark * 18.0)
+				var lit := clampf(tell * 4.0 - mark, 0.0, 1.0)
+				draw_polyline(PackedVector2Array([to_iso(point - forward * 7 + side * 7),
+					to_iso(point), to_iso(point - forward * 7 - side * 7)]),
+					Color(tint, 0.16 + 0.80 * lit), 1.0 + lit, true)
+		else:
+			# A surfacing threat converges on a point rather than indicating travel.
+			var reach := 14.0 + 22.0 * (1.0 - tell)
+			for corner in 4:
+				var dir := Vector2.RIGHT.rotated(corner * PI * 0.5 + PI * 0.25)
+				var tip := origin + dir * reach
+				var tangent := Vector2(-dir.y, dir.x)
+				draw_polyline(PackedVector2Array([to_iso(tip + tangent * 7 - dir * 5),
+					to_iso(tip), to_iso(tip - tangent * 7 - dir * 5)]), tint, 2.0, true)
 
 	# Support links, and the ranged aim tell. Both are the same argument the
 	# charger and ambusher telegraphs above already make: a thing that happens
@@ -5104,6 +5129,17 @@ func _draw() -> void:
 		if _arriving[i] > 0.0 or _submerged[i] != 0:
 			continue
 		var bh2: int = enemy_types[enemies.type_index[i]].behaviour
+		if enemy_types[enemies.type_index[i]].id == &"kernel_panic" \
+				and _ai_aim[i].x > 0.0 and _ai_aim[i].x < 0.85:
+			# Local reactor buildup, not a radius claiming the LOS attack ends
+			# here. Eight outward strokes fill just before the existing pulse.
+			var charge := 1.0 - _ai_aim[i].x / 0.85
+			var origin := _rp(enemies, i)
+			for spoke in 8:
+				var dir := Vector2.RIGHT.rotated(TAU * spoke / 8.0)
+				var lit := clampf(charge * 8.0 - spoke, 0.0, 1.0)
+				draw_line(to_iso(origin + dir * 22.0), to_iso(origin + dir * (30.0 + 16.0 * lit)),
+					Color(2.0, 0.55, 0.35, 0.15 + 0.85 * lit), 1.0 + lit, true)
 		if bh2 == EnemyTable.Behaviour.SUPPORT:
 			if _ai_aim[i] != Vector2.ZERO:
 				# Dashed rather than solid, so it reads as a beam being
@@ -5131,6 +5167,9 @@ func _draw() -> void:
 				if aim < 0 or aim >= SessionRules.MAX_PLAYERS or slot_state[aim] != SlotState.LIVE:
 					aim = view_slot
 				var to2 := to_iso(player_render_pos[aim])
+				var lock_radius := 12.0 - 5.0 * k3
+				draw_arc(from2, lock_radius, -PI * 0.5, -PI * 0.5 + TAU * k3, 16,
+					Color(1.9, 0.5, 0.4, 0.85), 1.5, true)
 				draw_line(from2, from2.lerp(to2, 0.35 + 0.5 * k3),
 					Color(1.9, 0.5, 0.45, 0.30 + 0.45 * k3), 1.0 + k3)
 
@@ -5249,6 +5288,28 @@ func _draw() -> void:
 			draw_circle(ai, 34.0 * (1.0 - pk),
 				Color(2.4, 2.3, 2.2, 0.5 * (1.0 - pk)))
 
+	# Short, directional impacts. Destruction throws small armor chips;
+	# surviving hits throw narrow sparks. The capped pool is presentation only.
+	for impact in feel.impacts:
+		var left: float = clampf(impact[3] / Feel.IMPACT_LIFE, 0.0, 1.0)
+		var travel := 1.0 - left
+		var incoming: Vector2 = impact[1]
+		var hue: Color = impact[2]
+		var shattered: bool = impact[4]
+		for chip in (5 if shattered else 3):
+			var direction := incoming.rotated((float(chip) - (2.0 if shattered else 1.0)) * 0.65)
+			var reach := (32.0 if shattered else 21.0) * travel
+			var point := to_iso(impact[0] + direction * (5.0 + reach))
+			point.y -= sin(travel * PI) * (9.0 if shattered else 3.0)
+			if shattered:
+				var size := 1.0 + 1.8 * left
+				draw_colored_polygon(PackedVector2Array([point + Vector2(-size, 0),
+					point + Vector2(0, -size * 0.6), point + Vector2(size, 0), point + Vector2(0, size)]),
+					Color(hue.r, hue.g, hue.b, left))
+			else:
+				draw_line(point, point - to_iso(direction).normalized() * (2.0 + 5.0 * left),
+					Color(1.6, 1.7, 1.3, left), 1.0, true)
+
 	# Damage numbers. ThemeDB.fallback_font ships with the engine and is not a
 	# file in this repo, so the no-font-assets rule holds. Drawn in world space
 	# under to_iso — they belong to an enemy at a place.
@@ -5270,7 +5331,7 @@ func _draw() -> void:
 		var opacity: float = e[2]
 		var thrust := clampf(player_vel[ps].length() / 180.0, 0.0, 1.0)
 		_draw_player_craft(player_render_pos[ps], player_facing[ps], c, opacity,
-			thrust * (0.9 + 0.1 * sin(Time.get_ticks_msec() * 0.03)))
+			thrust * (0.9 + 0.1 * sin(Time.get_ticks_msec() * 0.03)), feel.recoil[ps])
 		var tag: String = e[3]
 		if tag != "":
 			var width := pf.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
@@ -5287,7 +5348,9 @@ func _craft_polygon(at: Vector2, facing: Vector2, shape: PackedVector2Array,
 	return pts
 
 func _draw_player_craft(at: Vector2, facing: Vector2, c: Color, opacity: float,
-		thrust: float) -> void:
+		thrust: float, recoil: float = 0.0) -> void:
+	var muzzle_at := at
+	at -= facing * recoil * 2.5
 	var hull := PackedVector2Array([Vector2(17, 0), Vector2(2, 7),
 		Vector2(-12, 5), Vector2(-9, 0), Vector2(-12, -5), Vector2(2, -7)])
 	var shadow := _craft_polygon(at, facing, hull, -3.0)
@@ -5313,6 +5376,10 @@ func _draw_player_craft(at: Vector2, facing: Vector2, c: Color, opacity: float,
 	var core := _craft_polygon(at, facing, PackedVector2Array([
 		Vector2(7, 0), Vector2(0, 3), Vector2(-4, 0), Vector2(0, -3)]), 4.0)
 	draw_colored_polygon(core, Color(1.7, 2.0, 1.9, opacity))
+	if recoil > 0.0:
+		var muzzle := _craft_polygon(muzzle_at, facing, PackedVector2Array([
+			Vector2(17, -2), Vector2(23 + recoil * 6, 0), Vector2(17, 2)]), 4.0)
+		draw_colored_polygon(muzzle, Color(1.8, 2.0, 1.5, recoil * opacity))
 
 func _draw_ring(centre: Vector2, radius: float, colour: Color, width: float) -> void:
 	var pts := PackedVector2Array()

@@ -115,12 +115,18 @@ void fragment() {
 
 	float aa = max(fwidth(hull), 0.006);
 	float alpha = 1.0 - smoothstep(-aa, aa, hull);
-	if (alpha < 0.01) { discard; }
+	// A compact contact shadow fits inside the same quad as the body.
+	float shadow = (1.0 - smoothstep(0.55, 1.0,
+		length((uv - vec2(0.025, 0.19)) / vec2(0.38, 0.18)))) * 0.48;
+	if (g == 14 || g == 15 || g == 16) { shadow = 0.0; }
+	if (max(alpha, shadow) < 0.01) { discard; }
 	float edge = 1.0 - smoothstep(0.012, 0.04 + aa, abs(hull));
 	float engraving = 1.0 - smoothstep(0.008, 0.019 + aa, abs(detail));
 	float light = 1.0 - smoothstep(-aa, aa, core);
 	vec3 tint = COLOR.rgb;
-	vec3 armor = tint * (0.13 + 0.10 * clamp(0.5 - p.y - p.x * 0.5, 0.0, 1.0));
+	// Lighting is fixed in screen space, so turning does not move the sun.
+	float face_light = clamp(0.55 - uv.y * 1.4 - uv.x * 0.7, 0.0, 1.0);
+	vec3 armor = tint * (0.18 + 0.20 * face_light);
 	vec3 col = mix(armor, tint * 0.85, edge);
 	col = mix(col, tint * 0.48, engraving * (1.0 - edge));
 	col = mix(col, mix(tint, vec3(1.8), 0.55) * pulse, light);
@@ -155,5 +161,7 @@ void fragment() {
 		vec3 reactor = mix(mix(tint, vec3(1.8), 0.55), vec3(2.0, 0.48, 0.16), stress);
 		col = mix(col, reactor * mix(1.0, heartbeat, stress), light);
 	}
-	COLOR = vec4(col, COLOR.a * alpha);
+	float coverage = alpha + shadow * (1.0 - alpha);
+	col = mix(vec3(0.003, 0.008, 0.012), col, alpha / max(coverage, 0.001));
+	COLOR = vec4(col, COLOR.a * coverage);
 }

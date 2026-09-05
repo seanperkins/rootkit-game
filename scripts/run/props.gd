@@ -71,6 +71,7 @@ class WallVisual:
 	var near_color: Color
 	var side_color: Color
 	var phase: float
+	var shadow: PackedVector2Array
 	var top: PackedVector2Array
 	var near: PackedVector2Array
 	var side: PackedVector2Array
@@ -166,15 +167,17 @@ func _wall_visual(r: Rect2) -> WallVisual:
 	var kind := key % WALL_HEIGHTS.size()
 	v.height = WALL_HEIGHTS[kind]
 	v.hue = WALL_HUES[kind]
-	v.top_color = v.hue * 0.27
-	v.near_color = v.hue * 0.16
-	v.side_color = v.hue * 0.09
+	v.top_color = v.hue * 0.72
+	v.near_color = v.hue * 0.38
+	v.side_color = v.hue * 0.22
 	v.phase = float(key % 29) * 0.73
 	var up := Vector2(0, -v.height)
 	var a: Vector2 = target.to_iso(r.position)
 	var b: Vector2 = target.to_iso(Vector2(r.end.x, r.position.y))
 	var c: Vector2 = target.to_iso(r.end)
 	var d: Vector2 = target.to_iso(Vector2(r.position.x, r.end.y))
+	var cast := Vector2(v.height * 0.48, v.height * 0.30)
+	v.shadow = PackedVector2Array([a, b, b + cast, c + cast, d + cast, d])
 	v.back = PackedVector2Array([a, b, a, d, a, a + up])
 	v.near = PackedVector2Array([d, c, c + up, d + up])
 	v.side = PackedVector2Array([b, c, c + up, b + up])
@@ -221,13 +224,16 @@ func _draw_wall(r: Rect2, drop: float, fade: float, time: float) -> void:
 	var v := _wall_visual(r)
 	if drop != 0.0:
 		draw_set_transform(Vector2(0, drop))
-	# Five commands for the box, instead of twelve separate face/edge calls.
-	# All faces retain the original transparency, including taller housings.
+	# A short cast shadow grounds standing equipment. It fades as the object
+	# falls, and cannot be left behind on missing floor.
+	if drop == 0.0:
+		draw_colored_polygon(v.shadow, Color(0.004, 0.009, 0.014, 0.55 * fade))
+	# Face transparency still lets nearby entities read behind taller housings.
 	draw_multiline(v.back, Color(v.hue, BACK_EDGE_SCALE * fade), 1.0)
 	draw_colored_polygon(v.near, Color(v.near_color, FACE_ALPHA * fade))
 	draw_colored_polygon(v.side, Color(v.side_color, FACE_ALPHA * fade))
 	draw_colored_polygon(v.top, Color(v.top_color, FACE_ALPHA * fade))
-	draw_multiline(v.outline, Color(v.hue, fade), 1.25)
+	draw_multiline(v.outline, Color(v.hue * 0.78, fade), 1.25)
 	draw_multiline(v.detail, Color(v.hue * 0.52, fade), 1.0)
 	var activity := 0.78 + 0.22 * sin(time * 1.6 + v.phase)
 	draw_multiline(v.lights, Color(v.hue * activity, fade), 2.0)

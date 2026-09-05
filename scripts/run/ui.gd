@@ -1,7 +1,7 @@
 extends CanvasLayer
 
-const FG := Color(0.55, 1.0, 0.72)
-const DIM := Color(0.35, 0.62, 0.48)
+const FG := Color(0.78, 0.95, 0.89)
+const DIM := Color(0.70, 0.84, 0.86)
 const WARN := Color(1.0, 0.45, 0.42)
 
 ## Polled from the Updater autoload each _refresh, when it exists. A
@@ -9,6 +9,8 @@ const WARN := Color(1.0, 0.45, 0.42)
 ## the same idiom run.gd uses for input_override.
 var pending_update := false
 var run: Node2D
+var _chrome: Control
+var _build_dock: HBoxContainer
 var _hud: Control
 var _overlay: Control
 ## The card PanelContainers, so the SELECTED one can be lit. The card is the
@@ -92,49 +94,63 @@ func _build() -> void:
 	_hud.theme = TerminalStyle.build_theme()
 	add_child(_hud)
 
-	# Three blocks, not one line. Eleven unrelated values sharing a single
-	# format string meant nothing could be found by position — it read as a
-	# debug printout because it was one. Still monospace, still ASCII bars: the
-	# terminal look is right for this game, the lack of grouping was not.
-	var status := _mono(15)
-	status.name = "Status"
-	status.position = Vector2(18, 12)
-	_hud.add_child(status)
+	_chrome = Control.new()
+	_chrome.set_script(load("res://scripts/ui/hud_chrome.gd"))
+	_chrome.run = run
+	_hud.add_child(_chrome)
 
-	var centre := _mono(15)
+	var status := _mono(13)
+	status.name = "Status"
+	status.position = Vector2(30, 25)
+	_hud.add_child(status)
+	var health := _mono(26)
+	health.name = "HealthValue"
+	health.position = Vector2(30, 43)
+	_hud.add_child(health)
+
+	var centre := _mono(14)
 	centre.name = "Centre"
-	# Anchored wide and centred by alignment, with OFFSETS rather than an
-	# explicit size: a control with non-equal opposite anchors has its size
-	# overwritten after _ready, so assigning size.x here only produced a warning
-	# and no layout.
 	centre.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	centre.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	centre.offset_top = 12
-	centre.offset_bottom = 90
+	centre.offset_top = 25
+	centre.offset_bottom = 45
 	_hud.add_child(centre)
+	var clock := _mono(28)
+	clock.name = "Clock"
+	clock.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	clock.offset_top = 44
+	clock.offset_bottom = 82
+	_hud.add_child(clock)
+	var alert := _mono(12)
+	alert.name = "Alert"
+	alert.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	alert.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	alert.offset_top = 97
+	alert.offset_bottom = 121
+	alert.add_theme_color_override("font_color", WARN)
+	_hud.add_child(alert)
 
-	# Its own label rather than a line of the tally, because it is the one
-	# readout that changes colour on its own: the tally shares a single
-	# font_color, so a frame-rate line inside it could not go WARN without
-	# taking salvage and kills with it.
-	var fps := _mono(14)
+	var fps := _mono(11)
 	fps.name = "Fps"
-	fps.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	fps.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	fps.offset_top = 12
-	fps.offset_bottom = 32
+	fps.offset_left = -100
+	fps.offset_top = -17
 	fps.offset_right = -20
+	fps.offset_bottom = -2
 	fps.add_theme_color_override("font_color", DIM)
 	_hud.add_child(fps)
 
 	var tally := _mono(14)
 	tally.name = "Tally"
-	tally.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	tally.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tally.offset_top = 30
-	tally.offset_bottom = 90
-	tally.offset_right = -20
+	tally.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	tally.offset_left = -278
+	tally.offset_top = 25
+	tally.offset_right = -28
+	tally.offset_bottom = 120
 	tally.add_theme_color_override("font_color", DIM)
+	tally.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_hud.add_child(tally)
 
 	# The network diagnostics panel. Its own small box so it stays readable
@@ -142,7 +158,7 @@ func _build() -> void:
 	_net_panel = PanelContainer.new()
 	_net_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_net_panel.offset_left = -380
-	_net_panel.offset_top = 104
+	_net_panel.offset_top = 220
 	_net_panel.offset_right = -20
 	_net_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var npbg := StyleBoxFlat.new()
@@ -164,26 +180,47 @@ func _build() -> void:
 		and run._transport != null
 	_net_panel.visible = _net_shown
 
-	# Bottom-left: the build is reference material, not a live readout, so it
-	# gets the corner the eye is not on during a fight.
-	var build := _mono(13)
+	var build := _mono(11)
 	build.name = "Build"
 	build.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	build.position = Vector2(18, -74)
+	build.position = Vector2(18, -122)
 	build.add_theme_color_override("font_color", DIM)
 	_hud.add_child(build)
 
-	# Bottom-right: the running build's version, visible in-game exactly like
-	# on the menu. No modal here — the menu scene does not exist mid-run —
-	# but a pending update still lights the same [update available] tag.
-	var version := _mono(13)
+	_build_dock = HBoxContainer.new()
+	_build_dock.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_build_dock.offset_left = 16
+	_build_dock.offset_right = -16
+	_build_dock.offset_top = -103
+	_build_dock.offset_bottom = -25
+	_build_dock.add_theme_constant_override("separation", 8)
+	_hud.add_child(_build_dock)
+	for i in Loadout.MAX_EXPLOITS:
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		panel.mouse_filter = Control.MOUSE_FILTER_PASS
+		var style := TerminalStyle.panel_style(Color(0.18, 0.37, 0.40), Color(0.015, 0.035, 0.045, 0.98))
+		style.set_content_margin_all(9)
+		panel.add_theme_stylebox_override("panel", style)
+		var stack := VBoxContainer.new()
+		stack.add_theme_constant_override("separation", 3)
+		panel.add_child(stack)
+		for field in ["Head", "Route", "Stats"]:
+			var label := _mono(16 if field == "Head" else 12)
+			label.name = field
+			label.clip_text = true
+			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			label.add_theme_color_override("font_color", FG if field == "Head" else DIM)
+			stack.add_child(label)
+		_build_dock.add_child(panel)
+
+	var version := _mono(11)
 	version.name = "Version"
-	version.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	version.offset_left = -220
-	version.offset_top = -42
-	version.offset_right = -20
-	version.offset_bottom = -12
-	version.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	version.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	version.offset_left = 18
+	version.offset_top = -17
+	version.offset_right = 500
+	version.offset_bottom = -2
 	version.add_theme_color_override("font_color", DIM)
 	_hud.add_child(version)
 
@@ -193,17 +230,11 @@ func _build() -> void:
 	_vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_vignette.color = Color(0.9, 0.1, 0.12, 0.0)
-	var vg := Gradient.new()
-	vg.set_color(0, Color(1, 1, 1, 0))
-	vg.set_color(1, Color(1, 1, 1, 1))
-	var vt := GradientTexture2D.new()
-	vt.gradient = vg
-	vt.fill = GradientTexture2D.FILL_RADIAL
-	vt.fill_from = Vector2(0.5, 0.5)
-	vt.fill_to = Vector2(1.0, 0.5)
-	_vignette.material = null
-	_vignette.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	var damage_material := ShaderMaterial.new()
+	damage_material.shader = load("res://shaders/damage_vignette.gdshader")
+	_vignette.material = damage_material
 	_hud.add_child(_vignette)
+	_hud.move_child(_vignette, 0) # damage tint belongs behind instruments
 
 	_overlay = Control.new()
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -362,10 +393,11 @@ func _refresh() -> void:
 	var maxhp := int(run._eff_integrity(ls))
 
 	var status: Label = _hud.get_node("Status")
-	status.text = "integrity  %3d/%-3d  [%s]\narmor %-4.0f  def %-4.0f\nlvl %-3d    [%s]" % [
-		hp, maxhp, _bar(float(hp) / maxf(float(maxhp), 1.0), 16),
-		run._eff_armor(ls), run._eff_defense(ls), run.level,
-		_bar(float(run.xp) / maxf(run.xp_needed, 1), 16)]
+	status.text = "integrity                 lvl %02d\n\n\narmor %.0f   def %.0f   shield %.0f\nXP %d / %d" % [
+		run.level, run._eff_armor(ls), run._eff_defense(ls), run.player_shield[ls], run.xp, run.xp_needed]
+	_hud.get_node("HealthValue").text = "%d / %d" % [hp, maxhp]
+	_hud.get_node("HealthValue").add_theme_color_override("font_color",
+		WARN if float(hp) < float(maxhp) * 0.3 else FG)
 	# Proportional, not absolute. A fixed 30 fires at 16.7% on a 180 bar.
 	status.add_theme_color_override("font_color",
 		WARN if float(hp) < float(maxhp) * 0.3 else FG)
@@ -378,16 +410,18 @@ func _refresh() -> void:
 	# building.
 	for i in run.enemies.count:
 		if run._is_miniboss(run.enemies.type_index[i]) and not run.is_arriving(i):
-			banner = "\n:: %s ACTIVE" % String(
+			banner = "%s ACTIVE" % String(
 				run.enemy_types[run.enemies.type_index[i]].id).to_upper()
 			break
 	if run.phase == run.Phase.CLEARED:
-		banner = "\n>> SUBNET COLLAPSING — %ds to the gate" % int(
-			ceil(run.collapse_left))
-	centre.text = "subnet %d/%d      %d:%02d%s" % [run.subnet,
-		SpawnDirector.CAMPAIGN_SUBNETS, int(t) / 60, int(t) % 60, banner]
-	centre.add_theme_color_override("font_color",
-		WARN if banner != "" else FG)
+		banner = "COLLAPSE // REACH THE GATE"
+	centre.text = "subnet %02d / %02d   //   %s" % [run.subnet,
+		SpawnDirector.CAMPAIGN_SUBNETS, ["EDGE", "MEMORY", "CORE"][clampi(run.subnet - 1, 0, 2)]]
+	var display_time: int = int(ceil(maxf(run.collapse_left, 0.0))) if run.phase == run.Phase.CLEARED else int(t)
+	_hud.get_node("Clock").text = "%02d:%02d" % [display_time / 60, display_time % 60]
+	_hud.get_node("Clock").add_theme_color_override("font_color", WARN if run.phase == run.Phase.CLEARED else FG)
+	_hud.get_node("Alert").text = banner
+	_chrome.alert = banner != ""
 
 	# Display rate, not tick rate — the F1 net panel already reports the tick.
 	# Engine.get_frames_per_second() is averaged over the last second, so it
@@ -397,7 +431,7 @@ func _refresh() -> void:
 	fps_node.text = "%d fps" % fps
 	fps_node.add_theme_color_override("font_color", DIM if fps >= 55 else WARN)
 
-	var tally := "salvage %d\nbotnet %d\nkills %d   flips %d" % [
+	var tally := "RESOURCES / NETWORK\nsalvage %-7d botnet %d\nkills %-9d flips %d" % [
 		run.salvage, run.botnet.count, run.kills[ls], run.flips[ls]]
 	# The stall notice: once lockstep has waited STALL_NOTICE callbacks on a
 	# record, name the slots it is waiting on. Presentation only.
@@ -416,7 +450,11 @@ func _refresh() -> void:
 	tally += _teammate_strip(ls)
 	_hud.get_node("Tally").text = tally
 
-	_hud.get_node("Build").text = "\n".join(_build_lines())
+	_chrome.tally_height = maxf(86.0, 26.0 + _hud.get_node("Tally").get_minimum_size().y)
+	_net_panel.offset_top = 28.0 + _chrome.tally_height
+	_chrome.queue_redraw()
+	_hud.get_node("Build").text = "EXPLOIT BUS // %d / %d SLOTS" % [run.loadouts[ls].exploits.size(), Loadout.MAX_EXPLOITS]
+	_refresh_build_dock()
 
 	# pending_update is set once at bind() and by the update_ready signal
 	# (see _bind_updater) — never polled here, so it cannot be clobbered
@@ -589,6 +627,38 @@ func _build_lines() -> Array:
 			"   [INERT]" if r.inert else "   dmg %.0f  cd %.2f  corr %.0f" % [
 				r.damage, r.cooldown, r.corruption]])
 	return lines
+
+## Fixed-width slots retain the full build as a hover reference and in the
+## end summary, while combat gets names, trigger and readiness at a glance.
+func _refresh_build_dock() -> void:
+	var ls: int = run.local_slot
+	var lo: Loadout = run.loadouts[ls]
+	var lines := _build_lines()
+	for i in Loadout.MAX_EXPLOITS:
+		var panel: PanelContainer = _build_dock.get_child(i)
+		var stack := panel.get_child(0)
+		if i >= lo.exploits.size():
+			stack.get_node("Head").text = "%02d  EMPTY SLOT" % (i + 1)
+			stack.get_node("Head").modulate.a = 0.45
+			stack.get_node("Route").text = "awaiting vector"
+			stack.get_node("Stats").text = "—"
+			panel.tooltip_text = ""
+			continue
+		var ex: Exploit = lo.exploits[i]
+		var r: ResolvedExploit = run.resolved[run._gid(ls, i)]
+		var equipped: Array = ex.equipped()
+		stack.get_node("Head").modulate.a = 1.0
+		var title := "EMPTY" if equipped.is_empty() else String(equipped[0].module.display_name)
+		var rank := 0 if equipped.is_empty() else int(equipped[0].rank)
+		stack.get_node("Head").text = "%02d  %s ·%d" % [i + 1, title, rank]
+		var route := []
+		for j in range(1, equipped.size()):
+			route.append(String(equipped[j].module.display_name))
+		stack.get_node("Route").text = " + ".join(route) if not route.is_empty() else "built-in interval"
+		var ready := "INERT" if r.inert else ("REARM" if run._fire_cd[run._gid(ls, i)] > 0.0 else "ARMED")
+		stack.get_node("Stats").text = "%s  /  DMG %.0f  /  %.2fs" % [ready, r.damage, r.cooldown]
+		stack.get_node("Stats").add_theme_color_override("font_color", WARN if r.inert else DIM)
+		panel.tooltip_text = String(lines[i])
 
 func _bar(f: float, w: int) -> String:
 	var n := int(clampf(f, 0.0, 1.0) * w)

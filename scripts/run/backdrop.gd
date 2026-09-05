@@ -10,7 +10,7 @@ extends Node2D
 ## a tile is never cut part way through by the edge of the world — which is what
 ## made the ground read as a background image the arena stopped on top of.
 const STEP := Terrain.TILE
-const LINE := Color(0.10, 0.28, 0.23, 0.75)
+const LINE := Color(0.07, 0.18, 0.17, 0.60)
 const EDGE := Color(0.35, 1.00, 0.75, 0.9)
 const GLOW := Color(0.12, 0.45, 0.34, 0.35)
 
@@ -53,6 +53,7 @@ func _process(_d: float) -> void:
 			var mat := ShaderMaterial.new()
 			mat.shader = CIRCUIT_SHADER
 			mat.set_shader_parameter("phase", float(i) * 0.31)
+			mat.set_shader_parameter("subnet", i)
 			layer.material = mat
 			add_child(layer)
 			_circuits.append(layer)
@@ -67,6 +68,9 @@ func _process(_d: float) -> void:
 						Vector2(mini(PATCH_SECTORS, nx - x), mini(PATCH_SECTORS, ny - y)) * SECTOR)
 					patch.draw.connect(_draw_circuits.bind(patch, bounds, i, Vector2i(x, y)))
 					layer.add_child(patch)
+	# Density lowers decorative contrast smoothly; simulation never reads it.
+	var quiet := 1.0 - 0.28 * clampf(float(target.enemies.count) / 400.0, 0.0, 1.0)
+	modulate = modulate.lerp(Color(quiet, quiet, quiet), minf(_d * 2.0, 1.0))
 	var view: Rect2 = target._visible_world_rect()
 	var mask := 0
 	for i in _terrain.arenas.size():
@@ -94,7 +98,11 @@ func _arena(r: Rect2, index: int) -> void:
 	var o: Vector2 = r.position
 	var sz: Vector2 = r.size
 	var hue: Color = CIRCUIT_HUES[index % CIRCUIT_HUES.size()]
-	var grid_colour := LINE.lerp(Color(hue.r, hue.g, hue.b, LINE.a), 0.20)
+	var grid_colour := LINE.lerp(Color(hue.r, hue.g, hue.b, LINE.a), 0.12)
+	var ground := PackedVector2Array([target.to_iso(r.position),
+		target.to_iso(Vector2(r.end.x, r.position.y)), target.to_iso(r.end),
+		target.to_iso(Vector2(r.position.x, r.end.y))])
+	draw_colored_polygon(ground, Color(hue.r * 0.040, hue.g * 0.040, hue.b * 0.050))
 
 	# The whole lattice for this arena, cached in fixed world positions.
 	#

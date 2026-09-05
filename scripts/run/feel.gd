@@ -25,6 +25,11 @@ const NUMBER_CAP := 24
 const NUMBER_LIFE := 0.75
 const NUMBER_RISE := 42.0
 
+const IMPACT_CAP := 24
+const IMPACT_LIFE := 0.24
+## [origin, incoming direction, hue, life, destruction]. No per-entity state.
+var impacts: Array = []
+var recoil := PackedFloat32Array()
 var trauma := 0.0
 
 ## [pos, text, colour, life] rows, oldest first.
@@ -39,6 +44,7 @@ var _rng := RandomNumberGenerator.new()
 
 func _init() -> void:
 	_rng.randomize()
+	recoil.resize(SessionRules.MAX_PLAYERS)
 
 ## Injectable so a suite can assert more than a magnitude bound — an unseeded
 ## source cannot catch a sign flip or an axis-correlation bug.
@@ -79,6 +85,16 @@ func add_number(pos: Vector2, text: String, colour: Color) -> void:
 	while numbers.size() > NUMBER_CAP:
 		numbers.remove_at(0)
 
+func add_impact(at: Vector2, incoming: Vector2, colour: Color, destruction: bool = false) -> void:
+	var dir := incoming.normalized() if incoming.length_squared() > 0.01 else Vector2.RIGHT
+	impacts.append([at, dir, colour, IMPACT_LIFE, destruction])
+	while impacts.size() > IMPACT_CAP:
+		impacts.remove_at(0)
+
+func kick(slot: int) -> void:
+	if slot >= 0 and slot < recoil.size():
+		recoil[slot] = 1.0
+
 func emit(id: String) -> void:
 	sfx.append(id)
 
@@ -92,6 +108,12 @@ func drain_sfx() -> PackedStringArray:
 ## aging while the world is frozen by a hitstop, paused, or ended.
 func step(dt: float) -> void:
 	trauma = maxf(0.0, trauma - TRAUMA_DECAY * dt)
+	for slot in recoil.size():
+		recoil[slot] = maxf(0.0, recoil[slot] - dt * 9.0)
+	for impact in impacts:
+		impact[3] -= dt
+	while not impacts.is_empty() and impacts[0][3] <= 0.0:
+		impacts.remove_at(0)
 	var i := 0
 	while i < numbers.size():
 		numbers[i][3] -= dt

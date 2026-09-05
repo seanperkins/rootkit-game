@@ -15,7 +15,8 @@ const CASES := ["the_blocks_exist_and_populate", "integrity_warns_proportionally
 	"the_teammate_strip_names_everyone_else", "the_net_panel_is_session_only",
 	"the_stall_is_attributed", "settings_from_pause_cover_the_viewport",
 	"abandon_from_the_pause_menu_ends_a_solo_run",
-	"the_version_tag_lights_up_when_an_update_is_pending"]
+	"the_version_tag_lights_up_when_an_update_is_pending",
+	"full_build_and_recovery_fit_the_viewport"]
 
 func _initialize() -> void:
 	print("ROOTKIT — hud\n")
@@ -31,6 +32,7 @@ func _initialize() -> void:
 	await settings_from_pause_cover_the_viewport()
 	await abandon_from_the_pause_menu_ends_a_solo_run()
 	await the_version_tag_lights_up_when_an_update_is_pending()
+	await full_build_and_recovery_fit_the_viewport()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -76,8 +78,9 @@ func the_blocks_exist_and_populate() -> void:
 	var status: String = ui._hud.get_node("Status").text
 	_check("status carries integrity", status.contains("integrity"), true)
 	_check("status carries the level", status.contains("lvl"), true)
-	_check("status draws an ASCII bar", status.contains("#") or
-		status.contains("."), true)
+	_check("integrity has a large dedicated readout",
+		String(ui._hud.get_node("HealthValue").text).contains("/"), true)
+	_check("health and XP gauges have a backing canvas", ui._chrome != null, true)
 	var centre: String = ui._hud.get_node("Centre").text
 	_check("centre carries the subnet", centre.contains("subnet"), true)
 	var tally: String = ui._hud.get_node("Tally").text
@@ -281,3 +284,51 @@ func the_version_tag_lights_up_when_an_update_is_pending() -> void:
 	r.free()
 	await process_frame
 	finished["the_version_tag_lights_up_when_an_update_is_pending"] = true
+
+## Full builds used to draw their last rows below the screen. Check actual
+## Control rectangles at two sizes, including a wrapped recovery notice.
+func full_build_and_recovery_fit_the_viewport() -> void:
+	var r := await _fresh_run()
+	r.set_physics_process(false)
+	var ui := _ui(r)
+	var table := ModuleTable.by_id()
+	var lo: Loadout = r.loadouts[r.local_slot]
+	lo.exploits.clear()
+	for id in [&"packet", &"chain", &"beam", &"spike", &"broadcast"]:
+		var ex := Exploit.new()
+		ex.place(table[id])
+		ex.place(table[&"interval"])
+		lo.exploits.append(ex)
+	r._recompile()
+	r._session.reconnecting = true
+	r.phase = r.Phase.CLEARED
+	r.collapse_left = 18.2
+	ui._refresh()
+	_check("collapse promotes the escape countdown to the main clock",
+		ui._hud.get_node("Clock").text, "00:19")
+	var original_size := root.size
+	for dimensions in [Vector2i(1280, 720), Vector2i(1920, 1080)]:
+		root.size = dimensions
+		for frame in 4:
+			await process_frame
+		ui._refresh()
+		var viewport: Rect2 = ui._hud.get_global_rect()
+		var right := -1.0
+		for panel in ui._build_dock.get_children():
+			var rect: Rect2 = panel.get_global_rect()
+			_check("a full weapon slot remains inside the viewport", viewport.encloses(rect), true)
+			_check("neighboring slots do not overlap", rect.position.x > right, true)
+			_check("slots retain readable width", rect.size.x >= 200.0, true)
+			right = rect.end.x
+		var tally: Label = ui._hud.get_node("Tally")
+		_check("reconnect notice survives wrapping", tally.text.contains("reconnecting"), true)
+		_check("resource panel contains all notice lines",
+			ui._chrome.tally_height >= tally.get_minimum_size().y + 20.0, true)
+		_check("net diagnostics start below the resource panel",
+			ui._net_panel.offset_top > 16.0 + ui._chrome.tally_height, true)
+		_check("damage tint stays behind the HUD backing",
+			ui._vignette.get_index() < ui._chrome.get_index(), true)
+	root.size = original_size
+	r.free()
+	await process_frame
+	finished["full_build_and_recovery_fit_the_viewport"] = true
