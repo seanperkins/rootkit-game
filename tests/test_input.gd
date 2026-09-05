@@ -15,7 +15,8 @@ const CASES := ["every_referenced_action_exists", "tools_use_real_actions",
 	"a_card_decline_does_not_release_a_player_pause", "cancel_routes_by_screen",
 	"the_sim_reads_inputs_not_the_device", "input_override_feeds_slot_zero",
 	"the_device_is_polled_in_one_place", "confirm_cycles_spectate_targets",
-	"the_right_stick_aims", "the_mouse_aims_while_recently_moved"]
+	"the_right_stick_aims", "the_mouse_aims_while_recently_moved",
+	"a_joypad_selects_and_cancels_starting_programs"]
 
 const DT := 1.0 / 60.0
 
@@ -25,6 +26,7 @@ func _initialize() -> void:
 	SaveGame.use_fresh_state()
 	every_referenced_action_exists()
 	tools_use_real_actions()
+	await a_joypad_selects_and_cancels_starting_programs()
 	await a_joypad_can_drive_the_overlay()
 	await user_pause_gates_the_tick()
 	await a_card_decline_does_not_release_a_player_pause()
@@ -97,6 +99,44 @@ func tools_use_real_actions() -> void:
 			InputMap.has_action(m.get_string(1)), true)
 	_check("and it drives at least one action", seen > 0, true)
 	finished["tools_use_real_actions"] = true
+
+## Native popup controls must receive real controller events, not a manually
+## emitted Button.pressed signal. The latter cannot open an OptionButton.
+func a_joypad_selects_and_cancels_starting_programs() -> void:
+	var main: Control = load("res://scenes/main.tscn").instantiate()
+	root.add_child(main)
+	for i in 8:
+		await process_frame
+	var chooser: OptionButton = main._program_select
+	chooser.grab_focus()
+	await _joy_button(JOY_BUTTON_A)
+	var popup := chooser.get_popup()
+	_check("controller confirm opens the program chooser", popup.visible, true)
+	if popup.visible:
+		await _joy_button(JOY_BUTTON_DPAD_DOWN)
+		await _joy_button(JOY_BUTTON_A)
+		_check("controller selection changes the starting program",
+			SaveGame.string_pref("program"), "ghost")
+		await _joy_button(JOY_BUTTON_A)
+		await _joy_button(JOY_BUTTON_DPAD_DOWN)
+		await _joy_button(JOY_BUTTON_B)
+		_check("controller cancel closes the chooser", popup.visible, false)
+		_check("cancel preserves the selected program",
+			SaveGame.string_pref("program"), "ghost")
+	main.free()
+	await process_frame
+	SaveGame.use_fresh_state()
+	finished["a_joypad_selects_and_cancels_starting_programs"] = true
+
+func _joy_button(button: JoyButton) -> void:
+	for down in [true, false]:
+		var event := InputEventJoypadButton.new()
+		event.button_index = button
+		event.pressed = down
+		# PopupMenu is a Window: Viewport.push_input bypasses its window input
+		# signal. Use the engine's device-event entry point for both windows.
+		Input.parse_input_event(event)
+		await process_frame
 
 ## The migration's whole reason for existing.
 func a_joypad_can_drive_the_overlay() -> void:

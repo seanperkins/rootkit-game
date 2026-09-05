@@ -1,4 +1,4 @@
-> Generated: 2026-09-02 | Token-lean format for LLM context
+> Generated: 2026-09-05 | Token-lean format for LLM context
 
 # Combat, terrain and the run loop
 
@@ -143,6 +143,26 @@ Points clamp inside the arena with a 64-unit inset; validation refuses degenerat
 stops startup and presents `_refuse_generation` with a return-to-menu action.
 Initial positions and both interpolation endpoints are assigned per slot.
 Current transitions still walk; teleporter consumption of later pads is a separate feature.
+
+## Optional network jobs and route votes
+
+`run._step_network_ops(dt)` runs below the guard, after blocks and before zones.
+Each subnet places one operation after 20 s, retrying once/s; `_ops_clear_line`
+requires a clear player approach and, for upload, a 240-unit path.
+`ops_state`: scheduled 0 / available 1 / completed 2. Completion latches before
+paying 75 shared salvage. Vault/upload also offer ranks; upload heals 20%.
+Capture needs 12 progress seconds within 90 units; each extra LIVE player adds
+40% speed. Leaving pauses progress; each four active seconds adds reinforcement.
+Captured subnet-2 relay: every second, linked players within 210 units and LOS
+receive 2 shield per linked player (cap 18, stronger existing shields retained);
+the normal hit queue receives 6 damage per linked player for nearby enemies.
+Jobs stop during boss/collapse and reset on subnet advancement.
+
+All LIVE slots reaching the corridor destination opens `OfferKind.ROUTE`.
+`choose_route(index)` stages INPUT; `_finish_route_vote` waits for LIVE voters,
+selects plurality (dedicated RNG only for ties), then calls `_advance_subnet`.
+Route effects replace the prior package. The final boss still ends directly.
+`ops_*`, route state and route RNG belong in HASH/SNAPSHOT, unlike drawn effects.
 
 ## `scripts/run/spawn_director.gd` — `SpawnDirector`
 
@@ -303,7 +323,7 @@ distance test per shot.
 
 ### Progression and campaign
 `_gain_xp` / `_xp_for(lvl)` (`XP_SLOWDOWN 1.8`); offers are per-slot lockstep
-INPUT state (`OfferKind {LEVEL, SEEDED, RANK_ONLY, FUSION}`, `_offer_seq/
+INPUT state (`OfferKind {LEVEL, SEEDED, RANK_ONLY, FUSION, ROUTE}`, `_offer_seq/
 _offer_open/_offer_queue`, rounds via `_round_open`/`pending_levels`,
 `CHOICE_TIMEOUT_TICKS` deadlines); `choose_card / decline_card / choose_fusion /
 decline_fusion` only STAGE `_local_choice`, applied when the tick consumes it.

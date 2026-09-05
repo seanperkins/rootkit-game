@@ -879,37 +879,11 @@ func _start() -> void:
 	_transport.poll()
 	_launch_session()
 
-## Enter/Space already reach whatever Button has focus through the engine's
-## own ui_accept handling - Godot's default ui_accept is keyboard-only (no
-## joypad event at all), which is why a controller's A press did nothing on
-## this screen. `confirm` (project.godot) adds joypad button 0 on top of the
-## same keys, so a joypad press is routed here to press the focused control
-## by hand; the keyboard side of `confirm` is left alone; ui_accept already
-## handles it and pressing it again here would double-fire whatever is
-## focused (double-buy in the shop, double scene change on start).
+## Native ui_accept owns focused-control activation on keyboard and gamepad.
+## Synthetic pressed signals bypass OptionButton and popup behavior.
 func _input(e: InputEvent) -> void:
-	if e is InputEventJoypadButton:
-		if e.is_action_pressed("confirm"):
-			_activate_focused()
-		elif e.is_action_pressed("cancel"):
-			_dismiss_top()
-		return
-	if not (e is InputEventKey and e.pressed):
-		return
-	if e.keycode == KEY_ESCAPE:
+	if e.is_action_pressed("cancel"):
 		_dismiss_top()
-
-## Presses whatever Control currently holds focus - the same target the
-## highlight the player has been steering with ui_up/ui_down/ui_left/ui_right
-## is drawn on. Never a hardcoded button: that was the bug (Enter on a
-## highlighted "settings" launched "start new run" instead).
-func _activate_focused() -> void:
-	# Not while a field is being typed into: confirm there is text, not launch.
-	if _name_edit != null and (_name_edit.has_focus() or _addr_edit.has_focus()):
-		return
-	var focused := get_viewport().gui_get_focus_owner()
-	if focused is BaseButton and not focused.disabled and focused.is_visible_in_tree():
-		focused.emit_signal("pressed")
 
 func _dismiss_top() -> void:
 	if _update_modal.visible:

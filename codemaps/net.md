@@ -1,4 +1,4 @@
-> Generated: 2026-09-04 | Token-lean format for LLM context
+> Generated: 2026-09-05 | Token-lean format for LLM context
 
 # Networking — `scripts/net/` and the session parts of `run.gd`
 
@@ -22,13 +22,13 @@ tick (above the guard):  poll transport ─> ring ─> take(tick) ─> _apply_re
 
 | Const | Value | Const | Value |
 |---|---|---|---|
-| `PROTOCOL` | 4 | `NAME_MAX` | 24 |
+| `PROTOCOL` | 5 | `NAME_MAX` | 24 |
 | `TICK_DT` | 1/60 | `HITSTOP_TICKS` | 4 |
 | `MAX_PLAYERS` | 4 | `DEFAULT_DELAY` / `LAN_DELAY` | 4 / 3 |
 | `CHOICE_TIMEOUT_TICKS` | 1800 | `CHECKSUM_INTERVAL` | 60 |
 | `STALL_NOTICE` | 20 ticks | `MOVE_COMPONENT_MAX` | 1.3635 |
 | `MAX_WINDOW` | 7200 | `LEASH` | 4000 (`MAX_WINDOW - 3200`) |
-| `SNAPSHOT_MAX` | 1 MiB | `SNAPSHOT_VERSION` | 1 |
+| `SNAPSHOT_MAX` | 1 MiB | `SNAPSHOT_VERSION` | 2 |
 | `BAD_PACKETS` | 20 | `PEER_TIMEOUT_MS` | 3000 |
 | `CONTROL_MAX` | 16384 | `ADDRESS_MAX` | 64 |
 | `DEFAULT_PORT` | 43210 | `RELAY_PORT` | 43211 |
@@ -62,7 +62,7 @@ delay; `relay_error` carries `unknown/full/closed/bad/lost`.
 | `register_reflexive(token, target, host, port, local_host, local_port)` | stores a DIRECTED `(member, target)` candidate; star-only (client-client / unknown token / non-member target ignored quietly) |
 | settle + cleanup | both directions known → a shared 128-bit key is minted and a `punch {op, member, host, port, local_host, local_port, key}` (7 fields) reaches both sides over the relay link; re-registering a settled leg is a no-op; `disconnect_peer` purges a departed member's candidates/key (`_clear_punch_state`) so a reused id punches anew |
 
-## `scripts/net/lockstep.gd` (382) — `Lockstep`, PURE
+## `scripts/net/lockstep.gd` — `Lockstep`, PURE
 
 A ring of `RING = 128` ticks × `MAX_PLAYERS` records `{move, aim, card,
 target, offer}`, tagged by absolute tick (`_tick_tag`, `_have` bitmask per
@@ -80,7 +80,7 @@ stored.
 | `submit_checksum / desync_at / prune_checksums` | sparse `tick -> {mask, hashes}` |
 | `snapshot_window(after)` / `merge_window(raw, after)` | the `(after, after+delay]` cells a snapshot carries; merge keeps NEWER cells |
 
-## `scripts/net/protocol.gd` (294) — `Protocol`, PURE codec
+## `scripts/net/protocol.gd` — `Protocol`, PURE codec
 
 14-byte little-endian envelope: `u8 proto, u8 kind, i32 session, i32 tick,
 i32 body_len`. Body per kind: INPUT 28 bytes (2×f32 move + 2×f32 aim +
@@ -92,7 +92,7 @@ shape-checked per kind — unknown fields dropped, bad values refuse the body.
 
 `enum Message { HELLO, WELCOME, START, INPUT, RELAY, CHECKSUM, RESYNC,
 SNAPSHOT, ABSENT, PRESENT, LEAVE, END_CANDIDATE, END_CHECK, END, PING,
-PONG, REFUSED }`. HELLO carries the build `version`; REFUSED carries
+PONG, REFUSED }`. HELLO carries the build `version` and sanitised `program`; REFUSED carries
 `{reason, build}` — a peer that refuses a join names the build so the
 joiner can tell its player to update. `BOUNDARY_MARGIN = 3` — a boundary
 sits at `executed + delay + 3`.
@@ -103,7 +103,7 @@ sits at `executed + delay + 3`.
 `[executed+delay+3, executed+RING]`. A reconnecting client skips the boundary
 window (its cursor is stale by design).
 
-## `scripts/net/transport.gd` (841) — `Transport`, `Node`, the ENet class
+## `scripts/net/transport.gd` — `Transport`, `Node`, the ENet class
 
 `create_server(port, 3, 2)` / `create_client(addr, port, 2)`: two user
 channels on both ends. Channel 0 reliable-ordered: control, INPUT, RELAY;
@@ -145,11 +145,11 @@ stored it (`bool`); a stale replay is a benign duplicate (`_input_stale`),
 a far-future/invalid tick still refused.
 Direct packet peers share the usual `set_timeout(PEER_TIMEOUT_MS, ...)`.
 
-## `scripts/net/network_session.gd` (451) — `NetworkSession`, PURE
+## `scripts/net/network_session.gd` — `NetworkSession`, PURE
 
 `enum Role { SOLO, HOST, CLIENT }`. The immutable `descriptor`
 `{protocol, session_id, seed, delay, choice_timeout, version, roster[{slot,
-name, counters}]}` — `validate_descriptor(raw)` returns a clean copy or
+name, program, counters}]}` — `validate_descriptor(raw)` returns a clean copy or
 `{}` on ANY violation. `local_slot`, `role`, `lockstep`, `inbox`,
 `started`, `accepts_hello`. `admit` returns
 `ADMIT_VERSION_MISMATCH (-2)` — distinct from a plain -1 refusal — when a
@@ -176,7 +176,7 @@ a desync.
 | roster | `_allocate_slots` (every per-player field a `MAX_PLAYERS` array; `SlotState {LIVE, DEAD, ABSENT}`), `_derive_roster` (build, sheet, unlocks from counters; slot-indexed validated arena-0 spawn with primed interpolation; `started = true`) |
 | input | `_poll_local_input` — the ONLY `Input.*` site; submits the full record for `executed + delay`; neutral while paused, DEAD or held |
 | tick (above guard) | `_snapshot_render_state → _poll_local_input → poll/_drain_inbox/_reconnect_step/flush_relay → _present → [reconnecting? return] → _roster_step → _sync_ring_roster → _recovery_step → _ending_step → ready? take → _apply_records → _resolve_deadlines → _settle_offers → hitstop / guard → _step_world → _report_checksum` |
-| offers | per-slot primitive input state: `_offer_seq/_offer_open/_offer_queue`, `OfferKind`, rounds; UI calls only STAGE `_local_choice` |
+| offers | includes `OfferKind.ROUTE` ballots; per-slot primitive input state: `_offer_seq/_offer_open/_offer_queue`, `OfferKind`, rounds; UI calls only STAGE `_local_choice` |
 | manifest | `STATE_FIELDS` `[obj, prop|@derived, SNAPSHOT/HASH/VARLEN, slice, covers]`, `NOT_IN_MANIFEST`; `_state_hash()`, `serialize_state(after)`, transactional `restore_state(bytes, after)`, `_after_restore` |
 | recovery | `host_detect_desync → announce_resync(R) → host_try_snapshot` (only at `executed == R+1` with the window; `_holding_for_snapshot`) `→ apply_snapshot`; `_terminate` at three desyncs |
 | ending | `_terminal(outcome)` — the ONLY path from `_die`/win; solo emits at once; `receive_end_candidate / receive_end_check / receive_end / evaluate_end_check / _confirm_end / _ending_step`; a mismatch is a fresh future RESYNC |
@@ -190,6 +190,11 @@ separation from every LIVE slot. With no LIVE anchor, only the returning slot's
 safe reserved point is used. `_roster_step` applies due PRESENT records in numeric
 slot order, independent of dictionary/network insertion order. Unsafe no-LIVE
 returns use the existing LOSS-candidate policy; an existing win remains intact.
+
+Route ballots use ordinary staged INPUT choices. `route_pending`, `route_votes`,
+`route_active`, `ops_*` state and `_route_rng.state` are in HASH/SNAPSHOT.
+Only tied leaders consume route RNG. Departure removes a voter; LIVE return
+receives a ballot if the vote is open. Relay protocol remains unchanged.
 
 ## Rules the layer depends on
 

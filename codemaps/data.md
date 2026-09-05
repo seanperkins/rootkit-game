@@ -1,4 +1,4 @@
-> Generated: 2026-09-04 | Token-lean format for LLM context
+> Generated: 2026-09-05 | Token-lean format for LLM context
 
 # Data tables and persistence
 
@@ -118,15 +118,41 @@ slot. Magnitudes come from worked worst cases — `nice` matches the whole
 maxed `bus_speed` shop line (+60), so one module never outvalues 1,950
 salvage of upgrades.
 
+## Programs and routes
+
+`data/program_table.gd` (`ProgramTable`): `clean`, `index`, `apply_sheet`;
+`IDS`, `NAMES`, `DETAILS`, `VECTORS` are parallel registries.
+
+| Program | Bare starter | Sidegrade |
+|---|---|---|
+| operator | packet | baseline |
+| ghost | spike | movement ×1.20, integrity ×0.80 |
+| bulwark | broadcast | movement ×0.85, integrity ×1.25 |
+| virus | chain + corrupt | attack ×0.80, integrity ×0.85 |
+
+The descriptor freezes the program. `_derive_roster` applies Virus's attack
+multiplier through Loadout and program sheet modifiers after permanent stats.
+`data/route_table.gd` (`RouteTable`): three next-arena packages; `affinity`
+counts relevant compiled weapons, not an optimality score.
+
+| Route | Wave rate | Regular HP | Additional effect |
+|---|---|---|---|
+| Swarm Exchange | ×1.25 | ×0.85 | +1 XP shard per enemy |
+| Armored Archive | ×0.85 | ×1.25 | +150 boss salvage |
+| Corrupted Relay | ×1.15 | ×1.0 | corruption thresholds ×0.75, +4 shared botnet cap |
+
+Routes replace rather than stack. Terrain is prebuilt; boss HP is unchanged.
+
 ## `data/session_rules.gd` — `SessionRules`
 
 Every constant two peers must agree on — tick, players, delay, timeouts,
 windows, the leash, packet/snapshot bounds, the port — plus, since the
 relay+punch cycle, the relay and NAT-punch protocol. Full table in
-`codemaps/net.md`. `SessionRules.PROTOCOL := 4`'s own comment gives the wire
+`codemaps/net.md`. `SessionRules.PROTOCOL := 5`'s own comment gives the wire
 history: 2 — input record carries an aim; 3 — five exploit rows; 4 — the
 session also tracks the game BUILD version (HELLO/WELCOME/REFUSED), so a
-skew refuses cleanly instead of desyncing. `RELAY_PROTOCOL := 2` adds the
+skew refuses cleanly instead of desyncing; 5 adds starting programs, network jobs
+and route voting. Snapshot format is 2. `RELAY_PROTOCOL := 2` adds the
 punch op set; a relay and client on different values refuse each other cleanly.
 
 | Relay/punch const | Value | Relay/punch const | Value |
@@ -153,7 +179,7 @@ exist for the suites.
              "encryption": 0, "bus_speed": 0, "addressing": 0, "bandwidth": 0 },
   "prefs": { "volume_master": 0.8, "volume_sfx": 0.8, "volume_music": 0.5,
              "shake": 1.0, "damage_numbers": 1.0,
-             "display_name": "", "last_address": "127.0.0.1" } }
+             "display_name": "", "program": "operator", "last_address": "127.0.0.1" } }
 ```
 
 An older-version file needs **no migration**: `_sanitise` rebuilds from
@@ -164,7 +190,8 @@ at its default — pinned against a real v2 payload by
 `set_string_pref / string_pref / sanitise_string_pref` (`PREF_STRINGS`:
 `display_name` printable ≤ `NAME_MAX` 24, `last_address` hostname characters ≤
 `ADDRESS_MAX` 64 — clamped on write AND read), `bank(salvage, kills, flips)`
-**accumulates**.
+**accumulates**. `program` is a string preference sanitised by `ProgramTable.clean`,
+which falls back to Operator for unknown or non-string input.
 
 ### Session counters — what crosses the wire instead of a save
 

@@ -102,3 +102,23 @@ layout with no script errors. The performance gate passed at **9.418 ms p95**
 against a **9.815 ms** calibrated budget. Windowed captures were inspected at
 1280 × 720. Balance numbers are an initial tuning pass, not a multiplayer
 playtest verdict.
+
+### Main integration — September 5, 2026
+
+Merged with reserved player spawns, world visuals and menu navigation.
+The windowed controller-event smoke found that manually emitting `pressed`
+bypassed the starting-program OptionButton's native popup behavior. Activation
+now uses Godot's native `ui_accept`, mapped to keyboard and controller A;
+`ui_cancel` includes controller B.
+
+Verified in a real window using engine-dispatched joypad events: D-pad reaches
+the selector, A opens it, D-pad/A selects Ghost, the preference persists, B
+cancels without changing Ghost, and starting a run equips Ghost's spike weapon.
+`test_input` retains popup selection/cancellation regression coverage. The
+throwaway end-to-end driver was removed after verification.
+
+All 32 selected integration suites passed through `tools/run_tests.sh`, followed
+by five controller/menu/network-expansion suites after the input fix; no script
+errors. The final separate perf run passed at **9.566 ms p95 / 9.972 ms scaled
+budget**. Windowed entity and route/relay captures were inspected. This is focused
+integration verification, not a new full-suite or physical-controller playtest.

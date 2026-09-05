@@ -1,4 +1,4 @@
-> Generated: 2026-09-02 | Token-lean format for LLM context
+> Generated: 2026-09-05 | Token-lean format for LLM context
 
 # Audio and feel
 
@@ -15,9 +15,10 @@ run.gd ──emit(id)──> feel.sfx ──drained by──> sfx.gd ──> Syn
 run.gd <──threat()── music.gd ──> Synth.build(note spec)
 ```
 
-## `scripts/run/feel.gd` (102) — `Feel`, PURE `RefCounted`
+## `scripts/run/feel.gd` — `Feel`, PURE `RefCounted`
 
-Shake trauma, the damage-number pool, the outbound event list. No scene tree,
+Shake trauma, damage numbers, directional impact bursts, per-slot recoil and
+the outbound event list. No scene tree,
 no engine calls, no clock.
 
 **Hitstop is not here any more.** It is part of the deterministic tick:
@@ -31,6 +32,7 @@ Nothing writes `Engine.time_scale`; `test_determinism_rules` greps for it.
 | `TRAUMA_DECAY` | 1.6 | per second |
 | `NUMBER_CAP` | 24 | oldest evicted |
 | `NUMBER_LIFE` | 0.75 | pruned in `step` |
+| `IMPACT_CAP` / `IMPACT_LIFE` | 24 / 0.24 s | oldest evicted; presentation only |
 
 `offset = MAX_OFFSET * trauma² * noise()`. Squared so one tunable covers a nudge
 and a slam; trauma is **clamped to 1.0** or overlapping events exceed the
@@ -39,10 +41,14 @@ axes, which would put the diagonal outside it) and is injectable for tests. The
 `shake` preference multiplies the composed offset in `run.gd`, outside the
 square.
 
-API: `add_trauma`, `shake_offset`, `add_number`, `emit(id)`, `drain_sfx`,
+API: `add_trauma`, `shake_offset`, `add_number`, `add_impact`, `kick(slot)`,
+`emit(id)`, `drain_sfx`,
 `step(unscaled_dt)`, `set_noise(callable)`. `NUMBER_RISE 42.0`.
+`impacts` carries origin/direction/hue/life/destruction; `recoil` has one value
+per player, set to 1 by `kick` and decayed at 9/s above the world guard.
+Neither is simulation state or a new audio voice.
 
-## `scripts/audio/synth.gd` (353) — `Synth`, PURE `RefCounted`
+## `scripts/audio/synth.gd` — `Synth`, PURE `RefCounted`
 
 Builds `AudioStreamWAV` (a `Resource`, hence pure) from a spec dictionary.
 
@@ -76,7 +82,7 @@ on every `./intrude`, a ~1 s hitch exactly when the player expects the game to
 start. Fire ids derive from `Module.VectorKind` (append-only), so a new vector
 kind cannot mint an id the bank has never heard of.
 
-## `scripts/audio/sfx.gd` (107) — the only part that touches the tree
+## `scripts/audio/sfx.gd` — the only part that touches the tree
 
 `ensure_bus()` guards on `get_bus_index("SFX") < 0`, then `add_bus` +
 `set_bus_name` (`add_bus` takes an index, not a name). There is no `[audio]`
@@ -112,7 +118,7 @@ every daemon sound like a boss by subnet 03.
 and separately parses `HIT_SOUNDS`, because an id reached through a lookup table
 is invisible to a grep for `feel.emit("literal")`.
 
-## `scripts/audio/music.gd` (183) — generative, no loops
+## `scripts/audio/music.gd` — generative, no loops
 
 There is no track and no stems. A beat clock runs at eighth notes; on each step
 it asks `run.threat()` what is happening and decides what to sound. The player

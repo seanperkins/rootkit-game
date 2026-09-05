@@ -1,4 +1,4 @@
-> Generated: 2026-09-04 | Token-lean format for LLM context
+> Generated: 2026-09-05 | Token-lean format for LLM context
 
 # ROOTKIT — Architecture
 
@@ -57,9 +57,10 @@ run.gd → NetworkSession → Lockstep ← Transport (polled above guard)
 Updater + CRTOverlay survive menu ↔ run scene changes.
 ```
 
-`_derive_roster` seeds each player's build with `Loadout.start(packet)`:
-one bare packet, no equipped trigger. Counter deltas become absolute exploit
-multipliers through `PlayerStats.mults`; additive sheet stats are separate.
+`_derive_roster` reads each immutable roster row's `program` through `ProgramTable`:
+Operator starts packet, Ghost spike, Bulwark broadcast, Virus chain + corrupt.
+All start without an equipped trigger. Program sidegrades apply after counter-derived
+`PlayerStats` multipliers/sheet stats; remote builds never read local preferences.
 Card previews use a temporary Loadout and `compile_all`, not duplicate math.
 
 ## Tick — `run._physics_process`
@@ -81,7 +82,7 @@ modal `paused` holds the world while input consumption continues.
 | `_step_world` sequence | Work |
 |---|---|
 | `queue.begin_tick`; `_step1_spawn` if FIGHTING | Open the queue before any producers; spawn only during fighting |
-| `_step2_integrate`; gate/collapse/blocks/zones | Fixed-delta movement, life, interactions and hazards |
+| `_step2_integrate`; gate/collapse/blocks/network jobs/zones | Fixed-delta movement, life, interactions and hazards |
 | `_step3_rebuild`; boss flow maintenance | Grid once per tick; at most one needed LIVE-slot flow rebuild, round-robin |
 | `_step4_steer`; `_step5_fire`; detect/hostiles | AI, owning-slot weapon emissions, damage/pickups |
 | `_steps78_drain` | Ordered hit adjudication and death/flip dispatch |
@@ -101,7 +102,8 @@ cross-architecture probing on engine changes, not a same-machine unit test.
 ```
 hub → solo run or lobby START → run
   subnet 1/2: ICE dies → CLEARED → bank progress, open gate
-    collapse begins (75 s arena phase) → walk through corridor
+    collapse begins (75 s arena phase) → all LIVE slots walk through corridor
+    OfferKind.ROUTE → tick-addressed plurality vote → next-arena modifiers
     _advance_subnet → clear transient populations, heal LIVE slots,
                       reset director, Terrain.enter_next()
   subnet 3: ICE dies → bank progress → terminal WIN
@@ -115,7 +117,10 @@ pads stop startup with an explicit error and return-to-menu action. Reconnects
 use a bounded, safe search near a LIVE party, excluding occupied footprints;
 same-tick returns apply in slot order. No-LIVE returns validate their reserved
 point; an unsafe return is DEAD, never revived in rock or void.
-The teleporter/vote and bespoke boss proposals are not the current flow.
+Route votes are implemented; teleporters and bespoke bosses remain proposals.
+Optional vault/relay/upload jobs run through `_step_network_ops` below the world
+guard. Job state, route ballots/modifiers and the dedicated route RNG are hashed
+and snapshotted. Gameplay protocol is 5; snapshot version is 2.
 
 ## Capacities and budgets
 

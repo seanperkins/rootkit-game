@@ -106,6 +106,22 @@ aim_down={
 "events": [Object(InputEventJoypadMotion,"axis":3,"axis_value":1.0,"script":null)
 ]
 }
+; Native controls (including OptionButton popups) need the same gamepad buttons
+; as the run's custom card navigation. Let Control handle activation normally.
+ui_accept={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":4194309,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":4194310,"pressed":false,"echo":false,"script":null)
+, Object(InputEventKey,"physical_keycode":32,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadButton,"button_index":0,"pressed":false,"script":null)
+]
+}
+ui_cancel={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":4194305,"pressed":false,"echo":false,"script":null)
+, Object(InputEventJoypadButton,"button_index":1,"pressed":false,"script":null)
+]
+}
 confirm={
 "deadzone": 0.5,
 "events": [Object(InputEventKey,"physical_keycode":4194309,"pressed":false,"echo":false,"script":null)

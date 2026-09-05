@@ -1,4 +1,4 @@
-> Generated: 2026-09-04 | Token-lean format for LLM context
+> Generated: 2026-09-05 | Token-lean format for LLM context
 
 # UI, rendering and tooling
 
@@ -29,11 +29,12 @@ The health/build readouts use `run.local_slot`, not the spectated slot.
 
 | Child | Contents |
 |---|---|
-| `Status` | Effective integrity/armor/defense; level and XP bars; warning below 30% effective integrity |
-| `Centre` | Subnet/timer, arriving mini-boss suppression, collapse countdown |
+| `Status`, `HealthValue` | Integrity/armor/defense/level with segmented health and XP gauges |
+| `Centre`, `Clock`, `Alert` | Subnet and large timer; clock switches to escape countdown during collapse |
+| `ObjectivePanel`, `Objective` | Program, active route, optional job direction/distance/progress |
 | `Fps` | `Engine.get_frames_per_second()`; warning below 55; rendered FPS, not simulation tick rate |
 | `Tally` | Salvage, botnet, local kills/flips, missing-input/recovery/reconnect notices, teammate strip |
-| `Build` | `_build_lines()`: module ranks, `(bare)` on unfused triggerless vectors, inert or resolved damage/cooldown/corruption |
+| `Build` and five weapon panels | Vector/rank, modules, rearm/inert status, damage/cooldown; clipped labels retain full tooltips |
 | `Version` | `BuildInfo.display_version()` and update availability |
 
 Network panel: per-slot receive rates and stall attribution, packet/record
@@ -101,6 +102,11 @@ The hub has start new run, disabled continue run, multiplayer, upgrades,
 settings and exit. `_pages` holds separate upgrades/multiplayer pages;
 `_page_open == ""` means hub. Settings/update modal sit above either page.
 There is no mid-run checkpoint behind the disabled continue entry.
+`_program_select` is a native `OptionButton`; `_select_program` persists a
+sanitised preference. Selection freezes while connected and the lobby shows
+program choices. Native `ui_accept`/`ui_cancel` bind keyboard plus controller
+A/B in `project.godot`; do not substitute manual `pressed` signals, which bypass
+popup behavior. `_input` routes cancel to the top menu layer; activation is native.
 
 Shop: bounded `ScrollContainer` (680×240) for eight upgrade rows; unlock
 requirements use `SaveGame.milestone_text`, showing `UNLOCK_ROWS = 2` plus a
@@ -125,12 +131,20 @@ menu modal. Choices are install now, install on quit, not now, or the
 move-to-/Applications path for App Translocation. Updater survives scene swaps;
 the run HUD shows availability without interrupting play with the menu modal.
 
+### Route vote overlay
+
+`route_offered` opens three cards with risk/reward and compiled-party build counts.
+Votes stage `run.choose_route`; completed voters wait while lockstep continues.
+The tally includes the multiplayer auto-vote deadline. Solo has no deadline.
+
 ## Shared chrome — `scripts/ui/`
 
 `TerminalStyle` caches the theme/SystemFont. Font preference order:
 SF Mono, Menlo, Consolas, DejaVu Sans Mono, monospace. `panel_style` and
 `build_theme` provide consistent code-built controls.
+`HudChrome` supplies framed panels and segmented health/XP instruments.
 `CRTOverlay` is an autoload `CanvasLayer` at layer 100, above menu and run.
+`shaders/damage_vignette.gdshader` shades screen edges behind the HUD.
 
 ## World rendering
 
@@ -139,7 +153,7 @@ SF Mono, Menlo, Consolas, DejaVu Sans Mono, monospace. `panel_style` and
 | `scripts/run/backdrop.gd` | Isometric lattice and arena shell; `STEP = Terrain.TILE`, slab depth 30 |
 | `scripts/run/props.gd` | Walls, rails, gate posts/lintel and objective block; `draw_box` primitive; wall height 26, post height 78, face alpha 0.6 |
 | `scripts/run/run.gd` | `_build_renderers`, `_update_renderers`, `_depth_sort`, procedural effects and world draw |
-| `shaders/glyph.gdshader` | Entity glyph silhouettes; consumed by the run's mesh material |
+| `shaders/glyph.gdshader` | Procedural interceptor, enemy hardware, weapon effects and illuminated boss armor; run mesh material |
 
 Four MultiMeshes cover enemies, projectiles, shards and botnet. Sorting is
 once per world tick (`DEPTH_BANDS = 192`); `_snapshot_render_state` runs above
