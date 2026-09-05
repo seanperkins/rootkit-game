@@ -2,7 +2,7 @@
 
 # Combat, terrain and the run loop
 
-## `scripts/core/flow_field.gd` (130) — `FlowField`, boss pathing
+## `scripts/core/flow_field.gd` — `FlowField`, boss pathing
 
 BFS flooded from ONE slot over a window that follows it — same shape as
 `Grid`, same reason. The run holds four (`_flow[slot]`), one per LIVE slot. `RADIUS 24` cells (1536 px), `SIDE 49`, `UNREACHED 1<<28`.
@@ -28,7 +28,7 @@ run rebuilds at most ONE slot's field per tick, round-robin from the tick
 number (a party crossing cells together flooded four fields in one tick).
 Covered by `tests/test_flow.gd`.
 
-## `scripts/core/grid.gd` (242) — `Grid`
+## `scripts/core/grid.gd` — `Grid`
 
 Uniform spatial grid, counting-sort into flat packed arrays; the rebuild is
 O(entities) (`_cell_count` + a `_touched` list, prefix over touched cells only)
@@ -55,7 +55,7 @@ M_ENEMY M_PROJECTILE M_BOTNET M_SHARD M_ALL(0x7FFFFFFF)
 Trade, stated in-file: an entity outside the window is not in the grid, so a
 projectile out there passes through enemies.
 
-## `scripts/combat/population.gd` (118) — `Population`
+## `scripts/combat/population.gd` — `Population`
 
 One packed-array entity population; no nodes, no physics.
 `ALIVE=0 DEAD=1 FLIPPED=2`.
@@ -70,7 +70,7 @@ generation state`, plus `capacity`, `count`, `_next_generation`.
   entity.
 - `integrate(dt)` — `vel += force*dt; pos += vel*dt`.
 
-## `scripts/combat/hit_queue.gd` (210) — `HitQueue`
+## `scripts/combat/hit_queue.gd` — `HitQueue`
 
 ```gdscript
 enum Kind { DAMAGE, CORRUPTION }        enum Outcome { NONE, DEAD, FLIPPED }
@@ -101,50 +101,55 @@ resolve dead in pass 1 (drops emitted, ON_KILL fired) and flip in pass 2.
 ON_HIT = per hit landed on an open target regardless of survival;
 ON_KILL = per adjudicated DEAD; ON_DAMAGE_TAKEN = per damage the player takes.
 
-## `scripts/run/terrain.gd` (949) — `Terrain`
+## `scripts/run/terrain.gd` — `Terrain`
 
-One grid for the **whole campaign**: all arenas end to end plus a corridor per gap.
+Pure `RefCounted`; one immutable generated grid for every campaign arena and corridor.
+`solid` answers collision; `rects` drive procedural rendering; zones hold kind + 1 and a rect index.
 
-```gdscript
-enum Kind { WALL, HAZARD, SLOW, CORRUPTION }
-CELL 32.0   TILE CELL*3   MARGIN TILE*4
-CORRIDOR_LENGTH TILE*12   CORRIDOR_HALF_CELLS 3   GATE_RADIUS 48.0
-HAZARD_DPS 12.0   SLOW_FACTOR 0.6   CORRUPTION_PER_SEC 8.0
-ZONE_FLIP_BUDGET 6   ZONE_RECHARGE 40.0   # per corruption rect; run holds _zone_flips/_zone_recharge (SH)
-DENSITY_BASE 0.03   DENSITY_PER_SUBNET 0.0   REACHABLE_FLOOR 0.70
-PLACE_ATTEMPTS 4000   ZONES_MIN 2   ZONES_MAX 4   WALL_MARGIN 260.0
-MAX_TEMP_ZONES 24
-```
-
-Density is **flat across subnets** — a cramped late arena reads as cramped, not
-hard; escalation lives in enemy HP and the wave table instead.
-
-`class Gate`: `pos, dir (axis-aligned, outward), open, corridor: Rect2,
-end: Vector2, block: Rect2`. `block` is a bounded rect, not a half-plane —
-outward of the gate plane is the *next arena*.
-
-State: `origin size w h solid zone rects arenas gates current _blocks
-dist_from_gate max_dist voided _collapse_order _collapse_idx`.
-`gates.size() == arenas.size() - 1`; the last arena has no gate and wins outright.
-
-| Group | Functions |
+| Constants | Values |
 |---|---|
-| layout | `plan(arena_size, count, seed)` (static, axis-aligned links, never the reverse of the last), `_init`, `arena()`, `arena_cells(i)`, `enter_next()` |
-| generation | `generate(seed, player_start)`, `_place_gates`, `_place_walls`, `_place_zones`, `_cut_corridor`, `_clear_cells`, `density_for(subnet)` |
-| connectivity | `_fill_unreachable` (fills sealed regions rather than carving), `_reach`, `reachable_fraction`, `_carve_to` |
-| queries | `cell_xy`, `cell_index`, `in_bounds`, `is_solid`, `zone_at`, `zone_rect_at`, `gate_blocks`, `has_line_of_sight`, `nearest_open` |
-| zones | `paint_zone(rect, kind) -> rect index` (generation and suites; bakes `zone` and `zone_rect` per cell) |
-| movement | `slide(from, delta)`, `avoid(at, heading)` (`LOOK_AHEAD 46`, `AVOID_FORCE 90`) |
-| gate | `gate()`, `has_gate()`, `open_gate()`, `_rebuild_blocks`, `gate_open_flags()` / `set_gate_open_flags()` (snapshot) |
-| collapse | `build_distance_field()`, `_build_collapse_order()` (farthest from the gate first), `collapse_to(threshold)`, `is_void(p)`, `route_from(p, limit=400)`; corridor phase `corridor_collapse_len`, `CORRIDOR_COLLAPSE_TICKS 600`, `_clear_collapse_state`, `restore_collapse(idx)` (snapshot) |
-| temp zones | `add_temp_zone`, `step_temp_zones`, `temp_zone_at`, `clear_temp_zones`, `temp_zone_count` |
+| `CELL`, `TILE`, `MARGIN` | 32, 96, 384 |
+| `CORRIDOR_LENGTH`, `CORRIDOR_HALF_CELLS`, `GATE_RADIUS` | 1152, 3, 48 |
+| `DENSITY_BASE`, `DENSITY_PER_SUBNET`, `REACHABLE_FLOOR` | 0.03, 0, 0.70 |
+| `WALL_MARGIN`, `PAD_CLEARANCE`, `SPAWN_SEPARATION` | 260, 32, 96 |
+| `PLACE_ATTEMPTS`, `ZONES_MIN`, `ZONES_MAX` | 4000, 2, 4 |
+| `HAZARD_DPS`, `SLOW_FACTOR`, `CORRUPTION_PER_SEC` | 12, 0.6, 8 |
+| `ZONE_FLIP_BUDGET`, `ZONE_RECHARGE`, `MAX_TEMP_ZONES` | 6, 40, 24 |
 
-## `scripts/run/spawn_director.gd` (192) — `SpawnDirector`
+`Gate`: `pos`, cardinal `dir`, `open`, `corridor`, `end`, bounded `block`.
+`gates.size() == arenas.size() - 1`; the final arena has no outgoing gate.
+`current` selects the active arena. Gate-open and collapse state are mutable;
+`_spawners` is derived during generation and classified in `NOT_IN_MANIFEST`.
+
+| Group | API / behavior |
+|---|---|
+| Layout | `plan`, `_init`, `arena`, `arena_cells`, `enter_next`; axis-aligned campaign links |
+| Generation | `generate`: gates → walls → corridors/carving → connected entry pads → connectivity fill → zones → gate blockers |
+| Spawners | `spawner_pos(arena_index, slot)`; one fixed position for each `SessionRules.MAX_PLAYERS` slot in every arena |
+| Reservation | `_derive_spawners`, `_reserve_pad`: clear one entry-connected rectangle per arena; `_reclip_walls` preserves intact equipment and splits partly cleared walls into surviving row spans before zone indices exist |
+| Validation | `validate_spawners(radius) -> String`: empty on success, otherwise explicit failure; full footprint, spacing ≥ max(96, diameter), arena membership, connectivity and reachable-area floor |
+| Safe returns | `spawn_is_safe(p, radius, arena_index=-1)` rejects rock, static/temp zones, gate blocks, void, non-finite/out-of-grid footprints; optional arena constraint. Unlike enemy `nearest_open`, never falls back to blocked input |
+| Connectivity | `_fill_unreachable`, `_reach`, `reachable_fraction`, `_carve_to` |
+| Queries | `cell_xy`, `cell_index`, `in_bounds`, `is_solid`, `zone_at`, `zone_rect_at`, `gate_blocks`, `has_line_of_sight`, `nearest_open` |
+| Movement | `slide`, `avoid`; `LOOK_AHEAD=46`, `AVOID_FORCE=90` |
+| Gates | `gate`, `has_gate`, `open_gate`, `_rebuild_blocks`, `gate_open_flags`, `set_gate_open_flags` |
+| Collapse | `build_distance_field`, `_build_collapse_order`, `collapse_to`, `is_void`, `route_from`, `_clear_collapse_state`, `restore_collapse`; corridor phase uses `CORRIDOR_COLLAPSE_TICKS=600` |
+| Zones | `paint_zone` returns rect index; `add_temp_zone`, `step_temp_zones`, `temp_zone_at`, `clear_temp_zones`, `temp_zone_count` |
+
+Formation uses FRONT/SIDE offsets `(80,90), (80,-90), (180,90), (180,-90)`.
+Arena 0 uses RIGHT/DOWN; later arenas use the incoming gate direction/perpendicular.
+Points clamp inside the arena with a 64-unit inset; validation refuses degenerate overlap.
+`run._ready` validates with `PLAYER_RADIUS` before `_derive_roster`; invalid geometry
+stops startup and presents `_refuse_generation` with a return-to-menu action.
+Initial positions and both interpolation endpoints are assigned per slot.
+Current transitions still walk; teleporter consumption of later pads is a separate feature.
+
+## `scripts/run/spawn_director.gd` — `SpawnDirector`
 
 ```gdscript
 enum Formation { RING, STREAM, FLANK, BURST }
 SUBNET_SECONDS 300.0   CAMPAIGN_SUBNETS 3
-HP_PER_SUBNET 1.55     HP_OVER_SUBNET 0.45   HP_PER_EXTRA_PLAYER 0.50   HP_ROWS 1.40
+HP_PER_SUBNET 1.55     HP_OVER_SUBNET 0.45   HP_PER_EXTRA_PLAYER 0.50   HP_ROWS 1.15
 MINIBOSS_TIMES [60, 120, 180, 240]
 MINIBOSS_IDS   [fork_bomb, packet_filter, null_ptr, kernel_panic]
 ```
@@ -152,15 +157,16 @@ MINIBOSS_IDS   [fork_bomb, packet_filter, null_ptr, kernel_panic]
 `hp_mult(subnet, elapsed)` scales enemy integrity on **both** axes — a rank buys
 damage linearly, so constant HP meant everything one-shot forever past 34 damage.
 `threshold_mult(subnet)` does the same for corruption thresholds;
-`HP_ROWS` (1.40, applied in `run._hp_mult`) is the board axis for five exploit
-rows, set by the perf gate's coverage pin; `party_hp_mult(live)` adds 0.5 per extra LIVE slot and `rate_mult` scales the
-wave rate with the party. Seeded from the session descriptor, never
+`HP_ROWS` (1.15, applied in `run._hp_mult`) prices the five-row board; the first-subnet
+balance pass reduced it from the perf-chosen 1.40. `party_hp_mult(players)` adds 0.5
+per extra session slot and `rate_mult` scales wave rate with the immutable roster,
+not the number still LIVE. Seeded from the session descriptor, never
 `randomize()`.
 Also: `step(dt, origin, radius) -> Array`, `due_minibosses(dt)`,
 `should_spawn_boss()`, `reset()` (zeroes `spawned`, hence run.gd's
 `_spawned_before`), `_place(formation, origin, radius)`.
 
-## `scripts/run/run.gd` (5723) — the run
+## `scripts/run/run.gd` — the run
 
 Signals: `level_up_offered(cards)`, `fusion_offered(matches)`,
 `offer_waiting(unresolved)`, `run_ended(won, salvage)`, `stats_changed()`.

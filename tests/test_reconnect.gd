@@ -21,7 +21,10 @@ const CASES := ["a_live_return_restores_beside_the_party_and_resumes",
 	"a_latched_live_return_suppresses_no_live_endings",
 	"an_existing_no_live_barrier_is_cleared_by_the_flagged_resync",
 	"an_aborted_return_judges_no_live_again",
-	"a_closed_room_ends_the_run_instead_of_reconnecting"]
+	"a_closed_room_ends_the_run_instead_of_reconnecting",
+	"same_tick_multiple_present_events_land_identically_regardless_of_order",
+	"a_no_live_unsafe_reserved_pad_stays_dead_and_the_ending_policy_still_applies",
+	"a_live_anchor_return_with_no_safe_ground_dies_instead_of_reviving_into_the_void"]
 
 func _initialize() -> void:
 	print("ROOTKIT — reconnect\n")
@@ -32,6 +35,9 @@ func _initialize() -> void:
 	await an_existing_no_live_barrier_is_cleared_by_the_flagged_resync()
 	await an_aborted_return_judges_no_live_again()
 	await a_closed_room_ends_the_run_instead_of_reconnecting()
+	await same_tick_multiple_present_events_land_identically_regardless_of_order()
+	await a_no_live_unsafe_reserved_pad_stays_dead_and_the_ending_policy_still_applies()
+	await a_live_anchor_return_with_no_safe_ground_dies_instead_of_reviving_into_the_void()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -329,3 +335,153 @@ func a_closed_room_ends_the_run_instead_of_reconnecting() -> void:
 	h.teardown()
 	await process_frame
 	finished["a_closed_room_ends_the_run_instead_of_reconnecting"] = true
+
+## Two slots return at the SAME boundary tick, with their PRESENT events
+## enqueued in DELIBERATELY opposite dictionary insertion order on different
+## peers — exactly what real network arrival order would produce. _roster_step
+## now walks slots numerically rather than in dictionary order, so every peer
+## must still resolve both returns identically: the same LIVE/DEAD outcome, the
+## same position for each slot, and the two returnees never colliding with
+## each other or with the surviving party.
+func same_tick_multiple_present_events_land_identically_regardless_of_order() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 4, DELAY, 20260906)
+	var pump := RosterPump.new(h)
+	var fn := func(_t: int) -> Array:
+		return [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
+	pump.run(10, fn)
+	for r in h.runs:
+		r._park(2)
+		r._park(3)
+	pump.run(2, fn)
+	var host: Node2D = h.runs[0]
+	var client: Node2D = h.runs[1]
+	_check("both parked slots kept positive health",
+		[host._parked_health[2] > 0.0, host._parked_health[3] > 0.0], [true, true])
+	var r_tick: int = host.lockstep.executed + DELAY + 5
+	# The continuing peers consume opposite arrival orders.
+	host._pending_present[3] = r_tick
+	host._pending_present[2] = r_tick
+	client._pending_present[2] = r_tick
+	client._pending_present[3] = r_tick
+	# Returnees resume from the boundary snapshot and its primed input window,
+	# not by continuing to simulate their stale state through the absence.
+	host._session.announce_resync(r_tick, PackedInt32Array([2, 3]))
+	for peer in range(2, h.runs.size()):
+		h.runs[peer]._session.reconnecting = true
+		h.runs[peer].announce_resync(r_tick)
+	pump.run(r_tick - host.lockstep.executed + 6, fn)
+	_check("slot two returned LIVE", host.slot_state[2], host.SlotState.LIVE)
+	_check("slot three returned LIVE", host.slot_state[3], host.SlotState.LIVE)
+	_check("every peer agrees on slot two's state",
+		[client.slot_state[2], h.runs[2].slot_state[2], h.runs[3].slot_state[2]],
+		[host.slot_state[2], host.slot_state[2], host.slot_state[2]])
+	_check("every peer agrees on slot three's state",
+		[client.slot_state[3], h.runs[2].slot_state[3], h.runs[3].slot_state[3]],
+		[host.slot_state[3], host.slot_state[3], host.slot_state[3]])
+	_check("slot two lands on the identical position on every peer",
+		[client.player_pos[2], h.runs[2].player_pos[2], h.runs[3].player_pos[2]],
+		[host.player_pos[2], host.player_pos[2], host.player_pos[2]])
+	_check("slot three lands on the identical position on every peer",
+		[client.player_pos[3], h.runs[2].player_pos[3], h.runs[3].player_pos[3]],
+		[host.player_pos[3], host.player_pos[3], host.player_pos[3]])
+	_check("the two returnees did not land on each other",
+		host.player_pos[2].distance_to(host.player_pos[3]) >= Terrain.SPAWN_SEPARATION, true)
+	_check("neither returnee landed on the surviving party",
+		[host.player_pos[2].distance_to(host.player_pos[0]) >= Terrain.SPAWN_SEPARATION,
+			host.player_pos[3].distance_to(host.player_pos[1]) >= Terrain.SPAWN_SEPARATION],
+		[true, true])
+	_check("the party agrees after both returns", h.all_agree(), true)
+	h.teardown()
+	await process_frame
+	finished["same_tick_multiple_present_events_land_identically_regardless_of_order"] = true
+
+## A positive-health return with NOBODY live still tries its own reserved
+## point first — and when that point itself is unsafe, it stays DEAD rather
+## than reviving into rock. The existing no-LIVE ending policy still runs to
+## confirmation.
+func a_no_live_unsafe_reserved_pad_stays_dead_and_the_ending_policy_still_applies() -> void:
+	var parts := await _parked_party(false)
+	var h: MultiplayerHarness = parts[0]
+	var pump: RosterPump = parts[1]
+	var fn: Callable = parts[2]
+	var host: Node2D = h.runs[0]
+	var client: Node2D = h.runs[1]
+	var back: Node2D = h.runs[2]
+	var ends := []
+	for r in h.runs:
+		r.run_ended.connect(func(w, _s): ends.append(w))
+	_check("slot two parked with positive health", host._parked_health[2] > 0.0, true)
+	var reserved: Vector2 = host.terrain.spawner_pos(host.terrain.current, 2)
+	for r in h.runs:
+		r.terrain.solid[r.terrain.cell_index(reserved)] = 1
+	for peer in 2:
+		h.runs[peer]._die(0)
+		h.runs[peer]._die(1)
+		h.runs[peer].hitstop_ticks = 0
+	var return_tick := _accept(h)
+	_check_true("the live return was accepted", return_tick > 0)
+	pump.run(DELAY + 10, fn)
+	_check("the unsafe return never revived on any peer",
+		[host.slot_state[2], client.slot_state[2], back.slot_state[2]],
+		[host.SlotState.DEAD, host.SlotState.DEAD, host.SlotState.DEAD])
+	_check("the returnee received its boundary snapshot", back._session.reconnecting, false)
+	_check("health was not restored", host.player_health[2], 0.0)
+	_check("a DEAD slot is never required",
+		host.lockstep.missing(host.lockstep.executed).has(2), false)
+	pump.run(DELAY + 12, fn)
+	_check_true("a check the returnee could report for was issued",
+		host._session.ended or host._session.end_reports.has(2))
+	pump.run(DELAY + 8, fn)
+	_check("the no-LIVE ending policy still confirms the loss", host._session.ended, true)
+	_check("the loss was confirmed, not terminated as a desync", host._session.terminated, false)
+	_check("every present peer ended once", ends, [false, false, false])
+	h.teardown()
+	await process_frame
+	finished["a_no_live_unsafe_reserved_pad_stays_dead_and_the_ending_policy_still_applies"] = true
+
+## Even with a LIVE party to return beside, a return that finds no safe ground
+## anywhere in its bounded search stays DEAD rather than reviving into voided
+## ground — the search failing is not license to place it in the void anyway.
+func a_live_anchor_return_with_no_safe_ground_dies_instead_of_reviving_into_the_void() -> void:
+	var h := MultiplayerHarness.new()
+	await h.setup(self, 2, DELAY, 20260905)
+	var pump := RosterPump.new(h)
+	# Frozen movement: the live anchor must stay exactly where the void
+	# clearance disc below was measured from.
+	var still := func(_t: int) -> Array: return [Vector2.ZERO, Vector2.ZERO]
+	pump.run(5, still)
+	var host: Node2D = h.runs[0]
+	var client: Node2D = h.runs[1]
+	for r in h.runs:
+		r._park(1)
+	_check("slot one parked with positive health", host._parked_health[1] > 0.0, true)
+	_check("slot zero is still LIVE — a real anchor exists",
+		host.slot_state[0], host.SlotState.LIVE)
+	# Void the whole map except a small disc around the anchor — smaller than
+	# SPAWN_SEPARATION, so no candidate the search could ever accept (which
+	# must sit at least that far from a LIVE slot) is left un-voided.
+	for r in h.runs:
+		r.terrain.build_distance_field()
+		r.terrain.voided.fill(1)
+		var anchor: Vector2 = r.player_pos[0]
+		for i in r.terrain.voided.size():
+			var cx: int = i % r.terrain.w
+			var cy: int = i / r.terrain.w
+			var wp: Vector2 = r.terrain.origin \
+				+ (Vector2(cx, cy) + Vector2(0.5, 0.5)) * Terrain.CELL
+			if wp.distance_to(anchor) <= 60.0:
+				r.terrain.voided[i] = 0
+	var r_tick: int = host.lockstep.executed + DELAY + 3
+	for r in h.runs:
+		r._pending_present[1] = r_tick
+	pump.run(r_tick - host.lockstep.executed + 6, still)
+	_check("the exhausted search left it DEAD on the host",
+		host.slot_state[1], host.SlotState.DEAD)
+	_check("DEAD on the client too", client.slot_state[1], client.SlotState.DEAD)
+	_check("health was not restored", host.player_health[1], 0.0)
+	_check("the live party is unaffected", host.slot_state[0], host.SlotState.LIVE)
+	_check("the run goes on: somebody is still LIVE", host.alive, true)
+	h.teardown()
+	await process_frame
+	finished["a_live_anchor_return_with_no_safe_ground_dies_instead_of_reviving_into_the_void"] = true

@@ -94,6 +94,11 @@ var gates: Array = []
 ## gate, the corridor, the collapse — reads through this.
 var current := 0
 
+## Four reserved arrival points per arena, indexed [arena][slot]. Derived once
+## in generate() from the seed/layout, never mutated afterward — see
+## spawner_pos/validate_spawners/spawn_is_safe below.
+var _spawners: Array = []
+
 ## The block rects of the gates that are currently SHUT, cached because
 ## `is_solid` asks on every enemy step and every projectile step and the answer
 ## only changes when a gate does.
@@ -135,8 +140,8 @@ static func plan(arena_size: Vector2, count: int, seed_value: int) -> Array:
 	assert(count <= 3, "the no-reverse rule only bounds overlap up to three arenas")
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(str(seed_value, ":layout"))
-	# The first arena is centred on the world origin, because that is where the
-	# player starts and the spawn-safe margin is measured from where they stand.
+	# The first arena is centred on the world-origin entry/layout anchor.
+	# Player slots use distinct reserved offsets around that anchor.
 	var out: Array = [Rect2(-arena_size * 0.5, arena_size)]
 	var last := Vector2.ZERO
 	for i in range(1, count):
@@ -309,6 +314,29 @@ const ZONES_MAX := 4
 ## The zone layer holds only the non-blocking effects.
 const ZONE_KINDS := [Kind.HAZARD, Kind.SLOW, Kind.CORRUPTION]
 
+## Minimum pairwise separation between an arena's reserved arrival points,
+## also checked against the caller's own player diameter — whichever is
+## larger. The offsets below keep every pair at least 100 units apart on
+## their own, so this floor only bites if `radius` itself is large.
+const SPAWN_SEPARATION := 96.0
+
+## How far a reserved arrival point's footprint is cleared of rock during
+## generation, in world units. Comfortably larger than the normal player
+## radius (11) so the reservation step is a no-op in the ordinary case and a
+## real repair only on a pathological seed or a rigged test fixture.
+const PAD_CLEARANCE := 32.0
+
+## FRONT/SIDE offsets from where the player enters an arena, per slot: x
+## along FRONT, y along SIDE. Slots 0/1 sit close to the entry, 2/3 farther
+## back; the sign of the SIDE component puts each pair on opposite flanks.
+## Farthest point is ~201.25 units from entry — inside WALL_MARGIN (260) with
+## enough slack (58.75 units) that no wall or zone rect the margin already
+## excludes can reach within PAD_CLEARANCE (32) of any of the four.
+const SPAWN_OFFSETS := [
+	Vector2(80.0, 90.0), Vector2(80.0, -90.0),
+	Vector2(180.0, 90.0), Vector2(180.0, -90.0),
+]
+
 static func density_for(subnet: int) -> float:
 	return DENSITY_BASE + DENSITY_PER_SUBNET * float(maxi(subnet, 1) - 1)
 
@@ -316,10 +344,13 @@ static func density_for(subnet: int) -> float:
 ##
 ## Order matters and is load-bearing. Gates are sited before the walls so that
 ## walls can be kept clear of where the player arrives; corridors are carved
-## after them so nothing placed can seal the way out; the connectivity fill runs
-## after the corridors so that all three arenas read as ONE reachable region and
-## none of them is filled in as a pocket; zones go down last so they can never
-## be sealed behind rock or overwritten.
+## after them so nothing placed can seal the way out; each arena's four
+## spawner points are then reserved and carved into it, still before the
+## connectivity fill runs, so the fill cannot read one as a sealed pocket; the
+## fill runs after that so all three arenas read as ONE reachable region and
+## none of them is filled in as a pocket; zones go down last, kept off the
+## same margin as the walls, so they can never be sealed behind rock, land on
+## a reserved pad, or overwrite one.
 func generate(seed_value: int, player_start: Vector2) -> void:
 	rects.clear()
 	dist_from_gate = PackedInt32Array()
@@ -350,6 +381,7 @@ func generate(seed_value: int, player_start: Vector2) -> void:
 	for i in gates.size():
 		_cut_corridor(gates[i])
 		_carve_to(gates[i].pos, arenas[i].get_center(), arena_cells(i))
+	_derive_spawners(entry)
 	_fill_unreachable(player_start)
 	for i in arenas.size():
 		_place_zones(hash(str(seed_value, ":z:", i)), i, entry[i])
@@ -977,3 +1009,203 @@ func clear_temp_zones() -> void:
 	_tz_r2 = PackedFloat32Array()
 	_tz_kind = PackedInt32Array()
 	_tz_left = PackedFloat32Array()
+
+# -------------------------------------------------------------- spawners ---
+
+## Reserve every arena's four arrival points, right after the corridors are
+## carved and before the connectivity fill runs — so a pad the fill would
+## otherwise read as a sealed pocket is already merged into the arena's main
+## region by the time the fill walks it. `entry` is the same per-arena
+## arrival point _place_walls and _place_zones already keep clear by
+## WALL_MARGIN; deriving the four points from it, never from a fresh roll, is
+## what keeps this a single deterministic pass with no retry loop.
+func _derive_spawners(entry: PackedVector2Array) -> void:
+	_spawners.clear()
+	var repaired := false
+	for i in arenas.size():
+		var front: Vector2 = Vector2.RIGHT if i == 0 else gates[i - 1].dir
+		var side := Vector2(-front.y, front.x)
+		var pts := PackedVector2Array()
+		var pad := Rect2(entry[i], Vector2.ZERO)
+		for off in SPAWN_OFFSETS:
+			var p := _clamp_to_arena(entry[i] + front * off.x + side * off.y, arenas[i])
+			pts.append(p)
+			pad = pad.expand(p)
+		# One connected pad includes the entry itself. No per-point flood fills.
+		if _reserve_pad(pad.grow(PAD_CLEARANCE), arena_cells(i)):
+			repaired = true
+		_spawners.append(pts)
+	if repaired:
+		_reclip_walls()
+
+## Keep a point's whole PAD_CLEARANCE footprint inside its own arena. A gate
+## rolled close to a corner can put a raw FRONT/SIDE offset past the arena
+## edge; clamping is the bounded, deterministic fix — a degenerate arena that
+## clamps two slots onto the same point is caught and refused explicitly by
+## validate_spawners, never silently produced as a valid layout.
+func _clamp_to_arena(p: Vector2, r: Rect2) -> Vector2:
+	var inset := PAD_CLEARANCE + CELL
+	return Vector2(
+		clampf(p.x, r.position.x + inset, r.end.x - inset),
+		clampf(p.y, r.position.y + inset, r.end.y - inset))
+
+## Clear the connected entry pad, clipped to this arena. Report whether any
+## rock changed so ordinary generation need not rebuild the drawing geometry.
+func _reserve_pad(pad: Rect2, bounds: Rect2i) -> bool:
+	var c0 := cell_xy(pad.position)
+	var c1 := cell_xy(pad.end)
+	var repaired := false
+	for y in range(maxi(c0.y, bounds.position.y), mini(c1.y, bounds.end.y - 1) + 1):
+		var row := y * w
+		for x in range(maxi(c0.x, bounds.position.x), mini(c1.x, bounds.end.x - 1) + 1):
+			if solid[row + x] != 0:
+				solid[row + x] = 0
+				repaired = true
+	return repaired
+
+## Keep untouched equipment whole; split a partly cleared wall into surviving
+## row spans. A bounding box would redraw rock across holes in the cleared pad.
+## Called before zones are painted, when changing rect indices is still safe.
+func _reclip_walls() -> void:
+	var kept: Array = []
+	for entry in rects:
+		if int(entry[1]) != Kind.WALL:
+			kept.append(entry)
+			continue
+		var cells := _cells_of(entry[0])
+		var count := 0
+		for y in range(cells.position.y, cells.end.y):
+			for x in range(cells.position.x, cells.end.x):
+				count += int(solid[y * w + x] != 0)
+		if count == cells.get_area():
+			kept.append(entry)
+			continue
+		for y in range(cells.position.y, cells.end.y):
+			var x := cells.position.x
+			while x < cells.end.x:
+				if solid[y * w + x] == 0:
+					x += 1
+					continue
+				var start := x
+				while x < cells.end.x and solid[y * w + x] != 0:
+					x += 1
+				kept.append([Rect2(origin + Vector2(start, y) * CELL,
+					Vector2(x - start, 1) * CELL), Kind.WALL])
+	rects = kept
+
+## The reserved arrival point for `slot` in arena `arena_index`, derived once
+## in generate(). Both indices are caller-controlled and always in range in
+## real use; an out-of-range one is a programmer error and indexes straight
+## into the array rather than returning a silent (0, 0) — the design this
+## backs explicitly refuses that fallback.
+func spawner_pos(arena_index: int, slot: int) -> Vector2:
+	assert(arena_index >= 0 and arena_index < _spawners.size(),
+		"spawner_pos: arena_index out of range")
+	var pts: PackedVector2Array = _spawners[arena_index]
+	assert(slot >= 0 and slot < pts.size(), "spawner_pos: slot out of range")
+	return pts[slot]
+
+## Nearest point of `rect` to `p`, tested against `radius` — one shape test
+## used for both a cell's own square and a gate's block rect.
+func _rect_within_radius(rect: Rect2, p: Vector2, radius: float) -> bool:
+	var nx := clampf(p.x, rect.position.x, rect.end.x)
+	var ny := clampf(p.y, rect.position.y, rect.end.y)
+	return p.distance_squared_to(Vector2(nx, ny)) <= radius * radius
+
+func _cell_rect(c: Vector2i) -> Rect2:
+	return Rect2(origin + Vector2(c.x, c.y) * CELL, Vector2(CELL, CELL))
+
+## Whether a disc of `radius` centred on `p` is a safe place for a player to
+## occupy: no rock, no static zone (hazard, slow or corruption — none of them
+## is a safe arrival), no void, no shut gate's block rect, and no temporary
+## zone, over the WHOLE footprint rather than just the centre cell. Out of the
+## grid is UNSAFE here — the opposite of is_solid's "outside is open", which
+## exists for enemy spawns that are allowed to sit on the window's edge; a
+## player arrival point never should. `arena_index >= 0` additionally requires
+## the entire footprint to stay inside that one arena; -1 permits a safe
+## corridor point, for a return that lands a player back on the walk between
+## arenas rather than inside either one.
+func spawn_is_safe(p: Vector2, radius: float, arena_index: int = -1) -> bool:
+	if not p.is_finite() or not is_finite(radius) or radius < 0.0 or arena_index < -1:
+		return false
+	if p.x - radius < origin.x or p.x + radius >= origin.x + size.x \
+			or p.y - radius < origin.y or p.y + radius >= origin.y + size.y:
+		return false
+	if arena_index >= 0:
+		if arena_index >= arenas.size():
+			return false
+		var r: Rect2 = arenas[arena_index]
+		if p.x - radius < r.position.x or p.x + radius > r.end.x \
+				or p.y - radius < r.position.y or p.y + radius > r.end.y:
+			return false
+	var half := Vector2(radius, radius)
+	var c0 := cell_xy(p - half)
+	var c1 := cell_xy(p + half)
+	for y in range(c0.y, c1.y + 1):
+		for x in range(c0.x, c1.x + 1):
+			var c := Vector2i(x, y)
+			if not _rect_within_radius(_cell_rect(c), p, radius):
+				continue        # corner of the bounding box, outside the disc
+			if not in_bounds(c):
+				return false
+			var i := c.y * w + c.x
+			if solid[i] != 0 or zone[i] != 0:
+				return false
+			if not voided.is_empty() and voided[i] != 0:
+				return false
+	for b in _blocks:
+		if _rect_within_radius(b, p, radius):
+			return false
+	for k in _tz_pos.size():
+		var reach := radius + sqrt(_tz_r2[k])
+		if p.distance_squared_to(_tz_pos[k]) <= reach * reach:
+			return false
+	return true
+
+## Empty on a valid generation; otherwise names the arena, slot and rule the
+## generated layout failed. Called once after generate(), before the roster
+## exists, so a bad seed refuses the session visibly instead of an assert an
+## exported build would strip. Checks, per arena: every point's whole
+## footprint stays inside the arena and is spawn_is_safe; every pair of the
+## four is at least SPAWN_SEPARATION apart (or the caller's own diameter, if
+## larger — never less than that, on pain of embedding a party inside itself,
+## which also rules out any two coinciding); and the pad can reach the arena's
+## playable region, not merely the other three points in a sealed pocket.
+func validate_spawners(radius: float) -> String:
+	if _spawners.size() != arenas.size():
+		return "terrain has %d arenas but %d spawner sets" \
+			% [arenas.size(), _spawners.size()]
+	var min_sep := maxf(SPAWN_SEPARATION, radius * 2.0)
+	for i in arenas.size():
+		var pts: PackedVector2Array = _spawners[i]
+		if pts.size() != SessionRules.MAX_PLAYERS:
+			return "arena %d has %d spawner slots, expected %d" \
+				% [i, pts.size(), SessionRules.MAX_PLAYERS]
+		var r: Rect2 = arenas[i]
+		for slot in SessionRules.MAX_PLAYERS:
+			var p: Vector2 = pts[slot]
+			if p.x - radius < r.position.x or p.x + radius > r.end.x \
+					or p.y - radius < r.position.y or p.y + radius > r.end.y:
+				return "arena %d slot %d: spawn point %s falls outside the arena" \
+					% [i, slot, p]
+			if not spawn_is_safe(p, radius, i):
+				return "arena %d slot %d: spawn point %s is not safe at radius %.1f" \
+					% [i, slot, p, radius]
+		for a in SessionRules.MAX_PLAYERS:
+			for b in range(a + 1, SessionRules.MAX_PLAYERS):
+				var d: float = pts[a].distance_to(pts[b])
+				if d < min_sep:
+					return ("arena %d: spawn slots %d and %d are %.1f units " +
+						"apart, need >= %.1f") % [i, a, b, d, min_sep]
+		var bounds := arena_cells(i)
+		var seen := _reach(cell_index(pts[0]), bounds)
+		var reachable := 0
+		for y in range(bounds.position.y, bounds.end.y):
+			for x in range(bounds.position.x, bounds.end.x):
+				var idx := y * w + x
+				reachable += int(seen[idx] != 0)
+				if solid[idx] == 0 and seen[idx] == 0:
+					return "arena %d: spawn pad is disconnected from the playable region" % i
+		if float(reachable) < float(bounds.get_area()) * REACHABLE_FLOOR:
+			return "arena %d: spawn pad cannot reach enough playable ground" % i
+	return ""

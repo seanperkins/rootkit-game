@@ -109,6 +109,12 @@ hub → solo run or lobby START → run
 
 All arenas/corridors are plotted before play on one terrain grid. Transition
 changes the current arena; it does not regenerate terrain or teleport players.
+Every arena reserves four validated entry positions. `_derive_roster` places each
+roster slot at its own arena-0 point and primes interpolation. Unsafe generated
+pads stop startup with an explicit error and return-to-menu action. Reconnects
+use a bounded, safe search near a LIVE party, excluding occupied footprints;
+same-tick returns apply in slot order. No-LIVE returns validate their reserved
+point; an unsafe return is DEAD, never revived in rock or void.
 The teleporter/vote and bespoke boss proposals are not the current flow.
 
 ## Capacities and budgets

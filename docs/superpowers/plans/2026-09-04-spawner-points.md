@@ -1,6 +1,6 @@
 # Spawner points implementation plan
 
-Date: 2026-09-04. Status: planning only.
+Date: 2026-09-04. Status: implemented and verified for initial spawn and reconnect; later-pad consumption belongs to the companion teleporter feature.
 
 Spec: [Spawner points](../specs/2026-09-04-spawner-points-design.md).
 
@@ -17,3 +17,11 @@ Terrain owns reserved entry geometry and `spawner_pos`; the teleporter feature o
 5. **Finish after successful smoke.** Record formation rationale and the intentional teleporter exception in maintained project documentation. Remove disposable scenario drivers/screenshots/UID files from the project as appropriate. Do not hand-edit generated codemaps or issue commits/pushes merely because an old plan template did so.
 
 Completion means separated valid player positions on the actual supported arrival paths, not simply a new `spawners` array that normal transitions never consume.
+
+## Implementation evidence
+
+1. **Reserved geometry:** four FRONT/SIDE offsets `(80,90)`, `(80,-90)`, `(180,90)`, `(180,-90)` preserve slot identity. Later arenas orient them to the incoming gate. Their 100-unit minimum spacing exceeds the 96-unit contract. One connected pad is cleared before connectivity fill and zone placement; partially cleared wall render rectangles are split into surviving spans. Validation rejects unsafe footprints, disconnected pads, insufficient reachable area and degenerate formations.
+2. **Runtime paths:** initial positions prime previous/render endpoints. Reconnects search bounded, traversable candidates around the LIVE party and exclude occupied footprints; numeric slot order makes simultaneous returns independent of message insertion order. A no-LIVE return uses only its own safe reserved point. Exhausted placement stays DEAD and uses the existing ending protocol.
+3. **Windowed smoke:** four-player initial spawn, same-tick returns, later-arena reserved pads and the invalid-generation dialog were exercised with isolated save paths. Initial minimum separation was 100 world units; same-tick return minimum was about 127.6. Movement/interpolation reset and the dialog's Return to menu action passed. Later pads were inspected directly, **not through an implemented teleporter**. The disposable driver was removed.
+4. **Regression verification:** 27 affected suites, including perf, passed across the focused runs; the full suite remains deferred until feature integration. Final runner: `test_terrain test_travel test_reconnect test_parking test_ending test_recovery perf_milestone0`, all green with no script errors. Terrain made 95 assertions. Return coverage includes real boundary snapshots and an unsafe return that confirms LOSS without desync termination. `RosterPump` now forwards terminal-candidate transitions rather than inventing a candidate every tick, which could be misread as a zero-hash check report.
+5. **Measured workload:** repeated runs ended at tick 22194, mean enemies 236.1, hits/tick 0.98 and kills/tick 0.281. The new starting position changes the autopilot's trajectory; the coverage baseline and reason are recorded in `perf_milestone0.gd`, with unchanged tolerance bands and timing budget. Final real-run p95 was 8.582 ms against a 9.832 ms scaled budget. This is not evidence of improved campaign balance. Terrain variants, teleporter arrivals and boss anchors remain owned by their companion features.

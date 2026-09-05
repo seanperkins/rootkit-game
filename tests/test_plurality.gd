@@ -22,7 +22,9 @@ const CASES := ["window_at_the_minimum", "window_at_the_maximum",
 	"the_botnet_cap_is_shared", "first_shard_pickup_wins",
 	"the_void_kills_each_slot_alone", "the_gate_waits_for_every_live_slot",
 	"block_payout_heals_holder_or_pays_the_pool", "scaling_follows_the_roster",
-	"the_spawn_ring_cycles_live_slots"]
+	"the_spawn_ring_cycles_live_slots",
+	"initial_four_player_spawn_is_separated_and_primed",
+	"sparse_and_alternate_local_rosters_keep_stable_slot_positions"]
 
 func _initialize() -> void:
 	print("ROOTKIT — plurality census\n")
@@ -44,6 +46,8 @@ func _initialize() -> void:
 	await block_payout_heals_holder_or_pays_the_pool()
 	await scaling_follows_the_roster()
 	await the_spawn_ring_cycles_live_slots()
+	await initial_four_player_spawn_is_separated_and_primed()
+	await sparse_and_alternate_local_rosters_keep_stable_slot_positions()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -80,6 +84,24 @@ func _party_run(players: int) -> Node2D:
 	var desc := NetworkSession.validate_descriptor(raw)
 	var r: Node2D = load("res://scenes/run.tscn").instantiate()
 	r.configure_session(NetworkSession.create(desc, 0, NetworkSession.Role.HOST))
+	root.add_child(r)
+	await process_frame
+	r.input_override = Vector2.ZERO
+	return r
+
+## Like _party_run, but the roster names an arbitrary, possibly non-contiguous
+## slot set, and the caller picks which of those slots is local — proving slot
+## placement is a property of the descriptor, not of who "you" are or how many
+## other slots are filled.
+func _sparse_run(slots: Array, local: int) -> Node2D:
+	var rows := []
+	for s in slots:
+		rows.append(_profile(s, "p%d" % s))
+	var raw := {"protocol": SessionRules.PROTOCOL, "session_id": 1,
+		"seed": 20260830, "delay": 0, "choice_timeout": 0, "roster": rows}
+	var desc := NetworkSession.validate_descriptor(raw)
+	var r: Node2D = load("res://scenes/run.tscn").instantiate()
+	r.configure_session(NetworkSession.create(desc, local, NetworkSession.Role.HOST))
 	root.add_child(r)
 	await process_frame
 	r.input_override = Vector2.ZERO
@@ -389,3 +411,51 @@ func the_spawn_ring_cycles_live_slots() -> void:
 	_check("a dead slot is skipped", r._next_live_cycle(), 0)
 	_check("every time", r._next_live_cycle(), 0)
 	await _done(r, "the_spawn_ring_cycles_live_slots")
+
+# -------------------------------------------------------------- the spawn ---
+
+## The four roster slots land on their own reserved arena-0 points, separated,
+## inside the starting arena, and with the render/interpolation state primed
+## to that same point — never the origin the old allocator left every slot at.
+func initial_four_player_spawn_is_separated_and_primed() -> void:
+	var r: Node2D = await _party_run(4)
+	for s in 4:
+		_check("slot %d is live" % s, r.slot_state[s], r.SlotState.LIVE)
+		_check("slot %d spawns on its own reserved point" % s,
+			r.player_pos[s], r.terrain.spawner_pos(0, s))
+		_check("slot %d's point is inside the starting arena" % s,
+			r.terrain.arena().has_point(r.player_pos[s]), true)
+		_check("slot %d's interpolation starts AT the spawn" % s,
+			[r.player_prev_pos[s], r.player_render_pos[s]],
+			[r.player_pos[s], r.player_pos[s]])
+	for i in 4:
+		for j in range(i + 1, 4):
+			_check("slot %d and %d start separated" % [i, j],
+				r.player_pos[i].distance_to(r.player_pos[j]) >= Terrain.SPAWN_SEPARATION,
+				true)
+	await _done(r, "initial_four_player_spawn_is_separated_and_primed")
+
+## A sparse roster (slots 0 and 2, one and three absent) is never compacted:
+## each present slot keeps ITS OWN reserved point. And the assignment is a
+## function of the descriptor alone — the same two peers, differing only in
+## which slot is local, land on identical positions.
+func sparse_and_alternate_local_rosters_keep_stable_slot_positions() -> void:
+	var slots := [0, 2]
+	var r0: Node2D = await _sparse_run(slots, 0)
+	var r2: Node2D = await _sparse_run(slots, 2)
+	_check("slot zero is live in a sparse roster", r0.slot_state[0], r0.SlotState.LIVE)
+	_check("slot one stays absent — the roster is never compacted",
+		r0.slot_state[1], r0.SlotState.ABSENT)
+	_check("slot two is live", r0.slot_state[2], r0.SlotState.LIVE)
+	_check("slot zero lands on its own arena-0 point",
+		r0.player_pos[0], r0.terrain.spawner_pos(0, 0))
+	_check("slot two lands on ITS OWN point, not slot one's",
+		r0.player_pos[2], r0.terrain.spawner_pos(0, 2))
+	_check("the two live slots start separated",
+		r0.player_pos[0].distance_to(r0.player_pos[2]) >= Terrain.SPAWN_SEPARATION, true)
+	_check("slot zero's position does not depend on which peer is local",
+		r2.player_pos[0], r0.player_pos[0])
+	_check("nor slot two's", r2.player_pos[2], r0.player_pos[2])
+	r2.free()
+	await process_frame
+	await _done(r0, "sparse_and_alternate_local_rosters_keep_stable_slot_positions")

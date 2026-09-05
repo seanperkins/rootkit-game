@@ -1,4 +1,4 @@
-> Generated: 2026-09-03 | Token-lean format for LLM context
+> Generated: 2026-09-04 | Token-lean format for LLM context
 
 # Networking — `scripts/net/` and the session parts of `run.gd`
 
@@ -173,7 +173,7 @@ a desync.
 | Concern | Where |
 |---|---|
 | bind | `configure_session(s)` before `_ready`; `attach_transport(t)`; `_default_solo_session()` (seed `DEFAULT_SEED`) |
-| roster | `_allocate_slots` (every per-player field a `MAX_PLAYERS` array; `SlotState {LIVE, DEAD, ABSENT}`), `_derive_roster` (build, sheet, unlocks from counters; `started = true`) |
+| roster | `_allocate_slots` (every per-player field a `MAX_PLAYERS` array; `SlotState {LIVE, DEAD, ABSENT}`), `_derive_roster` (build, sheet, unlocks from counters; slot-indexed validated arena-0 spawn with primed interpolation; `started = true`) |
 | input | `_poll_local_input` — the ONLY `Input.*` site; submits the full record for `executed + delay`; neutral while paused, DEAD or held |
 | tick (above guard) | `_snapshot_render_state → _poll_local_input → poll/_drain_inbox/_reconnect_step/flush_relay → _present → [reconnecting? return] → _roster_step → _sync_ring_roster → _recovery_step → _ending_step → ready? take → _apply_records → _resolve_deadlines → _settle_offers → hitstop / guard → _step_world → _report_checksum` |
 | offers | per-slot primitive input state: `_offer_seq/_offer_open/_offer_queue`, `OfferKind`, rounds; UI calls only STAGE `_local_choice` |
@@ -181,8 +181,15 @@ a desync.
 | recovery | `host_detect_desync → announce_resync(R) → host_try_snapshot` (only at `executed == R+1` with the window; `_holding_for_snapshot`) `→ apply_snapshot`; `_terminate` at three desyncs |
 | ending | `_terminal(outcome)` — the ONLY path from `_die`/win; solo emits at once; `receive_end_candidate / receive_end_check / receive_end / evaluate_end_check / _confirm_end / _ending_step`; a mismatch is a fresh future RESYNC |
 | parking | `request_park → _host_park_step` (first tick with no record) `→ _park` (health remembered in `_parked_health`, offers resolved, banked once, last LIVE → LOSS candidate) |
-| return | `accept_reconnect` (R = executed+delay+3, latch when no LIVE, WELCOME/RESYNC/PRESENT) `→ _return(slot, R)` after R (LIVE beside the party via `terrain.nearest_open`, primed; or DEAD) · `abort_reconnect` · client `_begin_reconnect` (10 attempts) |
+| return | `accept_reconnect` (R = executed+delay+3, latch when no LIVE, WELCOME/RESYNC/PRESENT) `→ _return(slot, R)` after R (LIVE at a safe, unoccupied nearby point via `_return_position`, primed; unsafe/dead returns become DEAD) · `abort_reconnect` · client `_begin_reconnect` (10 attempts) |
 | notices | `missing_slots()`, `_stalled_ticks`, `_session.recovering()/reconnecting` read by `ui.gd` |
+
+Return placement uses cell-sized square rings bounded by `Terrain.OPEN_SEARCH_RINGS`,
+with rock/gate/void path checks and minimum `max(SPAWN_SEPARATION, player diameter)`
+separation from every LIVE slot. With no LIVE anchor, only the returning slot's
+safe reserved point is used. `_roster_step` applies due PRESENT records in numeric
+slot order, independent of dictionary/network insertion order. Unsafe no-LIVE
+returns use the existing LOSS-candidate policy; an existing win remains intact.
 
 ## Rules the layer depends on
 

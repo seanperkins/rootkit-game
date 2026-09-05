@@ -272,11 +272,19 @@ var _cap_ticks := 0.0
 ## causes were not isolated individually. Keep the same tolerance bands and
 ## timing budget; do not restore old firing bonuses to satisfy a load pin.
 ## Observed timing: normalised p95 9.615 ms, below the 11 ms reference budget.
+##
+## Re-pinned 2026-09-04 for reserved player spawns. Slot zero now starts at
+## its terrain-owned pad instead of the world origin, changing the walking
+## fixture's entire kiting trajectory. Repeated measurements: DIED 22194
+## (370s), enemies 236.1, hits/tick 0.98, kills/tick 0.281. The hit baseline
+## falls 30%, while the enemy baseline rises 13% and kill throughput rises
+## 6%; this is a different workload, not a speedup or balance-improvement
+## claim. Keep the existing tolerance bands and timing budget unchanged.
 const BASELINE_OUTCOME := "died"      # "won", "died" or "timeout"
-const BASELINE_END_TICK := 23727
-const BASELINE_MEAN_ENEMIES := 208.2
-const BASELINE_MEAN_HITS := 1.40
-const BASELINE_KILLS_PER_TICK := 0.266
+const BASELINE_END_TICK := 22194
+const BASELINE_MEAN_ENEMIES := 236.1
+const BASELINE_MEAN_HITS := 0.98
+const BASELINE_KILLS_PER_TICK := 0.281
 
 
 func _initialize() -> void:

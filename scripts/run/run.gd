@@ -941,11 +941,11 @@ func _park(slot: int) -> void:
 		_terminal(NetworkSession.Outcome.LOSS)
 
 ## Every peer, after consuming T: the slot is back. Positive parked health
-## places it on open ground beside the LIVE slot nearest the arena centre, or
-## at the centre when nobody is LIVE, marks it LIVE and requires it from T + 1
-## — with neutral records primed through T + delay, because its own sampling
-## begins only after the restore. Zero parked health returns it DEAD: a
-## spectator, never required, and any ending check stays open.
+## places it beside the LIVE slot nearest the arena centre, or at its own
+## reserved pad when nobody is LIVE. Unsafe placement stays DEAD. A LIVE
+## return requires records from T + 1, primed neutral through T + delay;
+## sampling begins only after the restore. Zero parked health returns a DEAD
+## spectator, included in a fresh ending check when needed.
 func _return(slot: int, t: int) -> void:
 	if slot_state[slot] != SlotState.ABSENT:
 		return
@@ -956,17 +956,12 @@ func _return(slot: int, t: int) -> void:
 	player_facing[slot] = Vector2.RIGHT
 	var h := _parked_health[slot]
 	_parked_health[slot] = -1.0
+	var destination := Vector2.INF
 	if h > 0.0:
-		var centre: Vector2 = terrain.arena().get_center()
-		var anchor := centre
-		var best := INF
-		for s in SessionRules.MAX_PLAYERS:
-			if slot_state[s] == SlotState.LIVE:
-				var d := player_pos[s].distance_squared_to(centre)
-				if d < best:
-					best = d
-					anchor = player_pos[s]
-		player_pos[slot] = terrain.nearest_open(anchor)
+		destination = _return_position(slot)
+	var unsafe_return := h > 0.0 and not destination.is_finite()
+	if h > 0.0 and not unsafe_return:
+		player_pos[slot] = destination
 		player_prev_pos[slot] = player_pos[slot]
 		player_render_pos[slot] = player_pos[slot]
 		player_vel[slot] = Vector2.ZERO
@@ -994,6 +989,54 @@ func _return(slot: int, t: int) -> void:
 		if _session.end_check_tick >= 0 and slot_state[slot] == SlotState.DEAD:
 			_session.clear_end_check()
 			_session.end_candidate_pending = _session.end_outcome != NetworkSession.Outcome.NONE
+	if unsafe_return and not alive and not won:
+		_terminal(NetworkSession.Outcome.LOSS)
+
+## Returns are rare, tick-owned placement work. Never use nearest_open's enemy
+## fallback: it deliberately returns blocked input when its search is exhausted.
+func _return_position(slot: int) -> Vector2:
+	var centre := terrain.arena().get_center()
+	var anchor := Vector2.INF
+	var best := INF
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] == SlotState.LIVE:
+			var d := player_pos[s].distance_squared_to(centre)
+			if d < best:
+				best = d
+				anchor = player_pos[s]
+	if not anchor.is_finite():
+		var reserved := terrain.spawner_pos(terrain.current, slot)
+		return reserved if terrain.spawn_is_safe(reserved, PLAYER_RADIUS, terrain.current) \
+			else Vector2.INF
+	# Cell-sized square rings cover every nearby candidate, not just eight rays.
+	# The order is independent of local_slot and of network arrival order.
+	for ring in range(1, Terrain.OPEN_SEARCH_RINGS + 1):
+		for y in range(-ring, ring + 1):
+			for x in range(-ring, ring + 1):
+				if absi(x) != ring and absi(y) != ring:
+					continue
+				var p := anchor + Vector2(x, y) * Terrain.CELL
+				if _return_point_clear(p) and _return_path_clear(anchor, p):
+					return p
+	return Vector2.INF
+
+func _return_point_clear(p: Vector2) -> bool:
+	if not terrain.spawn_is_safe(p, PLAYER_RADIUS):
+		return false
+	var separation := maxf(Terrain.SPAWN_SEPARATION, PLAYER_RADIUS * 2.0)
+	for s in SessionRules.MAX_PLAYERS:
+		if slot_state[s] == SlotState.LIVE \
+				and p.distance_squared_to(player_pos[s]) < separation * separation:
+			return false
+	return true
+
+func _return_path_clear(from: Vector2, to: Vector2) -> bool:
+	var steps := int(ceilf(from.distance_to(to) / (Terrain.CELL * 0.5)))
+	for k in range(1, steps + 1):
+		var p := from.lerp(to, float(k) / float(steps))
+		if terrain.cell_index(p) < 0 or terrain.is_solid(p) or terrain.is_void(p):
+			return false
+	return true
 
 ## Host: a HELLO after START. Accepted only for this session, an ABSENT slot
 ## the roster holds, and before END; then the return is announced at a fresh
@@ -1061,7 +1104,9 @@ func _roster_step() -> void:
 		if lockstep.executed >= int(_pending_absent[slot]):
 			_pending_absent.erase(slot)
 			_park(slot)
-	for slot in _pending_present.keys():
+	for slot in SessionRules.MAX_PLAYERS:
+		if not _pending_present.has(slot):
+			continue
 		var t := int(_pending_present[slot])
 		if lockstep.executed >= t + 1:
 			_pending_present.erase(slot)
@@ -1438,9 +1483,12 @@ func _ready() -> void:
 	_build_manifest()
 	var tseed: int = base + _SEED_TERRAIN
 	terrain = Terrain.new(ARENA_SIZE, SpawnDirector.CAMPAIGN_SUBNETS, tseed)
-	# Every slot starts at the same origin, so the spawn-safe margin is measured
-	# from where the party actually is.
-	terrain.generate(tseed, player_pos[local_slot])
+	# Generation is descriptor-owned; local identity never picks its anchor.
+	terrain.generate(tseed, Vector2.ZERO)
+	var spawn_error := terrain.validate_spawners(PLAYER_RADIUS)
+	if not spawn_error.is_empty():
+		_refuse_generation(spawn_error)
+		return
 	_allocate_zone_state()
 
 	_buf = PackedInt32Array(); _buf.resize(1024)
@@ -1557,6 +1605,23 @@ func _ready() -> void:
 	if external_drive:
 		set_physics_process(false)
 
+## An exported build must refuse invalid geometry too: assert is stripped there.
+func _refuse_generation(message: String) -> void:
+	set_process(false)
+	set_physics_process(false)
+	_session.terminated = true
+	_session.ended = true
+	push_error("Terrain generation failed: " + message)
+	var dialog := AcceptDialog.new()
+	dialog.title = "Terrain generation failed"
+	dialog.dialog_text = message
+	dialog.get_ok_button().text = "Return to menu"
+	var leave := func(): get_tree().change_scene_to_file("res://scenes/main.tscn")
+	dialog.confirmed.connect(leave)
+	dialog.canceled.connect(leave)
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(640, 160))
+
 ## Size every per-slot array for MAX_PLAYERS. Everything starts ABSENT and
 ## empty; _derive_roster fills the slots the descriptor names.
 func _allocate_slots() -> void:
@@ -1610,6 +1675,9 @@ func _derive_roster() -> void:
 		var s: int = int(row["slot"])
 		var counters: Dictionary = row["counters"]
 		slot_state[s] = SlotState.LIVE
+		player_pos[s] = terrain.spawner_pos(0, s)
+		player_prev_pos[s] = player_pos[s]
+		player_render_pos[s] = player_pos[s]
 		var lo := Loadout.new()
 		lo.start(table[&"packet"])
 		lo.mult = PlayerStats.mults(SaveGame.multipliers_from(counters))
@@ -5420,6 +5488,7 @@ func _build_manifest() -> void:
 			"w": "immutable", "h": "immutable", "solid": "immutable: generate from the seed",
 			"zone": "immutable", "zone_rect": "immutable", "rects": "immutable",
 			"arenas": "immutable",
+			"_spawners": "immutable: reserved entry positions derived during generate",
 			"gates": "immutable layout; open flags carried by @gate_open",
 			"_blocks": "derived from gate state: set_gate_open_flags rebuilds",
 			"dist_from_gate": "derived: restore_collapse when CLEARED",

@@ -22,12 +22,20 @@ const CASES := [
 	"enemies_avoid_and_never_embed", "spawn_points_find_open_ground",
 	"the_map_is_laid_out_on_whole_tiles", "arenas_never_overlap",
 	"corridors_join_one_arena_to_the_next", "a_shut_gate_bars_only_its_corridor",
+	"spawner_points_are_distinct_separated_safe_and_reachable",
+	"a_forced_obstruction_fails_validation_and_safety",
+	"gate_blockers_and_voided_ground_make_a_point_unsafe",
+	"an_isolated_pocket_of_every_spawn_point_fails_validation",
 ]
 
 ## A whole EVEN number of Terrain.TILE either way, which is what lets the arena
 ## be centred on the origin and still land on tile boundaries.
 const SIZE := Vector2(3072, 1920)
 const ORIGIN := -SIZE * 0.5
+
+## Mirrors run.gd's PLAYER_RADIUS. Terrain has no dependency on run.gd, so the
+## value is repeated here rather than imported.
+const RADIUS := 11.0
 
 func _initialize() -> void:
 	print("ROOTKIT — terrain\n")
@@ -45,6 +53,10 @@ func _initialize() -> void:
 	arenas_never_overlap()
 	corridors_join_one_arena_to_the_next()
 	a_shut_gate_bars_only_its_corridor()
+	spawner_points_are_distinct_separated_safe_and_reachable()
+	a_forced_obstruction_fails_validation_and_safety()
+	gate_blockers_and_voided_ground_make_a_point_unsafe()
+	an_isolated_pocket_of_every_spawn_point_fails_validation()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -486,3 +498,186 @@ func a_shut_gate_bars_only_its_corridor() -> void:
 	_check("the last arena has no gate", t.has_gate(), false)
 	_check("and asking for one gives nothing", t.gate(), null)
 	finished["a_shut_gate_bars_only_its_corridor"] = true
+
+## Every arena's four points, across a spread of seeds: distinct, separated by
+## at least SPAWN_SEPARATION, safe for the player footprint, inside their own
+## arena, and — via the suite's OWN independent flood fill, not the
+## generator's — able to reach the whole connected map. Not just an accessor
+## echo: every check drives spawner_pos through spawn_is_safe/validate_spawners,
+## the same API a caller uses.
+func spawner_points_are_distinct_separated_safe_and_reachable() -> void:
+	var bad_validate := 0
+	var bad_distinct := 0
+	var bad_sep := 0
+	var bad_safe := 0
+	var bad_member := 0
+	var bad_reach := 0
+	var bad_margin := 0
+	for s in range(16):
+		var t := _campaign(s)
+		t.generate(s, Vector2.ZERO)
+		if not t.validate_spawners(RADIUS).is_empty():
+			bad_validate += 1
+		for a in t.arenas.size():
+			var entry: Vector2 = Vector2.ZERO if a == 0 else t.gates[a - 1].end
+			var pts: Array = []
+			for slot in 4:
+				pts.append(t.spawner_pos(a, slot))
+			if not _fully_connected(t, pts[0]):
+				bad_reach += 1
+			for i in 4:
+				if pts[i].distance_to(entry) >= Terrain.WALL_MARGIN:
+					bad_margin += 1
+				if not t.arenas[a].has_point(pts[i]):
+					bad_member += 1
+				if not t.spawn_is_safe(pts[i], RADIUS, a):
+					bad_safe += 1
+				for j in range(i + 1, 4):
+					if pts[i] == pts[j]:
+						bad_distinct += 1
+					elif pts[i].distance_to(pts[j]) < Terrain.SPAWN_SEPARATION:
+						bad_sep += 1
+	_check("16 campaign seeds, every arena's spawners validate clean", bad_validate, 0)
+	_check("all four points distinct, every arena", bad_distinct, 0)
+	_check("every pair at least SPAWN_SEPARATION apart", bad_sep, 0)
+	_check("every point safe for the player footprint", bad_safe, 0)
+	_check("every point lies within its own arena", bad_member, 0)
+	_check("slot zero's point reaches the whole connected map", bad_reach, 0)
+	_check("all points remain in the reserved entry region", bad_margin, 0)
+
+	# Deterministic like everything else in the generator.
+	var a := _campaign(11); a.generate(555, Vector2.ZERO)
+	var b := _campaign(11); b.generate(555, Vector2.ZERO)
+	var same := true
+	for arena_i in a.arenas.size():
+		for slot in 4:
+			if a.spawner_pos(arena_i, slot) != b.spawner_pos(arena_i, slot):
+				same = false
+	_check("spawner points are deterministic for a seed", same, true)
+	finished["spawner_points_are_distinct_separated_safe_and_reachable"] = true
+
+## The reservation step must actually clear the pad. A rock, on the point's own
+## cell or only on its RIM, a hazard zone, or a closed gate all refuse the
+## point through spawn_is_safe, and by extension validate_spawners — never a
+## silent overlap.
+func a_forced_obstruction_fails_validation_and_safety() -> void:
+	var t := _fresh()
+	t.generate(21, Vector2.ZERO)
+	_check("a freshly generated field validates clean", t.validate_spawners(RADIUS), "")
+
+	var centre: Vector2 = t.spawner_pos(0, 0)
+	# A footprint radius comfortably bigger than one CELL, and an obstruction
+	# offset past a whole CELL from centre: that forces the rock into a cell
+	# other than centre's own no matter where centre falls inside it, while
+	# still sitting well inside the queried footprint — proof the check walks
+	# the whole disc, not just the point's own cell.
+	var big := Terrain.CELL * 2.0
+	t.solid[t.cell_index(centre + Vector2(big - Terrain.CELL * 0.5, 0.0))] = 1
+	_check("the point's own cell is untouched", t.is_solid(centre), false)
+	_check("but a footprint that size overlaps the forced rock",
+		t.spawn_is_safe(centre, big, 0), false)
+
+	t.solid[t.cell_index(centre)] = 1
+	_check("rock at the point itself is refused with a normal footprint",
+		t.spawn_is_safe(centre, RADIUS, 0), false)
+	_check("and the whole layout no longer validates",
+		t.validate_spawners(RADIUS).is_empty(), false)
+
+	var t2 := _fresh()
+	t2.generate(22, Vector2.ZERO)
+	var p1: Vector2 = t2.spawner_pos(0, 1)
+	t2.paint_zone(Rect2(p1 - Vector2(60.0, 60.0), Vector2(120.0, 120.0)), Terrain.Kind.HAZARD)
+	_check("a hazard zone painted over the point makes it unsafe",
+		t2.spawn_is_safe(p1, RADIUS, 0), false)
+
+	# Repair a wall that crosses a pad but survives above and below it.
+	# A bounding-box-only repair would still draw equipment across the hole.
+	var t3 := _fresh()
+	t3.generate(23, Vector2.ZERO)
+	t3.zone.fill(0)
+	t3.zone_rect.fill(-1)
+	t3.rects = t3.rects.filter(func(e): return int(e[1]) == Terrain.Kind.WALL)
+	var pad := Rect2(t3.spawner_pos(0, 0), Vector2.ZERO)
+	for slot in SessionRules.MAX_PLAYERS:
+		pad = pad.expand(t3.spawner_pos(0, slot))
+	var top := t3.cell_xy(Vector2(t3.spawner_pos(0, 0).x, pad.position.y))
+	var bottom := t3.cell_xy(pad.end)
+	var wall := Rect2(t3.origin + Vector2(top.x - 1, top.y - 3) * Terrain.CELL,
+		Vector2(3, bottom.y - top.y + 7) * Terrain.CELL)
+	t3.rects.append([wall, Terrain.Kind.WALL])
+	var cells := t3._cells_of(wall)
+	for y in range(cells.position.y, cells.end.y):
+		for x in range(cells.position.x, cells.end.x):
+			t3.solid[y * t3.w + x] = 1
+	t3._derive_spawners(PackedVector2Array([Vector2.ZERO]))
+	_check("reservation repairs a crossing wall into a valid layout",
+		t3.validate_spawners(RADIUS), "")
+	var drawn_over := false
+	for slot in SessionRules.MAX_PLAYERS:
+		for entry in t3.rects:
+			if int(entry[1]) == Terrain.Kind.WALL \
+					and (entry[0] as Rect2).grow(RADIUS).has_point(t3.spawner_pos(0, slot)):
+				drawn_over = true
+	_check("the cleared pad is also free of rendered wall geometry", drawn_over, false)
+	finished["a_forced_obstruction_fails_validation_and_safety"] = true
+
+## A closed gate bars its own mouth against a spawn query exactly as it bars a
+## walking player, and voided ground — the collapse the boss kill starts — is
+## never a safe return point either.
+func gate_blockers_and_voided_ground_make_a_point_unsafe() -> void:
+	var t := _campaign(9)
+	t.generate(9, Vector2.ZERO)
+	var g: Terrain.Gate = t.gates[0]
+	_check("a fresh gate is shut", g.open, false)
+	_check("its mouth is refused as a spawn point while shut",
+		t.spawn_is_safe(g.pos, RADIUS), false)
+
+	t.build_distance_field()
+	var p: Vector2 = t.spawner_pos(0, 2)
+	_check("open ground validates before the collapse starts",
+		t.spawn_is_safe(p, RADIUS, 0), true)
+	t.voided[t.cell_index(p)] = 1
+	_check("voided ground is refused as a spawn point",
+		t.spawn_is_safe(p, RADIUS, 0), false)
+	finished["gate_blockers_and_voided_ground_make_a_point_unsafe"] = true
+
+## A validator that only checked reachability AMONG the four points could
+## still pass an isolated bubble that holds all four but is sealed off from
+## the rest of the arena — a sealed entry pad is exactly as unwinnable as any
+## other sealed pocket. Guard that failure mode directly: seal a rock ring
+## OUTSIDE the four points' bounding box, leaving the interior — and each
+## point's own footprint and mutual separation — untouched.
+func an_isolated_pocket_of_every_spawn_point_fails_validation() -> void:
+	var t := _fresh()
+	t.generate(31, Vector2.ZERO)
+	_check("a freshly generated field validates clean", t.validate_spawners(RADIUS), "")
+
+	var pts: Array = []
+	for slot in 4:
+		pts.append(t.spawner_pos(0, slot))
+	var pad := Rect2(pts[0], Vector2.ZERO)
+	for slot in range(1, 4):
+		pad = pad.expand(pts[slot])
+	pad = pad.grow(RADIUS + 20.0)
+
+	# A solid ring two cells thick, drawn in the band OUTSIDE the pad: no gap,
+	# and nothing inside the pad is touched.
+	var band := pad.grow(Terrain.CELL * 2.0)
+	var c0 := t.cell_xy(band.position)
+	var c1 := t.cell_xy(band.position + band.size)
+	for y in range(c0.y, c1.y + 1):
+		for x in range(c0.x, c1.x + 1):
+			if not t.in_bounds(Vector2i(x, y)):
+				continue
+			var centre: Vector2 = t.origin \
+				+ Vector2(float(x) + 0.5, float(y) + 0.5) * Terrain.CELL
+			if not pad.has_point(centre):
+				t.solid[y * t.w + x] = 1
+
+	_check("every point is still individually safe inside the sealed pocket",
+		t.spawn_is_safe(pts[0], RADIUS, 0), true)
+	_check("but the suite's OWN flood fill finds it cut off from the rest of the map",
+		_fully_connected(t, pts[0]), false)
+	_check("and the public validator refuses the whole layout",
+		t.validate_spawners(RADIUS).is_empty(), false)
+	finished["an_isolated_pocket_of_every_spawn_point_fails_validation"] = true

@@ -41,9 +41,12 @@ func relay() -> void:
 			c.announce_resync(es.resync_tick)
 		if es.end_check_tick >= 0 and cs.end_check_tick != es.end_check_tick:
 			c.receive_end_check(es.end_check_tick)
-		if cs.end_outcome != NetworkSession.Outcome.NONE \
-				and not _forwarded_candidates.has([k, cs.end_outcome, c.tick]):
-			_forwarded_candidates[[k, cs.end_outcome, c.tick]] = true
+		# _terminal sends on the transition, not once per tick. Fabricating a
+		# candidate at the check tick would be mistaken for a zero-hash report
+		# before the client's real report can arrive.
+		var previous: int = _forwarded_candidates.get(k, NetworkSession.Outcome.NONE)
+		_forwarded_candidates[k] = cs.end_outcome
+		if cs.end_outcome != NetworkSession.Outcome.NONE and cs.end_outcome != previous:
 			host.receive_end_candidate(c.local_slot, c.tick, cs.end_outcome, 0)
 		if cs.end_reported and not _forwarded_reports.has([k, cs.end_report[0]]):
 			_forwarded_reports[[k, cs.end_report[0]]] = true

@@ -48,6 +48,9 @@ func _bare_run() -> Node2D:
 	root.add_child(run)
 	await process_frame
 	run.input_override = Vector2.ZERO
+	# Isolate distance expiry from generated walls; collision has its own suite.
+	# A different valid starting point must not shorten this test projectile.
+	run.terrain.solid.fill(0)
 	run.director.elapsed = 999.0
 	run.director.boss_spawned = true
 	while run.enemies.count > 0:
