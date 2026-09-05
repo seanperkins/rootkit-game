@@ -12,13 +12,15 @@ var failures := 0
 var finished := {}
 
 const CASES := ["standing_objects_draw_over_everything_that_moves",
-	"every_live_player_is_drawn_and_the_camera_follows_the_view"]
+	"every_live_player_is_drawn_and_the_camera_follows_the_view",
+	"circuit_canvases_are_bounded_culled_and_presentation_only"]
 
 func _initialize() -> void:
 	SaveGame.use_test_paths()
 	print("ROOTKIT — draw order\n")
 	await standing_objects_draw_over_everything_that_moves()
 	await every_live_player_is_drawn_and_the_camera_follows_the_view()
+	await circuit_canvases_are_bounded_culled_and_presentation_only()
 	print("")
 	for c in CASES:
 		if not finished.has(c):
@@ -115,3 +117,25 @@ func every_live_player_is_drawn_and_the_camera_follows_the_view() -> void:
 	h.teardown()
 	await process_frame
 	finished["every_live_player_is_drawn_and_the_camera_follows_the_view"] = true
+
+func circuit_canvases_are_bounded_culled_and_presentation_only() -> void:
+	var r := await _fresh_run()
+	var backdrop := _named(r, "Backdrop")
+	var before: int = r._state_hash()
+	for i in 20:
+		backdrop._process(float(i) * 0.01)
+	_check("scenery never advances hashed state", r._state_hash(), before)
+	_check("one cached circuit canvas per arena", backdrop.get_child_count(), r.terrain.arenas.size())
+	var first := backdrop.get_child(0)
+	_check("circuit canvas inherits backdrop depth", first.z_as_relative, true)
+	_check("circuits stay below opaque missing-ground masks",
+		backdrop.z_index + first.z_index < r.z_index, true)
+	for index in r.terrain.arenas.size():
+		r.player_pos[r.view_slot] = r.terrain.arenas[index].get_center()
+		backdrop._process(0.016)
+		for other in r.terrain.arenas.size():
+			_check("arena %d from arena %d culled correctly" % [other, index],
+				backdrop.get_child(other).visible, other == index)
+	_check("camera travel reuses cached geometry", backdrop.get_child(0), first)
+	r.free()
+	finished["circuit_canvases_are_bounded_culled_and_presentation_only"] = true
