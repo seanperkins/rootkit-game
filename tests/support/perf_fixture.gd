@@ -81,6 +81,8 @@ func equip_party(g: Node2D) -> void:
 	var tbl := ModuleTable.by_id()
 	for s in SessionRules.MAX_PLAYERS:
 		var lo: Loadout = g.loadouts[s]
+		# Measure the equipped late-run party, not the now-bare starter.
+		lo.exploits[0].place(tbl[&"interval"])
 		lo.exploits[0].vector.rank = 5
 		var ex2 := Exploit.new()
 		ex2.place(tbl[&"broadcast"])

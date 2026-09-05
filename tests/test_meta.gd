@@ -66,12 +66,13 @@ func buffs_split_into_sheet_and_mults() -> void:
 	_check("memory     -> integrity +80",     sheet.get(&"integrity", 0.0), 80.0)
 	_check("firewall   -> armor +6",          sheet.get(&"armor", 0.0), 6.0)
 	_check("encryption -> defense +60",       sheet.get(&"defense", 0.0), 60.0)
-	_check("bus_speed  -> clock_speed +60",   sheet.get(&"clock_speed", 0.0), 60.0)
+	_check("bus_speed + cooling -> clock_speed +120",
+		sheet.get(&"clock_speed", 0.0), 120.0)
 	_check("bandwidth  -> pickup_radius +60", sheet.get(&"pickup_radius", 0.0), 60.0)
 
 	var mult := SaveGame.multipliers()
 	_check("cpu_cycles -> attack +0.40", mult.get(&"attack", 0.0), 0.40)
-	_check("cooling    -> haste -0.30",  mult.get(&"haste", 0.0), -0.30)
+	_check("cooling is no longer a multiplier at all", mult.has(&"haste"), false)
 	_check("addressing -> reach +0.30",  mult.get(&"reach", 0.0), 0.30)
 
 	# The two namespaces never leak into each other. A player stat reaching the

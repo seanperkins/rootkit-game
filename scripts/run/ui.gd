@@ -20,6 +20,12 @@ var _cards: Array = []
 ## makes Enter always do something — the highlight can never come to rest on a
 ## `no room` row, where the key would look broken.
 var _nav: Array = []
+## The before/after comparison for each enabled row, aligned with `_nav` so the
+## highlight indexes both with the same pair of numbers, plus the label in each
+## card that shows it. Computed once when the offer is built — a compile per
+## draw frame would be the same arithmetic sixty times a second.
+var _previews: Array = []
+var _preview_labels: Array = []
 var _decline: Button
 ## Which card, which of its enabled rows, or the decline button underneath them.
 var _col := 0
@@ -630,12 +636,17 @@ func _show_cards() -> void:
 		c.queue_free()
 	_cards.clear()
 	_nav.clear()
+	_previews.clear()
+	_preview_labels.clear()
 	for entry in _cards_data:
 		var buttons: Array = []
-		var card := _make_card(entry, buttons)
+		var previews: Array = []
+		var card := _make_card(entry, buttons, previews)
 		row.add_child(card)
 		_cards.append(card)
 		_nav.append(buttons)
+		_previews.append(previews)
+		_preview_labels.append(card.get_meta("preview", null))
 	# Hovering moves the highlight, so the mouse and the keyboard never disagree
 	# about what Enter would press.
 	for ci in _nav.size():
@@ -675,6 +686,8 @@ func _on_waiting(unresolved: int) -> void:
 		c.queue_free()
 	_cards.clear()
 	_nav.clear()
+	_previews.clear()
+	_preview_labels.clear()
 	if unresolved <= 0:
 		return
 	_overlay.get_node("Title").text = "  waiting for %d…" % unresolved
@@ -692,6 +705,8 @@ func _on_fusion(matches: Array) -> void:
 		c.queue_free()
 	_cards.clear()
 	_nav.clear()
+	_previews.clear()
+	_preview_labels.clear()
 	for i in matches.size():
 		var ei: int = matches[i][0]
 		var rec = matches[i][1]
@@ -809,8 +824,9 @@ func _column_marks(slot: int) -> Control:
 
 ## One button per exploit row, and every one of them is terminal: pressing it
 ## places the module. `target` is null when this row is no legal home for it,
-## which after the column is fixed can only be a max-rank duplicate or the last
-## interval trigger — both worth naming rather than greying out silently.
+## which after the column is fixed can only be a max-rank duplicate, an id
+## already held elsewhere, or a trigger that would leave the board with nothing
+## firing on its own — all three worth naming rather than greying out silently.
 func _row_button(m: Module, e: int, target) -> Button:
 	var b := Button.new()
 	b.custom_minimum_size = Vector2(0, 34)
@@ -826,12 +842,16 @@ func _row_button(m: Module, e: int, target) -> Button:
 	var detail := ""
 	var tint := OFF
 	if target == null:
-		if occupant == null:
-			detail = "no room"
-		elif not occupant.can_rank_up():
+		if occupant != null and occupant.module.id == m.id:
 			detail = "%s at max rank" % occupant.module.display_name
+		elif lo.strands_auto_fire(m, e):
+			# Not "the last interval": the source being protected is often a
+			# BARE row, which holds no trigger module to name.
+			detail = "keep one auto-firing weapon"
+		elif lo.holds(m.id) >= 0:
+			detail = "held in exploit_%02d" % (lo.holds(m.id) + 1)
 		else:
-			detail = "%s is the last interval" % occupant.module.display_name
+			detail = "no room"
 	else:
 		match target.action:
 			Loadout.Rule.RANK_UP:
@@ -880,10 +900,12 @@ func _spacer() -> Control:
 	return c
 
 ## `out_buttons` collects this card's pressable rows, in the order they are laid
-## out. Gathered while building rather than by walking children afterwards: the
-## builder already knows which rows are legal, and a walker would have to
-## re-derive it from the node tree.
-func _make_card(entry: Array, out_buttons: Array) -> Control:
+## out, and `out_previews` the resolved comparison for each of them — the two
+## stay index-aligned because the keyboard indexes rows through `_nav` and reads
+## the comparison with the same number. Gathered while building rather than by
+## walking children afterwards: the builder already knows which rows are legal,
+## and a walker would have to re-derive it from the node tree.
+func _make_card(entry: Array, out_buttons: Array, out_previews: Array = []) -> Control:
 	var m = entry[0]
 	var targets: Array = entry[1]
 	var card := PanelContainer.new()
@@ -891,8 +913,12 @@ func _make_card(entry: Array, out_buttons: Array) -> Control:
 	# HBoxContainer already stretches all three cards to the tallest one, so
 	# without the spacer a card with a short stats line floats its buttons up
 	# and the rows of buttons no longer line up across the screen. The height
-	# carries one 34 px button plus 7 px separation per exploit row.
-	card.custom_minimum_size = Vector2(268, 121.0 + 41.0 * Loadout.MAX_EXPLOITS)
+	# carries one 34 px button plus 7 px separation per exploit row, plus the
+	# fixed comparison block — reserved rather than fitted, so navigating from
+	# a one-line diff to a five-line one does not move the buttons under the
+	# cursor.
+	card.custom_minimum_size = Vector2(268,
+		121.0 + 41.0 * Loadout.MAX_EXPLOITS + PREVIEW_LINE_H * PREVIEW_MAX_LINES)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 7)
 	card.add_child(box)
@@ -921,10 +947,16 @@ func _make_card(entry: Array, out_buttons: Array) -> Control:
 	var name_label := _mono(16)
 	name_label.text = m.display_name
 	box.add_child(name_label)
-	var stats := _mono(11)
-	stats.add_theme_color_override("font_color", DIM)
-	stats.text = _stats_line(m)
-	box.add_child(stats)
+	# Show the resolved comparison instead of raw contributions. A bounded
+	# scrollable region keeps every replacement loss available without moving
+	# the row buttons as the selection changes.
+	var preview := RichTextLabel.new()
+	preview.add_theme_font_size_override("normal_font_size", 11)
+	preview.add_theme_color_override("default_color", FG)
+	preview.custom_minimum_size = Vector2(244, PREVIEW_LINE_H * PREVIEW_MAX_LINES)
+	preview.scroll_active = true
+	box.add_child(preview)
+	card.set_meta("preview", preview)
 	box.add_child(_spacer())
 
 	# At most one target per row now, so a row and a button are the same thing.
@@ -932,24 +964,122 @@ func _make_card(entry: Array, out_buttons: Array) -> Control:
 	for t in targets:
 		by_row[t.exploit] = t
 	for e in Loadout.MAX_EXPLOITS:
-		var rb := _row_button(m, e, by_row.get(e))
+		var t = by_row.get(e)
+		var rb := _row_button(m, e, t)
 		box.add_child(rb)
 		if not rb.disabled:
 			out_buttons.append(rb)
+			out_previews.append(_preview_text(m, t))
 	return card
 
-func _stats_line(m: Module) -> String:
-	var parts := []
-	for k in m.stats:
-		if k == &"cadence_mult":
-			# A multiplier, not an addend. Under "%+.2f" on_kill's card reads
-			# "cadence_mult +1.52" — a 52% SLOWDOWN rendered as the
-			# largest-looking bonus on the card, sitting next to "damage +3.00".
-			# The multiplication sign carries the direction that +/- cannot.
-			parts.append("cadence x%.2f" % m.stats[k])
+## The trigger conditions as a player reads them, in enum order.
+const TRIGGER_WORDS := ["interval", "on kill", "on hit", "on damage taken",
+	"on low integrity", "on flip", "on level up"]
+
+## The resolved fields worth naming, with the precision each is read in. NOT
+## every STAT_KEY: a diff across all of them buries the two numbers that
+## changed under twenty that did not.
+const PREVIEW_FIELDS := [
+	[&"damage", "damage", "%.1f"],
+	[&"corruption", "corruption", "%.1f"],
+	[&"radius", "radius", "%.0f"],
+	[&"knockback", "knockback", "%.0f"],
+	[&"travel", "travel", "%.0f"],
+	[&"projectile_speed", "speed", "%.0f"],
+	[&"pierce", "pierce", "%.0f"],
+	[&"chain_count", "chain", "%.0f"],
+	[&"split_count", "split", "%.0f"],
+	[&"orbit_count", "orbit", "%.0f"],
+	[&"burst", "burst", "%.0f"],
+	[&"blast_radius", "blast", "%.0f"],
+	[&"lifesteal", "lifesteal", "%.2f"],
+	[&"execute_below", "execute", "%.2f"],
+	[&"slow_amount", "slow", "%.2f"],
+	[&"slow_duration", "slow time", "%.1fs"],
+	[&"homing", "homing", "%.1f"],
+	[&"shield", "shield", "%.0f"],
+	[&"shield_rearm", "shield rearm", "%.2fs"],
+	[&"ward_armor", "ward armor", "%.1f"],
+	[&"ward_defense", "ward defense", "%.0f"],
+	[&"ward_clock_speed", "ward speed", "%.0f"],
+	[&"ward_duration", "ward time", "%.1fs"],
+	[&"botnet_cap", "botnet", "%.0f"],
+	[&"botnet_lifetime", "botnet time", "%.1fs"],
+	[&"botnet_damage_ratio", "botnet dmg", "%.2f"],
+]
+## Nine visible lines; longer comparisons scroll rather than hiding losses.
+const PREVIEW_MAX_LINES := 9
+const PREVIEW_LINE_H := 17
+
+## A detached copy of one row, ranks included. The preview must never touch the
+## live loadout: it runs while the choice is still only highlighted, and the
+## pick itself is a STAGED input record that the tick applies later.
+func _clone_row(ex: Exploit) -> Exploit:
+	var out := Exploit.new()
+	for sl in Exploit.SLOT_COUNT:
+		var em := ex.at(sl)
+		if em != null:
+			out.set_at(sl, EquippedModule.new(em.module, em.rank))
+	return out
+
+## What this row would actually become, compiled twice through the real build
+## layer rather than described from the module's raw stats.
+##
+## The card used to print the module's own contributions — "cadence x0.70",
+## "damage +3.00" — which is not what the player gets: a rank scales it, the
+## row's other modules fold with it, the player's own multipliers scale the
+## total, and two floors clamp the result. Compiling a clone means the number
+## on the card is the number the run will hold, and there is no second copy of
+## the arithmetic to drift from Compiler.build.
+func _preview_text(m: Module, target) -> String:
+	if target == null:
+		return ""
+	var lo: Loadout = run.loadouts[run.local_slot]
+	var live: Exploit = lo.exploits[target.exploit] \
+		if target.exploit < lo.exploits.size() else Exploit.new()
+	var after_ex := _clone_row(live)
+	if target.action == Loadout.Rule.RANK_UP:
+		var em := after_ex.holds(m.id)
+		if em != null:
+			em.rank += 1
+	else:
+		# EMPTY_SLOT, a founding row and REPLACE are the same write: the column
+		# is fixed by the module's slot, and Loadout._displace clears exactly
+		# the occupant of that column before placing.
+		after_ex.set_at(target.slot, EquippedModule.new(m))
+	var comparison := Loadout.new()
+	comparison.mult = lo.mult
+	comparison.exploits = [live, after_ex]
+	var compiled := comparison.compile_all()
+	var before: ResolvedExploit = compiled[0]
+	var after: ResolvedExploit = compiled[1]
+	var lines := []
+	if after.inert:
+		lines.append("no vector: this row will not fire")
+	else:
+		# An event trigger's cooldown is a CEILING on how often the condition
+		# may fire it, never a promise of a shot every N seconds.
+		var word := "every" if after.trigger_kind == Module.TriggerKind.INTERVAL \
+			else "at most every"
+		if before.inert:
+			lines.append("starts firing %s %.2fs" % [word, after.cooldown])
 		else:
-			parts.append("%s %+.2f" % [k, m.stats[k]])
-	return "\n".join(parts)
+			if after.trigger_kind != before.trigger_kind:
+				lines.append("fires %s -> %s" % [
+					TRIGGER_WORDS[before.trigger_kind],
+					TRIGGER_WORDS[after.trigger_kind]])
+			if absf(after.cooldown - before.cooldown) > 1e-6:
+				lines.append("%s %.2fs -> %.2fs" % [
+					word, before.cooldown, after.cooldown])
+			else:
+				lines.append("%s %.2fs, unchanged" % [word, after.cooldown])
+	for f in PREVIEW_FIELDS:
+		var b := float(before.get(f[0]))
+		var a := float(after.get(f[0]))
+		if absf(a - b) <= 1e-6:
+			continue
+		lines.append("%s %s -> %s" % [f[1], f[2] % b, f[2] % a])
+	return "\n".join(lines)
 
 ## A run summary rather than a verdict line. This is where a run becomes
 ## something the player can compare against the next one; _on_end already
@@ -1065,6 +1195,19 @@ func _apply_highlight() -> void:
 		var lit: bool = ci == _col and not _on_decline
 		(_cards[ci] as PanelContainer).add_theme_stylebox_override(
 			"panel", _panel(FG if lit else DIM, 2 if lit else 1))
+		# The comparison belongs to the row the highlight is ON, so it is
+		# written here rather than baked into the button: it follows the
+		# selection whether the mouse or the keyboard moved it, and an unlit
+		# card shows none — three sets of numbers at once is not a comparison.
+		if ci < _preview_labels.size() and _preview_labels[ci] != null:
+			var text := ""
+			if lit and ci < _previews.size():
+				var rows: Array = _previews[ci]
+				if _row >= 0 and _row < rows.size():
+					text = rows[_row]
+			var preview := _preview_labels[ci] as RichTextLabel
+			preview.text = text
+			preview.scroll_to_line(0)
 	var sel := highlighted()
 	for ci in _nav.size():
 		for b in _nav[ci]:
@@ -1101,6 +1244,13 @@ func _input(e: InputEvent) -> void:
 			and run._session.role != NetworkSession.Role.SOLO:
 		_toggle_netinfo()
 	elif _overlay.visible:
+		if e.is_action_pressed("ui_page_up") or e.is_action_pressed("ui_page_down"):
+			if _col < _preview_labels.size() and _preview_labels[_col] != null:
+				var preview := _preview_labels[_col] as RichTextLabel
+				var bar := preview.get_v_scroll_bar()
+				bar.value += bar.page * (-1.0 if e.is_action_pressed("ui_page_up") else 1.0)
+			get_viewport().set_input_as_handled()
+			return
 		var nav := ""
 		for a in NAV_ACTIONS:
 			if e.is_action_released(a):

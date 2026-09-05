@@ -11,7 +11,7 @@ hacking. No image assets, no font files, no `Area2D` anywhere.
 godot                          # play, from the project root
 tools/run_tests.sh             # 61 suites + the perf gate
 tools/run_tests.sh --fast      # skip the perf gate
-godot --headless -s res://tests/test_build.gd     # one suite
+tools/run_tests.sh test_build test_slots perf_milestone0  # selected suites + perf
 godot -s res://tools/shot_cards.gd                # one screenshot -> /tmp/*.png (needs a window; see below)
 python3 tools/build_manual.py  # regenerate site/ (gitignored)
 ```
@@ -32,6 +32,11 @@ GDScript runtime error aborts only the function it happens in: the engine prints
 exits 0 saying `PASS`. That has hidden two real breakages here. The runner reads
 stderr and fails a suite on any `SCRIPT ERROR` or `Parse Error` whatever the
 suite claims about itself.
+
+**During feature work, run affected suites plus the perf gate, not the full
+suite after each change.** Pass suite names to the runner. Defer the full
+suite until the remaining planned features are integrated (user decision,
+2026-09-04). Keep the runner's script-error detection for focused runs too.
 
 **Live network diagnostics.** In a co-op session, `F1` toggles the HUD net
 panel: per-slot RTT (measured by PING/PONG on channel 0, i.e. the path game
@@ -134,8 +139,10 @@ the site; this is the index.
   silently delivered as an exploit stat.
 - **`Loadout.compile_all` is the only runtime caller of `Compiler.build`.** A
   multiplier that does not go through `Loadout.mult` reaches no exploit at all.
-- **The last INTERVAL trigger cannot be displaced** — an all-event loadout could
-  never fire.
+- **The last automatically firing weapon cannot be stranded** — count bare
+  vectors, equipped INTERVAL triggers and fused INTERVAL heads. An all-event
+  loadout cannot bootstrap its own hit/kill events. Enforce the census for
+  empty-slot placement and fusion too, not just trigger replacement.
 - **Per-enemy arrays need BOTH halves of the slot invariant.** *Reset on spawn*:
   `Population.spawn` recycles slots, so a stale phase means an enemy commits to a
   dash it never wound up for — use `_clear_ai` / `_spawn_enemy_state`. *Relocate

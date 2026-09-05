@@ -1611,7 +1611,7 @@ func _derive_roster() -> void:
 		var counters: Dictionary = row["counters"]
 		slot_state[s] = SlotState.LIVE
 		var lo := Loadout.new()
-		lo.start(table[&"packet"], table[&"interval"])
+		lo.start(table[&"packet"])
 		lo.mult = PlayerStats.mults(SaveGame.multipliers_from(counters))
 		loadouts[s] = lo
 		_sheet[s] = PlayerStats.sheet(SaveGame.player_sheet_from(counters))

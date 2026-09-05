@@ -256,11 +256,27 @@ var _cap_ticks := 0.0
 ## change is free to reach TIMEOUT by a different tick, or WIN outright,
 ## without re-pinning on tick alone — the enemy/hit/kill floors are what
 ## actually gate a lighter run.
+##
+## Re-pinned 2026-09-04 for the weapons/trigger rework. Both fixture starters
+## explicitly equip interval, preserving their authored stress load rather
+## than accidentally measuring the new bare starter. Earned cards still use
+## the real revised table: payloads no longer accelerate firing, bare rows
+## use 1.5 rather than 1.3, and bounce trades damage/radius for its knockback.
+## The replacement payloads instead supply their own fast-rearming shields.
+##
+## Measured with that fixture: DIED 23727 (395s), enemies 208.2, hits/tick
+## 1.40, kills/tick 0.266. Survival increased from 22484; the enemy/hit floors
+## decrease 13%/31%. This is an intentional new gameplay baseline, not a
+## speedup claim: removing non-trigger cadence reduces firing work, and the
+## changed build/trajectory also changes the span being averaged. Those
+## causes were not isolated individually. Keep the same tolerance bands and
+## timing budget; do not restore old firing bonuses to satisfy a load pin.
+## Observed timing: normalised p95 9.615 ms, below the 11 ms reference budget.
 const BASELINE_OUTCOME := "died"      # "won", "died" or "timeout"
-const BASELINE_END_TICK := 22484
-const BASELINE_MEAN_ENEMIES := 239.2
-const BASELINE_MEAN_HITS := 2.02
-const BASELINE_KILLS_PER_TICK := 0.271
+const BASELINE_END_TICK := 23727
+const BASELINE_MEAN_ENEMIES := 208.2
+const BASELINE_MEAN_HITS := 1.40
+const BASELINE_KILLS_PER_TICK := 0.266
 
 
 func _initialize() -> void:
@@ -288,6 +304,8 @@ func _initialize() -> void:
 	# a fourth pass through _emit_vector would move the figure whether or not
 	# homing costs anything, and the point is attribution.
 	var t := ModuleTable.by_id()
+	# Keep the stress load equipped independently of the bare starting build.
+	run.loadouts[run.local_slot].exploits[0].place(t[&"interval"])
 	run.loadouts[run.local_slot].exploits[0].vector.rank = 5
 	var ex2 := Exploit.new()
 	ex2.place(t[&"broadcast"])

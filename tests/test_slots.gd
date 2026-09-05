@@ -12,7 +12,7 @@ func _initialize() -> void:
 	compatibility()
 	rank_up_only_where_held()
 	duplicates_refused()
-	last_interval_protected()
+	auto_fire_source_protected()
 	empty_exploits_offered()
 	one_target_per_row()
 	slot_index_round_trips()
@@ -31,7 +31,7 @@ func _check(label: String, got, want) -> void:
 
 func _fresh() -> Loadout:
 	var l := Loadout.new()
-	l.start(T[&"packet"], T[&"interval"])
+	l.start(T[&"packet"])
 	return l
 
 func _slots(ts: Array) -> Array:
@@ -72,6 +72,8 @@ func rank_up_only_where_held() -> void:
 ## the failure this used to guard against does not recur.
 func duplicates_refused() -> void:
 	var l := _fresh()
+	# Placed rather than assumed: a fresh board holds no trigger at all now.
+	l.place_at(T[&"interval"], 0, 1)
 	l.place_at(T[&"chain"], 1, 0)
 	var t := l.legal_targets(T[&"interval"])
 	var elsewhere := false
@@ -82,24 +84,28 @@ func duplicates_refused() -> void:
 	_check("only its own slot, as a rank-up", t.size(), 1)
 	_check("and that is a rank-up", t[0].action, Loadout.Rule.RANK_UP)
 
-## Displacing the only interval trigger would leave an event-triggered loadout
-## unable to fire at all, so that slot is never offered.
-func last_interval_protected() -> void:
+## The board must always keep one weapon that fires without waiting for an
+## event. A fresh board's only such weapon is a BARE row, so the guard has to
+## see an ABSENCE — an empty trigger column — and not merely protect an
+## `interval` module that no longer starts equipped.
+func auto_fire_source_protected() -> void:
 	var l := _fresh()
-	for t in l.legal_targets(T[&"on_kill"]):
-		if t.exploit == 0 and t.slot == 1:
-			_check("last interval trigger is not offered", true, false)
-			return
-	_check("last interval trigger is not offered", true, true)
-	# a second interval elsewhere releases the guard
-	l.place_at(T[&"chain"], 1, 0)
-	l.place_at(T[&"on_hit"], 1, 1)
-	var has_second_interval := false
-	for ex in l.exploits:
-		if ex.trigger != null and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL:
-			has_second_interval = true if ex != l.exploits[0] else has_second_interval
-	_check("guard still holds with only one interval",
+	_check("an event trigger is refused on the last auto-firing row",
 		_slots(l.legal_targets(T[&"on_kill"])).has([0, 1]), false)
+	_check("an INTERVAL trigger is always legal there",
+		_slots(l.legal_targets(T[&"interval"])).has([0, 1]), true)
+	# A second bare row is a second unconditional source, which releases it.
+	l.place_at(T[&"chain"], 1, 0)
+	_check("a second bare row releases the guard",
+		_slots(l.legal_targets(T[&"on_kill"])).has([0, 1]), true)
+	# And once that row is spent on an event trigger, row 0 is the last one again.
+	l.place_at(T[&"on_hit"], 1, 1)
+	_check("with one source left it holds again",
+		_slots(l.legal_targets(T[&"on_kill"])).has([0, 1]), false)
+	# The guard is about the RESULT, not about the victim: an interval trigger
+	# replacing an event one can never strand anybody.
+	_check("interval into the event row stays legal",
+		_slots(l.legal_targets(T[&"interval"])).has([1, 1]), true)
 
 ## Not-yet-founded exploits are shown, so the board is the whole build. Any slot
 ## type may found one — an exploit missing its vector is inert until the vector

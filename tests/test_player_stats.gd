@@ -69,7 +69,11 @@ func sheet_merge() -> void:
 	_check("sheet keeps untouched base", s[&"clock_speed"], 220.0)
 	_check("sheet ignores unknown keys",
 		PlayerStats.sheet({&"nonsense": 5.0}).has(&"nonsense"), false)
-	var m := PlayerStats.mults({&"attack": 0.4, &"haste": -0.3})
+	var m := PlayerStats.mults({&"attack": 0.4, &"reach": 0.3})
 	_check("mults add attack", m[&"attack"], 1.4)
-	_check("mults add haste", m[&"haste"], 0.7)
-	_check("mults keep untouched base", m[&"reach"], 1.0)
+	_check("mults add reach", m[&"reach"], 1.3)
+	# haste was retired with the weapons pass: cadence is the trigger's, so the
+	# key has no landing site and an old save asking for it is dropped, exactly
+	# as an unknown sheet key is.
+	_check("mults drop the retired haste key",
+		PlayerStats.mults({&"haste": -0.3}).has(&"haste"), false)

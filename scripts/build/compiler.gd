@@ -52,9 +52,14 @@ const MAX_FOLD_KEYS := [
 
 const MULT_KEYS := {
 	&"attack": [&"damage", &"corruption"],
-	&"haste":  [&"cooldown"],
 	&"reach":  [&"radius", &"travel"],
 }
+## `haste` is absent by decision, not by oversight: firing frequency belongs to
+## the TRIGGER column, and a global that scaled every vector's cooldown was the
+## one shop line that could outrank the whole of it — "upgrading a weapon" read
+## as "it fires faster" no matter what the trigger said. The `cooling` line now
+## buys sheet clock_speed through SaveGame.SHEET_EFFECT, which by construction
+## never reaches this compiler.
 ## blast_radius is deliberately absent from `reach`. It takes radius's RANK
 ## carve-out because both are footprint growth on a vector, but the meta reach
 ## line is a TARGETING range upgrade — letting it inflate a detonation as well
@@ -70,11 +75,14 @@ const MULT_KEYS := {
 
 ## A row with a vector and no trigger fires on a BUILT-IN interval at this
 ## cadence penalty: the weapon works the moment it is placed, and a trigger
-## card is an upgrade rather than a prerequisite. Above 1.0 so that placing
-## `interval` (1.00) is still a real improvement. Playtest: three rows each
-## needing one of three distinct starting triggers before firing at all made
-## every new vector dead weight until the right card showed up.
-const BARE_CADENCE := 1.30
+## card is an upgrade rather than a prerequisite. 1.5 — half again the period,
+## two-thirds the rate — is the entire cost of holding no trigger, and it is
+## what a fresh board pays now that Loadout.start equips no trigger at all.
+## Above 1.0 so that placing `interval` (1.00) is still a real improvement.
+## Playtest: three rows each needing one of three distinct starting triggers
+## before firing at all made every new vector dead weight until the right card
+## showed up.
+const BARE_CADENCE := 1.50
 
 static func build(ex: Exploit, mult: Dictionary = {}) -> ResolvedExploit:
 	var r := ResolvedExploit.new()
@@ -265,8 +273,9 @@ static func validate(m: Module) -> Array[String]:
 	# configuration also has no expressive power: applied once and unranked it is
 	# identical to editing the vector's base, EXCEPT in the floor term, which
 	# reads the raw base — so its only distinct behaviour IS the broken ratio.
-	if m.slot == Module.Slot.VECTOR and m.stats.has(&"cadence_mult"):
-		errs.append("module '%s': a VECTOR may not carry cadence_mult" % m.id)
+	# Payloads no longer own a cadence axis either.
+	if m.slot != Module.Slot.TRIGGER and m.stats.has(&"cadence_mult"):
+		errs.append("module '%s': only a TRIGGER may carry cadence_mult" % m.id)
 	# The same argument that keeps cooldown off payloads: a payload granting an
 	# execute threshold to every vector it is slotted into is a balance surface
 	# nothing else in the table has.

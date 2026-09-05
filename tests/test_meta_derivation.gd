@@ -121,7 +121,7 @@ func _unlock_ids(mods: Array) -> Array:
 func _compile_start(counters: Dictionary) -> Array:
 	var table := ModuleTable.by_id()
 	var lo := Loadout.new()
-	lo.start(table[&"packet"], table[&"interval"])
+	lo.start(table[&"packet"])
 	lo.mult = PlayerStats.mults(SaveGame.multipliers_from(counters))
 	return lo.compile_all()
 

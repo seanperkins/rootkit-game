@@ -81,9 +81,25 @@ times the vector emits for one event: `on_damage_taken` 3, `on_low_integrity` 5,
 `on_level_up` 8. `on_flip` pays in corruption rather than damage, so it feeds
 the build that feeds it.
 
-`interval` keeps the one thing none of them can have: it never idles. It fires
-on an empty field, during the collapse walk, and at the start of a run when
-there is nothing yet to trigger on.
+A weapon with no trigger at all is **bare**: it fires on a built-in interval at
+1.5× its own cooldown, so a vector works the moment it is placed and a trigger
+card is an upgrade rather than the switch that turns it on. That is what a run
+starts with — one `packet`, no trigger. `interval` is the card that lifts the
+penalty, and it keeps the one thing no event trigger can have: it never idles,
+firing on an empty field, during the collapse walk, and before there is
+anything to trigger on.
+
+Nothing outside this column changes how fast a weapon fires. Ranking a vector
+buys damage and reach, never cadence; no shop line touches cooldown.
+
+`cooling` now buys movement speed. `overclock` and `race_condition` supply
+their own small shields with 1.6 s and 2.0 s rearms respectively; the next
+weapon emission after rearming can refill the pool. Ranks buy shield capacity,
+not faster firing or autonomous regeneration.
+
+Upgrade cards show the selected row's resolved before/after values, including
+replacement losses. Long comparisons scroll with the mouse wheel or Page Up /
+Page Down; changing rows resets the comparison to its beginning.
 
 ## The build
 
@@ -214,7 +230,7 @@ godot --headless -s res://tests/test_fusion_run.gd   # a fusion taken through th
 godot --headless -s res://tests/test_player_stats.gd # mitigation formula, hostile inputs
 godot --headless -s res://tests/test_player_sheet.gd # the sheet reaches a live run
 godot --headless -s res://tests/test_wards.gd        # ward timers, max-not-sum
-godot --headless -s res://tests/test_multipliers.gd  # attack/haste/reach reach combat
+godot --headless -s res://tests/test_multipliers.gd  # attack/reach reach combat, cadence stays the trigger's
 godot --headless -s res://tests/test_travel.gd       # packet range and projectile life
 godot --headless -s res://tests/test_meta_layout.gd  # the shop fits the viewport
 godot --headless -s res://tests/perf_milestone0.gd   # the architecture gate

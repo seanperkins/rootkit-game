@@ -1,220 +1,159 @@
-> Generated: 2026-09-02 | Token-lean format for LLM context
+> Generated: 2026-09-04 | Token-lean format for LLM context
 
 # UI, rendering and tooling
 
-No font files and no image assets: text is Godot's default mono, entities are
-procedural shader glyphs, and everything else is `_draw` calls.
+No image assets or font files. Controls use shared terminal chrome; world
+geometry is procedural. Presentation reads simulation state, never owns it.
 
-## `scripts/run/ui.gd` (952) — `CanvasLayer`, the run HUD and its screens
+## `scripts/run/ui.gd` — `CanvasLayer`, HUD and run screens
 
-```gdscript
-FG   = Color(0.55, 1.00, 0.72)   # green
-DIM  = Color(0.35, 0.62, 0.48)
-WARN = Color(1.00, 0.45, 0.42)
-```
-
-`bind(run)` wires the run signals: `level_up_offered → _on_cards`,
+`bind(run)` builds the UI and connects `level_up_offered → _on_cards`,
 `fusion_offered → _on_fusion`, `offer_waiting → _on_waiting`,
-`run_ended → _on_end`, `stats_changed → _refresh`. The HUD renders the LOCAL
-slot; everyone else is a strip.
+`run_ended → _on_end`, `stats_changed → _refresh`, plus the updater signal.
 
 | State | Meaning |
 |---|---|
-| `_hud`, `_overlay`, `_end`, `_pause_panel`, `_settings`, `_recipes`, `_vignette` | the screens and overlays |
-| `_cards: Array` | the card `PanelContainer`s, so the **selected card** can be lit — the card is the module; a row is only where it goes |
-| `_nav: Array` | per card, **enabled rows only** — indexing enabled-only rows is what makes Enter always do something |
-| `_col`, `_row`, `_on_decline` | keyboard cursor |
+| `_hud`, `_overlay`, `_end`, `_pause_panel`, `_settings`, `_recipes`, `_vignette` | HUD and modal layers |
+| `_cards` | Module card panels; selection lights the card and its chosen row |
+| `_nav` | Enabled buttons only, grouped by card |
+| `_previews`, `_preview_labels` | Cached resolved comparisons aligned with `_nav`; one rich-text widget per module card |
+| `_col`, `_row`, `_on_decline` | Selection within the grid or the shared decline button |
+| `_nav_held`, `_nav_repeat_left` | Stick edge detection and held-navigation repeat |
+| `_net_panel`, `_net_text`, `_net_shown` | Network diagnostics, separate from the FPS display |
+| `pending_update` | Seeded from Updater availability, then set by `update_ready` |
 
-Build/refresh: `_build`, `_refresh`, `_build_lines`, `_mono(size)`,
-`_panel(color, width)`, `_bar(fraction, width)`, `_spacer`, `_stats_line(m)`.
+### HUD blocks
 
-### The HUD is four blocks, not one line
+Named children are looked up directly by `_refresh`; names are runtime contracts.
+The health/build readouts use `run.local_slot`, not the spectated slot.
 
-`Status` (left), `Centre`, `Tally` (right), `Build` (bottom-left) — all indexed
-by `get_node(name)` with **no `.get`**, so a rename is a crash inside `_refresh`
-that the runner only surfaces as a bare `SCRIPT ERROR`. `test_hud` is the only
-guard on those names; before it, nothing tested the HUD at all.
-
-| Block | Carries |
+| Child | Contents |
 |---|---|
-| `Status` | integrity + bar, armor, def, level + XP bar. Warn colour is PROPORTIONAL (<30%), not a fixed threshold |
-| `Centre` | subnet, timer, and the phase banner on its own line |
-| `Tally` | salvage, botnet, kills, flips; then the notices — `waiting for input: …` after `STALL_NOTICE` ticks, `resynchronising…`, `reconnecting… (attempt n of 10)` — and `_teammate_strip`: one line per other roster slot (name + integrity bar, `down`, `away`), `spectating X — confirm cycles` once the local slot is not LIVE, `at the leash: …` |
-| `Build` | one line per exploit, shared with the run summary via `_build_lines` |
+| `Status` | Effective integrity/armor/defense; level and XP bars; warning below 30% effective integrity |
+| `Centre` | Subnet/timer, arriving mini-boss suppression, collapse countdown |
+| `Fps` | `Engine.get_frames_per_second()`; warning below 55; rendered FPS, not simulation tick rate |
+| `Tally` | Salvage, botnet, local kills/flips, missing-input/recovery/reconnect notices, teammate strip |
+| `Build` | `_build_lines()`: module ranks, `(bare)` on unfused triggerless vectors, inert or resolved damage/cooldown/corruption |
+| `Version` | `BuildInfo.display_version()` and update availability |
 
-The mini-boss banner is gated on `not run.is_arriving(i)` — the entity exists
-for the whole 0.9 s charge, and naming it then spoils the entrance.
+Network panel: per-slot receive rates and stall attribution, packet/record
+statistics and measured consumed-tick rate. Sampling uses presentation time;
+none of its counters drives combat. `netinfo` toggles it in network sessions.
 
-`_on_end` is a run summary: outcome, subnet, time, level, kills, flips, salvage
-and the final build, tolerating a run that ended holding fewer than three
-exploits.
+`_on_end` shows outcome, subnet, elapsed time, progression, rewards and final
+build. The build summary walks the actual exploit list, not a fixed row count.
 
-### The level-up card
-One card per offered module; **one button per exploit row**, all terminal —
-pressing it places the module. The column is fixed by the module's slot type, so
-column + row is the entire placement, which collapses the old
-module-then-slot pair of clicks into one.
+### Level-up cards and resolved previews
 
-```gdscript
-COLUMN_NAMES = ["VECTOR", "TRIGGER", "PAYLOAD"]
-RANK    = Color(1.00, 0.86, 0.35)   # ^ rank up
-NEW_ROW = Color(0.45, 0.72, 1.00)   # * found a new exploit row
-OFF     = Color(0.18, 0.26, 0.22)
+One card per offered module; its VECTOR/TRIGGER/PAYLOAD column is fixed.
+Each of the `Loadout.MAX_EXPLOITS` rows is a placement button. Marks:
+`^` rank up, `+` empty slot, `x` replacement, `*` new exploit.
+Disabled rows name max rank, an id held elsewhere, the last auto-firing weapon,
+or no room. `_nav` omits disabled rows.
+
 ```
-Marks: `^` rank up, `+` fill an empty slot, `x` replace the occupant,
-`*` found a new row. `_column_marks(slot)`, `_row_button(m, e, target)`,
-`_make_card(entry, out_buttons)`, `_show_cards`, `_reset_selection`.
-A `null` target means the row is no legal home — after the column is fixed that
-can only be a max-rank duplicate or the last interval trigger, both named rather
-than greyed out silently. Any card can be declined for salvage. Every button only STAGES a choice
-(`run.choose_card` etc. set `_local_choice`); it lands when the tick consumes
-the record, and `_on_waiting(n)` keeps the overlay up with "waiting for N…"
-until every teammate's has.
-
-### Input — ACTIONS, not keycodes
-`_input(e)` matches InputMap actions. An `InputEventJoypadButton` has no
-keycode, so while this matched raw keycodes a controller player could walk and
-pause but never operate the level-up overlay. `tools/shot_cards.gd` drives
-`ui._input` too and is **not** in `SUITES` — `test_input` asserts its action
-names exist.
-
-Actions: `move_*`, `confirm`, `cancel`, `pause`, `recipes`, `restart`
-(deadzone 0.2). `recipes` and `restart` share R, disambiguated by screen.
-
-With no overlay up, `confirm` → `run.cycle_spectate()`: a DEAD local slot
-looks through the next LIVE slot.
-
-`_move_row(±1)`, `_move_card(±1)`, `_activate`, `_toggle_recipes`,
-`_route_cancel`, `_toggle_pause`, `_abandon`, `_on_settings_closed`,
-`highlighted()`, `card_row()`, `decline_button()`.
-
-**`cancel` has five arms**, not two: settings → recipe panel → card/fusion
-overlay → end screen → otherwise pause. The recipe panel is a CHILD of
-`_overlay` and `_end` is a SIBLING of it, so a two-arm rule declined the card
-under the panel and paused a finished run. The overlay arm keys off
-`run.paused`, not `_overlay.visible`, which lags it by a frame.
-
-**Player pause is `run.user_paused`, never `run.paused`.** The latter means "a
-modal offer is open" and four sites clear it unconditionally; sharing it would
-let a card decline release a pause it never took and strand a pending fusion.
-`_refresh` runs while `user_paused` or the panel draws over a frozen HUD.
-
-## `scripts/meta/settings_panel.gd` (133) — `Control`, shared prefs UI
-
-An OVERLAY, reached from the shell and the pause panel. Rows: master / sfx /
-music volume, screen shake, damage numbers. Every write goes through
-`SaveGame.set_pref`, which clamps and rejects non-finite — one table, both
-directions. `apply()` pushes volumes at the buses.
-
-It is an overlay, and its shell entry button sits BESIDE `./intrude`, because
-the shop column already ran to ~505 px in a 720 px viewport — which is exactly
-what `test_meta_layout` measures.
-
-## `scripts/meta/meta_screen.gd` (469) — `Control`, the shop and the lobby
-
-The LINK column (`_build_link`, x = 780): handle and address fields
-(`SaveGame` string prefs), Host / Join / Leave, the player list, a status
-line. `_host` binds `Transport.host(DEFAULT_PORT)`; `_join` dials
-`last_address`; `_process` polls the transport and drains `session.inbox`
-into `_handle` (HELLO → `admit` + WELCOME to all; WELCOME/START on a client;
-LEAVE frees a slot before START). `_start` freezes the descriptor and sends
-START; `_launch_session` REPARENTS the transport under the run
-(`configure_session`, `attach_transport`) — the same ENet peers carry the
-lobby and the game. Solo `./intrude` builds the one-slot descriptor.
-
-`UNLOCK_ROWS = 2` still-locked modules listed before the rest is summarised.
-`FG`, `DIM`, `HOT = Color(1.0, 0.72, 0.35)`.
-
-```gdscript
-BUFFS = [                      # [id, label, effect text]
-  cpu_cycles  "+CPU cycles"  "attack x1.04 per rank"
-  cooling     "+cooling"     "attack speed x0.97 per rank"
-  memory      "+memory"      "integrity +8 per rank"
-  firewall    "+firewall"    "armor +0.6 per rank"
-  encryption  "+encryption"  "defense +6 per rank"
-  bus_speed   "+bus speed"   "move speed +6 per rank"
-  addressing  "+addressing"  "range x1.03 per rank"
-  bandwidth   "+bandwidth"   "pickup radius +6 per rank"
-]
+_make_card(entry, out_buttons, out_previews)
+  legal row → _preview_text(module, target)
+    _clone_row(live) → apply hypothetical rank/placement to clone
+    temporary Loadout {mult: live multipliers, exploits: [live, clone]}
+    compile_all() → resolved before/after → formatted changed fields
+  aligned caches → _apply_highlight() → selected card's RichTextLabel
+button → run.choose_card(module, target) → staged INPUT → consumed tick
 ```
-**Every id here must exist in `SaveGame._default()["buffs"]`** — `_refresh`
-indexes `d["buffs"][id]` directly with no `.get`, so a missing name crashes the
-shop on open. Requirement text comes from `SaveGame.milestone_text`, not a second
-copy of the numbers.
-`_ready`, `_refresh`, `_label`, `_spacer(h)`, `_pips(n)`, `_buy(id)`, `_start()`,
-`_input(e)`. Layout is size-gated by `tests/test_meta_layout.gd`.
 
-## `shaders/glyph.gdshader` — procedural silhouettes
+No preview writes the live loadout or duplicates compiler arithmetic.
+Comparisons are compiled while constructing the offer, not every draw frame.
+`TRIGGER_WORDS` follows `Module.TriggerKind`; `PREVIEW_FIELDS` selects readable
+resolved stats, including shield capacity/rearm and replacement losses.
+INTERVAL says `every`; event triggers say `at most every` because a cooldown
+is a frequency ceiling, not a promise that an event will occur.
 
-`shader_type canvas_item`. `INSTANCE_CUSTOM.r` carries the glyph index into a
-`varying flat float glyph`; 14 branches, one per glyph (indices 0–13 map to the
-`glyph` column of `EnemyTable`). `ring(d, radius, width)` is the shared helper.
-Distinct outlines are readability, not decoration: 600 identical squares say
-nothing about what is closing on you.
+`PREVIEW_MAX_LINES = 9`, `PREVIEW_LINE_H = 17`: fixed-height scrolling region,
+not truncated text. Minimum card height is
+`121 + 41 * Loadout.MAX_EXPLOITS + PREVIEW_LINE_H * PREVIEW_MAX_LINES`.
+Mouse wheel or `ui_page_up`/`ui_page_down` scroll; selection resets scroll to zero.
+The shared decline stages +25 salvage; a null-module fallback stages +50.
+`_on_waiting` keeps the offer visible until the round settles.
 
-## `scripts/run/backdrop.gd` (111) — `Node2D`, the arena shell
+### Input and pause
 
-Draws the isometric floor lattice and the arena walls under everything.
-`STEP = Terrain.TILE`, `DEPTH = 30.0`.
-Colors: `LINE`, `EDGE`, `GLOW`, `FACE_NEAR` (y=ymax, lit), `FACE_SIDE` (x=xmax,
-turned away), `RIB`. Functions: `_draw`, `_arena(rect)`, `_slab(o, size, nx, ny)`,
-`_wall(o, size, inset, color, width)`.
+`_input` uses actions, not raw keycodes: `move_*`, `confirm`, `cancel`,
+`pause`, `recipes`, `restart`, `netinfo`, plus built-in preview paging actions.
+`_move_card`, `_move_row`, `_activate`, `highlighted`, `card_row`,
+`decline_button` implement the grid. Mouse hover shares its selection state.
+Analog motion moves on the edge; repeat begins after 0.40 s, then every 0.16 s.
+Without an offer, confirm can call `run.cycle_spectate()`.
 
-## `scripts/run/props.gd` (222) — `Node2D`, walls that stand over the swarm
+`run.user_paused` belongs to the player menu; `run.paused` belongs to modal
+offers. Solo user pause holds the world; a network pause is a local overlay.
+Closing settings copies shake/damage-number preferences to the live run.
 
-Extruded boxes so walls read as solid and can be seen through:
-`WALL_HEIGHT 26.0`, `POST_HEIGHT 78.0`, `FACE_ALPHA 0.6`,
-`BACK_EDGE_SCALE 0.35`. Two palettes — `WALL_TOP/NEAR/SIDE/EDGE` and
-`RAIL_TOP/NEAR/SIDE/EDGE`. `draw_box(rect, height, top, near, side, edge, drop)` is the
-shared primitive; `_draw` walks `terrain.rects`.
+## `scripts/meta/settings_panel.gd` — shared `SettingsPanel`
 
-**Walls fall with the floor.** `PROP_GRAVITY 900.0`, `PROP_FALL_LIFE 2.2`.
-`_floor_gone` checks EVERY cell under the rect, not its centre, so a wall
-spanning the collapse frontier stands until the last of its footing goes — which
-is also what stops a whole row dropping in one frame. Fall timers are keyed by
-rect index and cleared when a new subnet empties `terrain.voided`, or walls drop
-in an arena the player has not reached. The clock is unscaled: a hitstop must
-not hold a collapsing wall in mid-air.
+Overlay used by menu and pause. Rows: master/SFX/music volume (step 0.1),
+shake (0.25), damage numbers (1.0 toggle). `_nudge` calls
+`SaveGame.set_pref`, saves and refreshes. `apply()` sets audio volumes;
+`open`/`close` control visibility, with a `closed` signal.
 
-## Players and the view in `run.gd`
+## `scripts/meta/meta_screen.gd` — hub, upgrades, multiplayer
 
-`player_draw_list()` → `[slot, colour, alpha, name]`: every LIVE slot, the
-local one unnamed in `TEAM_HUES[0]` (the solo hue), teammates in
-`slot_hue(s)` under a name tag (`ThemeDB.fallback_font`), an ABSENT slot at
-`ABSENT_ALPHA 0.35` where it parked, a DEAD slot skipped. `view_slot`
-(`_refresh_view` each frame, `cycle_spectate`) is the local slot while LIVE,
-else the spectate target; the camera, `_visible_world_rect` and
-`_depth_sort` follow it. Presentation only: never hashed. Gated by
-`test_draw_order`, `test_hud`, `test_input`.
+The hub has start new run, disabled continue run, multiplayer, upgrades,
+settings and exit. `_pages` holds separate upgrades/multiplayer pages;
+`_page_open == ""` means hub. Settings/update modal sit above either page.
+There is no mid-run checkpoint behind the disabled continue entry.
 
-## Rendering in `run.gd`
+Shop: bounded `ScrollContainer` (680×240) for eight upgrade rows; unlock
+requirements use `SaveGame.milestone_text`, showing `UNLOCK_ROWS = 2` plus a
+summary. Every `BUFFS` id must exist in `SaveGame`'s buff dictionary.
 
-Four `MultiMeshInstance2D` (`_mm_enemy _mm_proj _mm_shard _mm_botnet`) built by
-`_make_mm(size, z)` / `_build_renderers`, primed by `_prime_constant_instances`.
-`_update_renderers` writes transforms + `INSTANCE_CUSTOM`; `_depth_sort` buckets
-into `DEPTH_BANDS = 192` for painter's order (`_order`, `_band_count`).
-`PROPS_Z = 8`. `_draw` adds ground quads (`_ground_quad`), the voided ground
-(`_void_runs`), **falling floor chunks** (`_draw_chunk`), the lit route
-(`_route_points`), boss integrity rings, arrival animations, telegraphs, damage
-numbers and the transient fx. Draw order is gated by `tests/test_draw_order.gd`.
-
-Enemy instance colour composes the corruption tint with `_hit_flash` (toward
-white) and, for an arriving boss, a scale ramp read from `_arriving`
-INDEPENDENTLY of the grid skip union — the renderer tests `_submerged` directly,
-so without its own read a boss draws full-size through its whole charge.
-
-**Boss integrity is drawn, not counted**: the ring THINS, walks from the type
-colour toward hot red, and FRAGMENTS into fewer arcs (12 → 3). Three channels,
-because any one alone is ambiguous at a glance.
-
-## `tools/`
-
-| File | Purpose |
+| Shop id | Effect per rank |
 |---|---|
-| `run_tests.sh` | the runner — 52 suites + perf gate, fails on `SCRIPT ERROR`/`Parse Error` in stderr whatever a suite claims |
-| `determinism_probe.gd` | four-slot run at the enemy cap, `tick hash` per tick; diff its output across arm64 / x86_64 |
-| `screenshot.gd` | shared capture harness — needs a WINDOW; `--headless` has no texture and every shot tool exits 1 |
-| `shot_cards` | drives `ui._input` with ACTION events; not in `SUITES`, so only `test_input` guards its action names |
-| `shot_collapse shot_fx shot_gate shot_iso shot_meta shot_props shot_seam shot_slots` | one-scene screenshot scripts |
-| `fps_probe.gd`, `fps_collapse.gd` | interactive frame-time probes (the gate lives in `tests/perf_milestone0.gd`) |
-| `build_manual.py` + `manual_template.html` | generates `site/index.html` |
+| `cpu_cycles` | attack ×1.04 |
+| `cooling`, `bus_speed` | move speed +6 each |
+| `memory` | integrity +8 |
+| `firewall`, `encryption` | armor +0.6 / defense +6 |
+| `addressing`, `bandwidth` | range ×1.03 / pickup radius +6 |
+
+Multiplayer page: handle, room-code/address, host, host LAN, join, leave and
+session start. The menu owns `NetworkSession` and `Transport` until START.
+`_launch_session` configures the run, reparents the existing transport and
+attaches it; lobby→run does not recreate the connection.
+
+Version labels use `BuildInfo.display_version`; handshakes use
+`BuildInfo.version`. `_on_update_ready` sets the shared availability flag and
+menu modal. Choices are install now, install on quit, not now, or the
+move-to-/Applications path for App Translocation. Updater survives scene swaps;
+the run HUD shows availability without interrupting play with the menu modal.
+
+## Shared chrome — `scripts/ui/`
+
+`TerminalStyle` caches the theme/SystemFont. Font preference order:
+SF Mono, Menlo, Consolas, DejaVu Sans Mono, monospace. `panel_style` and
+`build_theme` provide consistent code-built controls.
+`CRTOverlay` is an autoload `CanvasLayer` at layer 100, above menu and run.
+
+## World rendering
+
+| Source | Responsibility |
+|---|---|
+| `scripts/run/backdrop.gd` | Isometric lattice and arena shell; `STEP = Terrain.TILE`, slab depth 30 |
+| `scripts/run/props.gd` | Walls, rails, gate posts/lintel and objective block; `draw_box` primitive; wall height 26, post height 78, face alpha 0.6 |
+| `scripts/run/run.gd` | `_build_renderers`, `_update_renderers`, `_depth_sort`, procedural effects and world draw |
+| `shaders/glyph.gdshader` | Entity glyph silhouettes; consumed by the run's mesh material |
+
+Four MultiMeshes cover enemies, projectiles, shards and botnet. Sorting is
+once per world tick (`DEPTH_BANDS = 192`); `_snapshot_render_state` runs above
+the guard so paused entities do not interpolate from an old moving position.
+`PROPS_Z = 8` separates floor entities from standing obstacles.
+Presentation FX aging is excluded from the deterministic state hash.
+
+## Tooling and validation
+
+| Tool/suite | Purpose |
+|---|---|
+| `tools/run_tests.sh` | Named suites; fails on script/parse errors regardless of printed PASS |
+| `test_cards_keyboard`, `test_input`, `test_hud` | Card navigation/actions and HUD contracts |
+| `test_meta_layout`, `test_settings_overlay`, `test_draw_order` | Menu geometry, settings overlay and world layering |
+| `tools/shot_cards.gd`, other `shot_*.gd` | Windowed screenshots; headless rendering has no capture texture |
+| `tools/fps_probe.gd`, `tools/fps_collapse.gd` | Interactive frame-time probes |
+| `tools/build_manual.py` | Generates `site/index.html` |

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run every ROOTKIT suite and report honestly.
+# Run selected ROOTKIT suites (all by default) and report honestly.
 #
 # A suite printing "PASS" is NOT sufficient evidence that it passed. A runtime
 # error in GDScript aborts only the function it happened in: the engine prints
@@ -11,7 +11,9 @@
 # So the runner reads stderr as well as the verdict. Any SCRIPT ERROR or Parse
 # Error fails the suite whatever it claims about itself.
 #
-# Usage: tools/run_tests.sh [--fast]     (--fast skips the perf gate)
+# Usage: tools/run_tests.sh [--fast | suite ...]
+# No arguments: all suites + perf. --fast: all except perf.
+# Names: only those suites, e.g. test_build test_slots perf_milestone0.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,7 +30,21 @@ SUITES=(
   test_relay_frame test_relay_rooms test_relay test_transport_punch test_update
   test_deterministic_math test_start_delay
 )
-[ "${1:-}" = "--fast" ] || SUITES+=(perf_milestone0)
+if [ "$#" -eq 0 ]; then
+  SUITES+=(perf_milestone0)
+elif [ "$#" -eq 1 ] && [ "$1" = "--fast" ]; then
+  : # Keep the functional suite list above.
+else
+  # Validate every name before running anything; a typo must not become an
+  # empty selection that prints ALL GREEN.
+  for suite in "$@"; do
+    case " ${SUITES[*]} perf_milestone0 " in
+      *" $suite "*) ;;
+      *) printf 'Unknown suite: %s\nUsage: %s [--fast | suite ...]\n' "$suite" "$0" >&2; exit 2 ;;
+    esac
+  done
+  SUITES=("$@")
+fi
 
 failed=0
 inconclusive=0

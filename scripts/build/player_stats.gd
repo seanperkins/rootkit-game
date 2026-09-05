@@ -6,7 +6,7 @@ class_name PlayerStats extends RefCounted
 ##
 ## Two groups, deliberately not one. The additive sheet (integrity, armor,
 ## defense, clock_speed, pickup_radius) is read directly by run.gd and never
-## reaches the compiler. The multipliers (attack, haste, reach) are folded into
+## reaches the compiler. The multipliers (attack, reach) are folded into
 ## every exploit by Compiler.build AFTER the flat module fold, so a module's
 ## "+7 damage" stays a flat number and the player layer is the percentage layer.
 ##
@@ -50,9 +50,15 @@ const BASE := {
 	&"pickup_radius": 80.0,
 }
 
+## Two entries, not three. `haste` is gone: it multiplied every vector's
+## cooldown, which made a shop purchase the strongest cadence lever in the
+## game and put "this weapon fires faster" outside the trigger column that is
+## supposed to own it. The `cooling` line that funded it now buys sheet
+## clock_speed instead. A stale save asking for `haste` is dropped by mults()
+## like any other unknown key, which is the same protection an edited
+## save.json already relies on.
 const BASE_MULT := {
 	&"attack": 1.0,
-	&"haste": 1.0,
 	&"reach": 1.0,
 }
 

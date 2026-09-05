@@ -19,10 +19,10 @@ func _initialize() -> void:
 	print("ROOTKIT — global multipliers\n")
 	await process_frame
 	await attack_reaches_combat()
-	await haste_reaches_combat()
+	await cooling_moves_the_player_not_the_gun()
 	corruption_scales()
 	exclusions_hold()
-	haste_before_clamp()
+	no_global_touches_cadence()
 	print("")
 	if failures == 0: print("  PASS — all cases")
 	else: print("  FAIL — %d assertion(s)" % failures)
@@ -64,16 +64,27 @@ func attack_reaches_combat() -> void:
 		buffed.damage, base_damage * 1.40)
 	_clear_buffs()
 
-func haste_reaches_combat() -> void:
+## The line that used to buy fire rate. It still has to REACH the run — the
+## whole point of this file — but it lands on the player sheet now, and the
+## compiled weapon must not move at all.
+func cooling_moves_the_player_not_the_gun() -> void:
 	_clear_buffs()
 	var base: ResolvedExploit = await _starting_exploit()
 	var base_cd: float = base.cooldown
 
 	SaveGame.load_state()["buffs"]["cooling"] = 10
-	var buffed: ResolvedExploit = await _starting_exploit()
+	var run: Node2D = load("res://scenes/run.tscn").instantiate()
+	root.add_child(run)
+	await process_frame
+	run.input_override = Vector2.ZERO
+	var buffed: ResolvedExploit = run.resolved[0]
+	var speed: float = run._sheet[run.local_slot][&"clock_speed"]
+	run.queue_free()
+	await process_frame
 
-	_check("haste x0.70 reaches the compiled exploit",
-		buffed.cooldown, base_cd * 0.70)
+	_check("cooling no longer touches the weapon's cadence", buffed.cooldown, base_cd)
+	_check("cooling r10 reaches the run as move speed", speed,
+		float(PlayerStats.BASE[&"clock_speed"]) + 60.0)
 	_clear_buffs()
 
 ## corruption is a damage type. If attack scaled only damage, the game's headline
@@ -96,27 +107,30 @@ func exclusions_hold() -> void:
 	ex.place(t[&"packet"]); ex.place(t[&"interval"])
 	ex.place(t[&"botnet_expand"]); ex.place(t[&"keylog"])
 	var base := Compiler.build(ex)
-	var buffed := Compiler.build(ex, {&"attack": 3.0, &"haste": 3.0, &"reach": 3.0})
+	var buffed := Compiler.build(ex, {&"attack": 3.0, &"reach": 3.0})
 	_check("pierce untouched", buffed.pierce, base.pierce)
 	_check("chain_count untouched", buffed.chain_count, base.chain_count)
 	_check("projectile_speed untouched", buffed.projectile_speed, base.projectile_speed)
 	_check("botnet_cap untouched", buffed.botnet_cap, base.botnet_cap)
 	_check("lifesteal untouched", buffed.lifesteal, base.lifesteal)
 
-## haste multiplies BEFORE MIN_COOLDOWN. At the extremes the clamp hides the
-## ordering entirely, so this uses a mid-range cooldown where it is observable.
-func haste_before_clamp() -> void:
+## Cadence belongs to the TRIGGER column, so no global may reach it. haste is
+## gone from MULT_KEYS entirely; this is what catches it coming back, under
+## that name or another, and it pins where the cost of holding no trigger is
+## paid instead.
+func no_global_touches_cadence() -> void:
 	var t := ModuleTable.by_id()
 	var ex := Exploit.new()
-	ex.place(t[&"packet"]); ex.place(t[&"interval"])   # 0.50 x 0.85 = 0.425
+	ex.place(t[&"packet"]); ex.place(t[&"interval"])
 	var base := Compiler.build(ex)
 	_check("mid-range cooldown is above the clamp",
 		base.cooldown > Compiler.MIN_COOLDOWN, true)
-	var fast := Compiler.build(ex, {&"haste": 0.5})
-	_check("haste halves a mid-range cooldown", fast.cooldown, base.cooldown * 0.5)
-	# The binding floor is PROPORTIONAL now: packet floors at 0.50 x 0.12 = 0.060,
-	# and MIN_COOLDOWN no longer binds for any legal build. This assertion used to
-	# pin the absolute guard, which is now only reachable on the null-vector path.
-	_check("haste cannot tunnel under the proportional floor",
-		Compiler.build(ex, {&"haste": 0.001}).cooldown,
-		float(t[&"packet"].stats[&"cooldown"]) * Compiler.MIN_CADENCE_FRACTION)
+	# haste passed deliberately: a stale save or a re-added shop line must be
+	# inert here, not quietly effective again.
+	var buffed := Compiler.build(ex, {&"attack": 3.0, &"reach": 3.0, &"haste": 0.5})
+	_check("no multiplier moves the cadence", buffed.cooldown, base.cooldown)
+	var bare := Exploit.new()
+	bare.place(t[&"packet"])
+	_check("the bare row pays the cadence penalty instead",
+		Compiler.build(bare).cooldown,
+		float(t[&"packet"].stats[&"cooldown"]) * Compiler.BARE_CADENCE)

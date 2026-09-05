@@ -59,11 +59,18 @@ const SHEET_EFFECT := {
 	&"encryption": {&"defense": 6.0},
 	&"bus_speed":  {&"clock_speed": 6.0},
 	&"bandwidth":  {&"pickup_radius": 6.0},
+	## cooling used to be the only shop line that could change how fast a
+	## weapon fires (haste -0.03 a rank, straight onto every vector's
+	## cooldown). Firing frequency is the trigger column's now, so the line
+	## buys movement instead — the sheet namespace, which never reaches the
+	## compiler. NOTE: this puts it on the SAME stat as bus_speed at the same
+	## step; the two lines want merging or re-differentiating in a balance
+	## pass, and that is a deliberate open item rather than an oversight.
+	&"cooling":    {&"clock_speed": 6.0},
 }
 
 const MULT_EFFECT := {
 	&"cpu_cycles": {&"attack": 0.04},
-	&"cooling":    {&"haste": -0.03},
 	&"addressing": {&"reach": 0.03},
 }
 

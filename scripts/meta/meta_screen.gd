@@ -19,7 +19,7 @@ const HOT := Color(1.0, 0.72, 0.35)
 ## crashes the shop on open.
 const BUFFS := [
 	[&"cpu_cycles", "+CPU cycles", "attack x1.04 per rank"],
-	[&"cooling",    "+cooling",    "attack speed x0.97 per rank"],
+	[&"cooling",    "+cooling",    "move speed +6 per rank"],
 	[&"memory",     "+memory",     "integrity +8 per rank"],
 	[&"firewall",   "+firewall",   "armor +0.6 per rank"],
 	[&"encryption", "+encryption", "defense +6 per rank"],

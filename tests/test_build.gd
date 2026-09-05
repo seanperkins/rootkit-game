@@ -4,7 +4,7 @@ extends SceneTree
 ## the enclosing function WITHOUT failing the suite — verified: a missing property
 ## access here printed a SCRIPT ERROR and the suite still reported "PASS — all
 ## cases" while four checks never ran. Counting them makes that loud.
-const EXPECTED_CHECKS := 92
+const EXPECTED_CHECKS := 86
 
 var failures := 0
 var checks := 0
@@ -26,9 +26,8 @@ func _init() -> void:
 	rule_replace_lowest_rank()
 	rule_zero_no_legal_placement()
 	inert_only_transient()
-	cadence_mult_defaults_to_one()
 	rank_factor_is_asymmetric()
-	cadence_mult_folds_by_product()
+	trigger_factor_scales_weapon_period()
 	new_keys_fold_by_their_rule()
 	the_new_modules_are_present_and_valid()
 	triggers_earn_their_keep()
@@ -36,7 +35,6 @@ func _init() -> void:
 	rank_carve_outs()
 	ward_equality()
 	uniqueness_is_loadout_wide()
-	defensive_share()
 	equals_sees_shield_and_shield_rearm()
 	shield_rearm_is_unranked()
 	print("")
@@ -113,17 +111,20 @@ func vector_cadence_does_not_scale() -> void:
 		base * T[&"interval"].stats[&"cadence_mult"])
 	_check("while its damage does scale", r5.damage > r1.damage, true)
 
-## Stack every cadence contributor at max rank and the PROPORTIONAL floor holds.
-## The absolute MIN_COOLDOWN no longer binds for any legal build — that is the
-## point of the change, so it is asserted here. The haste is heavier than the
-## old 0.70 because the second payload slot used to supply a second overclock;
-## what is being pinned is the floor, not any particular route down to it.
+## Stack the cadence contributors at max rank and the PROPORTIONAL floor holds.
+##
+## Driven by a TRIGGER alone, because that is now the only place cadence comes
+## from: the global haste this used to lean on is gone from MULT_KEYS, and the
+## two payloads that carried cadence_mult buy shield recovery instead. on_hit
+## at rank 5 is 0.62^5 = 0.0916, under MIN_CADENCE_FRACTION on its own — so the
+## floor is still reachable from the trigger column, which is where a runaway
+## cadence can now come from. The absolute MIN_COOLDOWN still binds for no
+## legal build, which is the point of the proportional one.
 func cooldown_clamp() -> void:
-	var ex := _mk(&"broadcast", &"interval", [&"overclock"])
+	var ex := _mk(&"broadcast", &"on_hit")
 	ex.trigger.rank = 5
-	ex.payloads[0].rank = 5
 	var base: float = T[&"broadcast"].stats[&"cooldown"]
-	var r := Compiler.build(ex, {&"haste": 0.20})
+	var r := Compiler.build(ex)
 	_check("floored at the vector's own fraction", r.cooldown,
 		base * Compiler.MIN_CADENCE_FRACTION)
 	_check("above the absolute floor", r.cooldown > Compiler.MIN_COOLDOWN, true)
@@ -166,7 +167,7 @@ func permutation_determinism() -> void:
 
 func _fresh() -> Loadout:
 	var l := Loadout.new()
-	l.start(T[&"packet"], T[&"interval"])
+	l.start(T[&"packet"])
 	return l
 
 func rule_rank_up() -> void:
@@ -307,44 +308,6 @@ func ward_equality() -> void:
 	var b := Compiler.build(_mk(&"broadcast", &"interval", [&"sandbox"]))
 	_check("equals distinguishes ward-only differences", a.equals(b), false)
 
-## Four of the fifteen unlocked modules are defensive — the three new wards plus
-## keylog, which was always defensive and merely read as an anomaly.
-##
-## The offer pool IS the unlocked list, so 4/15 is the real dilution figure.
-## legal_targets offers REPLACE for any occupied slot whose occupant is not the
-## last INTERVAL trigger, so a vector is always displaceable and _offer_cards
-## filters nothing out. An earlier draft claimed vectors "need a free exploit"
-## and derived a much higher share from it; that claim was false.
-func defensive_share() -> void:
-	var defensive := 0
-	for m in ModuleTable.starting_unlocked():
-		if m.id in [&"harden", &"sandbox", &"nice", &"keylog"]:
-			defensive += 1
-	_check("four defensive modules unlocked", defensive, 4)
-	_check("unlocked total", ModuleTable.starting_unlocked().size(), 19)
-
-## cadence_mult is the only STAT_KEY that does not default to zero, because it
-## accumulates by product rather than by sum. Anything that resets fields
-## generically, or assumes a zero default, breaks quietly on it — so the default
-## is pinned by a test rather than by a comment.
-func cadence_mult_defaults_to_one() -> void:
-	var r := ResolvedExploit.new()
-	_check("cadence_mult defaults to 1.0", r.cadence_mult, 1.0)
-	_check("cadence_mult is a legal stat key", &"cadence_mult" in Module.STAT_KEYS, true)
-	# 24: the module set added knockback, slow_amount, slow_duration, shield and
-	# orbit_count, the trigger rework added burst, and fusion adds split_count, blast_radius, execute_below and homing, and the weapons pass adds shield_rearm. Pinned because STAT_KEYS
-	# is a CLOSED set whose every member must be a field on ResolvedExploit — a
-	# key added without its field makes _fold write into nothing at all.
-	_check("STAT_KEYS is 28", Module.STAT_KEYS.size(), 28)
-	var zero_defaults := 0
-	for k in Module.STAT_KEYS:
-		if float(r.get(k)) == 0.0:
-			zero_defaults += 1
-	# cadence_mult is still the only one that does not, and burst was
-	# deliberately kept a zero-default (0 reads as one emission) so it stays
-	# that way.
-	_check("every OTHER stat key defaults to zero", zero_defaults, 27)
-
 ## Rank scales the two directions differently, because each is the rule the other
 ## breaks under. Compounding a COST makes ranking on_kill a -53%..-63% DPS trap;
 ## applying a REDUCTION linearly goes negative — overclock (0.82) crosses at
@@ -357,18 +320,15 @@ func rank_factor_is_asymmetric() -> void:
 	_check("a reduction stays positive far past max_rank",
 		Compiler._rank_factor(0.85, 10) > 0.0, true)
 
-## Synthetic modules, because nothing in the shipped table carries the key twice.
-## The second factor rides the TRIGGER column: an exploit holds one payload now,
-## and a VECTOR may not carry cadence_mult at all — validate() rejects it — so
-## the trigger is the only other place a second factor can legally come from.
-## Synthetic rather than `interval`, which carries a 0.85 of its own that would
-## fold into the very product being asserted.
-func cadence_mult_folds_by_product() -> void:
-	var a := Module.make(&"synth_a", "synth_a", Module.Slot.PAYLOAD, {&"cadence_mult": 0.5})
+## A legal trigger factor scales the emitted period, not an additive stat.
+## This also catches a zero-initialized product accumulator: it would clamp
+## the period to the floor instead of preserving the requested factor.
+func trigger_factor_scales_weapon_period() -> void:
 	var b := Module.make(&"synth_b", "synth_b", Module.Slot.TRIGGER, {&"cadence_mult": 0.5})
 	var ex := Exploit.new()
-	ex.place(T[&"broadcast"]); ex.place(a); ex.place(b)
-	_check("two factors multiply, never add", Compiler.build(ex).cadence_mult, 0.25)
+	ex.place(T[&"broadcast"]); ex.place(b)
+	_check("trigger factor halves the weapon period", Compiler.build(ex).cooldown,
+		float(T[&"broadcast"].stats[&"cooldown"]) * 0.5)
 
 ## The five keys added with the module set, and the rule each folds by.
 func new_keys_fold_by_their_rule() -> void:

@@ -86,8 +86,17 @@ static func all() -> Array:
 
 		# --- VECTOR, defensive ----------------------------------------------
 		# Still weapons on a cadence; the payoff protects rather than kills.
+		#
+		# bounce is the one that had to come down. At 190 base radius it covered
+		# a quarter of the screen from rank 1, and VECTOR_RADIUS_RANK is a
+		# FRACTION of base — so the widest vector also grew the fastest in
+		# absolute terms (47.5 px a rank against spike's 37.5). 150 makes that
+		# growth 37.5 as well, without a bounce-only carve-out in the compiler.
+		# The damage and cadence come down with it because knockback, not
+		# damage, is what the module is for: at 2.0/1.1 s it was a defensive
+		# vector paying an offensive price nothing else in the column paid.
 		Module.make(&"bounce", "bounce()", S.VECTOR,
-			{&"damage": 2.0, &"radius": 190.0, &"cooldown": 1.1,
+			{&"damage": 1.4, &"radius": 150.0, &"cooldown": 1.5,
 			 &"knockback": 320.0}, [], V.PULSE),
 		Module.make(&"mirror", "mirror()", S.VECTOR,
 			{&"damage": 4.0, &"radius": 90.0, &"cooldown": 2.2,
@@ -106,8 +115,12 @@ static func all() -> Array:
 			{&"corruption": 2.0, &"chain_count": 1.0}, [&"corruption"]),
 		Module.make(&"botnet_expand", "fork()", S.PAYLOAD,
 			{&"botnet_cap": 2.0}),
+		# Self-contained recovery payloads: one payload slot means neither can
+		# borrow checksum's shield. Smaller pools trade capacity for a faster
+		# rearm; overclock retains damage and the stronger recovery. Rearm is
+		# unranked, so ranks buy shield magnitude without buying firing cadence.
 		Module.make(&"overclock", "overclock", S.PAYLOAD,
-			{&"damage": 2.0, &"cadence_mult": 0.82}),
+			{&"damage": 2.0, &"shield": 12.0, &"shield_rearm": 1.6}),
 
 		# --- PAYLOAD, defensive ------------------------------------------------
 		# None contributes damage, so equipping one is a real cost against the one
@@ -129,7 +142,7 @@ static func all() -> Array:
 		# --- PAYLOAD, added with the module set -----------------------------
 		Module.make(&"bitmask", "bitmask", S.PAYLOAD, {&"pierce": 1.0}),
 		Module.make(&"race_condition", "race_condition", S.PAYLOAD,
-			{&"cadence_mult": 0.88}),
+			{&"shield": 10.0, &"shield_rearm": 2.0}),
 		Module.make(&"heap_spray", "heap_spray", S.PAYLOAD,
 			{&"chain_count": 1.0, &"radius": 30.0}),
 		Module.make(&"tarpit", "tarpit", S.PAYLOAD,

@@ -43,13 +43,18 @@ var exploits: Array = []
 ## reaches no exploit at all.
 var mult: Dictionary = {}
 
-## Starting loadout: one exploit, packet + interval. Without it the rules are
-## not total — on an empty board a first TRIGGER or PAYLOAD card fails rules
-## 1-3 and rule 4 has no module of that slot type to displace.
-func start(packet: Module, interval: Module) -> void:
+## Starting loadout: one exploit, one VECTOR, and no trigger at all.
+##
+## A bare row fires on the compiler's built-in interval at
+## Compiler.BARE_CADENCE, so the weapon works on the first frame and the first
+## trigger card is an upgrade rather than the switch that turns the gun on.
+## What still has to hold is that the rules stay TOTAL: on this board a first
+## TRIGGER or PAYLOAD card lands in an empty slot by rules 1-3, and
+## strands_auto_fire is what stops that first trigger being an EVENT trigger
+## that leaves the player with nothing firing.
+func start(packet: Module) -> void:
 	var ex := Exploit.new()
 	ex.place(packet)
-	ex.place(interval)
 	exploits = [ex]
 
 func holds(id: StringName) -> int:
@@ -78,8 +83,8 @@ func _slot_holding(id: StringName) -> Array:
 ##   - Placement is the player's decision. legal_targets offers what is legal
 ##     and the player chooses; a card it cannot place falls through to the
 ##     salvage path, rather than a row being silently left broken.
-##   - _is_last_interval still stands, so row one keeps an unconditional
-##     trigger and the event triggers in rows two and three bootstrap off it.
+##   - strands_auto_fire still stands, so the board always keeps one row that
+##     fires unconditionally, and the event triggers bootstrap off it.
 ##   - Fusion frees ids. That is the escape hatch the old design did not have,
 ##     and it is why the restriction is worth its cost: the way to use
 ##     `interval` twice is to fuse the row holding it.
@@ -118,8 +123,9 @@ func legal_targets(m: Module) -> Array:
 			if ex.head_is_fused() and sl == 0:
 				continue          # the fused head is not replaceable
 			if occupant == null:
-				out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
-			elif not _is_last_interval(occupant):
+				if not strands_auto_fire(m, e):
+					out.append(Target.new(e, sl, Rule.EMPTY_SLOT))
+			elif not strands_auto_fire(m, e):
 				out.append(Target.new(e, sl, Rule.REPLACE, occupant.module))
 	return out
 
@@ -167,7 +173,7 @@ func resolve(m: Module) -> Placement:
 
 	# 2 — first exploit with an empty compatible slot
 	for i in exploits.size():
-		if exploits[i].has_free_slot_for(m.slot):
+		if exploits[i].has_free_slot_for(m.slot) and not strands_auto_fire(m, i):
 			return Placement.new(Rule.EMPTY_SLOT, i)
 
 	# 3 — found a new exploit, VECTOR only. Restricting this is what stops a
@@ -181,8 +187,8 @@ func resolve(m: Module) -> Placement:
 	var best_em: EquippedModule = null
 	for i in exploits.size():
 		for em in _slot_members(exploits[i], m.slot):
-			if _is_last_interval(em) or em.module.is_fused:
-				continue     # see _is_last_interval; a fused head is not a victim
+			if em.module.is_fused or strands_auto_fire(m, i):
+				continue     # a fused head is not a victim; see strands_auto_fire
 			if best_em == null or em.rank < best_em.rank:
 				best_em = em
 				best_ex = i
@@ -233,10 +239,10 @@ func matched_recipes() -> Array:
 
 ## Two gates. All three modules must be at max rank — see Exploit.is_fully_ranked.
 ##
-## And: fusing the row that holds your last INTERVAL trigger frees `interval` but
-## leaves nothing firing unconditionally until you re-place it — the deadlock
-## _is_last_interval was written for, arriving by a different door. A fused
-## module that is itself INTERVAL-triggered replaces what it consumed.
+## And: fusing a row consumes its trigger, so it can take the board's last
+## unconditionally-firing weapon with it — the deadlock strands_auto_fire was
+## written for, arriving by a different door. A fused module that is itself
+## INTERVAL-triggered replaces what it consumed; one that is not, does not.
 func can_fuse(exploit_index: int, fused: Module) -> bool:
 	if exploit_index < 0 or exploit_index >= exploits.size():
 		return false
@@ -246,11 +252,9 @@ func can_fuse(exploit_index: int, fused: Module) -> bool:
 	# ranking and the fused weapon becomes an early-game shortcut.
 	if not ex.is_fully_ranked():
 		return false
-	if fused.trigger_kind == Module.TriggerKind.INTERVAL:
-		return true
-	var lost := 1 if (ex.trigger != null
-		and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL) else 0
-	return _interval_count() - lost >= 1
+	var lost := 1 if _fires_unconditionally(ex) else 0
+	var kept := 1 if fused.trigger_kind == Module.TriggerKind.INTERVAL else 0
+	return _auto_fire_count() - lost + kept >= 1
 
 ## Consumes all three. Their ids are free from this moment, which is the point:
 ## the way to use `interval` twice is to fuse the row holding it.
@@ -265,32 +269,52 @@ func fuse(exploit_index: int, fused: Module) -> void:
 	# so a refused fusion above leaves the row exactly as it was.
 	ex.vector = EquippedModule.new(fused)
 
-## A fused module whose trigger_kind is INTERVAL counts as an interval trigger,
-## because it is one.
-func _interval_count() -> int:
+## A row fires WITHOUT waiting for an event when it has a vector and either no
+## trigger at all (the compiler's built-in interval, paid at BARE_CADENCE), an
+## INTERVAL trigger, or a fused head whose own trigger_kind is INTERVAL.
+##
+## The bare case is why this replaced the old "count the INTERVAL triggers"
+## rule. With no starting trigger the board's only unconditional weapon is
+## usually a bare row, and a census that could not see one would have called
+## every board strandable and refused every event trigger on it.
+static func _fires_unconditionally(ex: Exploit) -> bool:
+	if ex.vector == null:
+		return false
+	if ex.head_is_fused():
+		return ex.vector.module.trigger_kind == Module.TriggerKind.INTERVAL
+	return ex.trigger == null \
+		or ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL
+
+func _auto_fire_count() -> int:
 	var n := 0
 	for ex in exploits:
-		if ex.head_is_fused():
-			if ex.vector.module.trigger_kind == Module.TriggerKind.INTERVAL:
-				n += 1
-		elif ex.trigger != null \
-				and ex.trigger.module.trigger_kind == Module.TriggerKind.INTERVAL:
+		if _fires_unconditionally(ex):
 			n += 1
 	return n
 
-## The loadout must always retain at least one INTERVAL trigger.
+## The loadout must always retain at least one weapon that fires unconditionally.
 ##
 ## Event triggers cannot bootstrap: an ON_KILL exploit fires when it kills, and
-## it kills when it fires. With one exploit, rule 4 displacing `interval` for
-## `on_kill` leaves the player with no weapon at all and no way to recover —
-## observed in a full-run test as 6 kills in 116 seconds. Refusing the swap is
-## cheaper than special-casing the deadlock everywhere downstream.
-func _is_last_interval(em: EquippedModule) -> bool:
-	if em.module.slot != Module.Slot.TRIGGER:
+## it kills when it fires. Leaving the player with none was observed in a
+## full-run test as 6 kills in 116 seconds, with no way to recover. Refusing
+## the placement is cheaper than special-casing the deadlock downstream.
+##
+## Asked about the RESULTING board rather than about the victim, because what
+## is lost may be an ABSENCE: dropping `on_hit` into the empty trigger slot of
+## the last bare row destroys nothing and still strands the player. Only an
+## event TRIGGER can do it — a vector or a payload never takes a row's
+## unconditional fire away, and an INTERVAL trigger supplies it.
+## Public because the card screen names this refusal to the player.
+func strands_auto_fire(m: Module, exploit_index: int) -> bool:
+	if m.slot != Module.Slot.TRIGGER:
 		return false
-	if em.module.trigger_kind != Module.TriggerKind.INTERVAL:
+	if m.trigger_kind == Module.TriggerKind.INTERVAL:
 		return false
-	return _interval_count() <= 1
+	if exploit_index < 0 or exploit_index >= exploits.size():
+		return false
+	if not _fires_unconditionally(exploits[exploit_index]):
+		return false
+	return _auto_fire_count() <= 1
 
 func _slot_members(ex: Exploit, slot: int) -> Array:
 	match slot:
